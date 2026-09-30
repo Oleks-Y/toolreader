@@ -1,0 +1,27 @@
+{
+  "name": "toolreader",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server/main.ts & vite",
+    "build": "vite build",
+    "start": "vite build && node server/main.ts",
+    "test": "node --test core/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.1"
+  }
+}
