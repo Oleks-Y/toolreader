@@ -34,7 +34,7 @@ toolreader ledger sync --source codex-rollouts --codex-home "$CODEX_HOME" \
 
 - One JSON file per agent commit. Today that is 6–55 KB raw, and git's zlib and deltas store about a quarter of that.
 - Outputs are clipped per action by default (head and tail, 8 KB total, marked as clipped); `--max-output 0` keeps them as the viewer has them (already at most 1500 + 1500 characters each), and `--no-outputs` drops them.
-- Every free-text field is redacted before writing (`core/proof.ts`). It is a faithful record, not tamper-proof evidence.
+- Every free-text field is redacted before writing (`core/proof.ts`), commit subjects included, and again before publishing (`ledger site`, `ledger show`), which also drops the repo's local path. It is a faithful record, not tamper-proof evidence.
 - Retention is git's: delete old `commits/*.json` on the ledger branch, or rebuild the branch.
 
 ## Who reads it
