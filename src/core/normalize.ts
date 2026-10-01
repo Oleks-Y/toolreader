@@ -433,7 +433,7 @@ function otherToolAction(p: ToolPayload): Draft {
       kind: "web",
       title:
         a?.type === "openPage" || a?.type === "findInPage"
-          ? `fetch ${s(a.url)}`
+          ? `fetch ${s(a.url) || "(URL not recorded)"}`
           : `web search "${short(s(item.query ?? a?.query), 80)}"`,
       failed,
     };

@@ -410,4 +410,11 @@ describe("rollout", () => {
     ];
     assert.strictEqual(actionsOf(finished, [], "inProgress").actions[0]?.status, "ok");
   });
+  it("names a page fetch whose URL Codex did not record", () => {
+    const blank = { type: "webSearch", id: "ws1", query: "", action: { type: "openPage" } };
+    assert.deepStrictEqual(
+      actionsOf([], [blank]).actions.map((a) => [a.kind, a.title]),
+      [["web", "fetch (URL not recorded)"]],
+    );
+  });
 });
