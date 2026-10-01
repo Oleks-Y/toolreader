@@ -1,41 +1,74 @@
 // Commit ledger CLI:
-//   vp run ledger -- sync [--repo PATH] [--range A..B] [--no-outputs]   write entries for agent commits
-//   vp run ledger -- show [--repo PATH] [--range A..B]                   list commits and their history
-// The range defaults to <default branch>..HEAD. Push the ledger with `git push origin agent-ledger`.
+//   vp run ledger -- sync [--repo PATH] [--range A..B] [--source auto|t3|codex-app-server|codex-rollouts]
+//                         [--codex-home DIR] [--max-output BYTES] [--no-outputs]
+//   vp run ledger -- show [--repo PATH] [--range A..B]          list commits and their history
+// The range defaults to <default branch>..HEAD. Share it with `git push origin agent-ledger`.
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import { Command, Flag } from "effect/unstable/cli";
 
 import packageJson from "../../package.json" with { type: "json" };
 import { LEDGER_BRANCH } from "../core/ledger.ts";
-import { AppLive } from "./app.ts";
-import { Ledger } from "./Ledger.ts";
+import { LedgerApp } from "./app.ts";
+import { Ledger, LEDGER_SOURCES, SYNC_DEFAULTS } from "./Ledger.ts";
 
 const repo = Flag.string("repo").pipe(
   Flag.withDescription("Repository (any path inside it)"),
   Flag.withDefault("."),
 );
 const range = Flag.string("range").pipe(
-  Flag.withDescription("Commit range, e.g. main..HEAD (default: <default branch>..HEAD)"),
+  Flag.withDescription(
+    "Commits to sync, as `git log` takes them: main..HEAD, or `SHA --not --remotes=origin` (default: <default branch>..HEAD)",
+  ),
   Flag.optional,
 );
+const offline = LedgerApp({ appServer: false, codexHome: null });
 
 const sync = Command.make(
   "sync",
   {
     repo,
     range,
+    source: Flag.choice("source", LEDGER_SOURCES).pipe(
+      Flag.withDescription(
+        "Where sessions come from. auto: T3 if its database exists, plus Codex rollout files",
+      ),
+      Flag.withDefault(SYNC_DEFAULTS.source),
+    ),
+    codexHome: Flag.string("codex-home").pipe(
+      Flag.withDescription("Codex home with sessions/ (default: $CODEX_HOME or ~/.codex)"),
+      Flag.optional,
+    ),
+    maxOutput: Flag.integer("max-output").pipe(
+      Flag.withDescription("Bytes kept per action output, head and tail (0 keeps it whole)"),
+      Flag.withDefault(SYNC_DEFAULTS.maxOutput),
+    ),
     noOutputs: Flag.boolean("no-outputs").pipe(
       Flag.withDescription("Leave command and tool outputs out (they are redacted otherwise)"),
     ),
   },
-  Effect.fn(function* ({ repo, range, noOutputs }) {
-    const ledger = yield* Ledger;
-    const result = yield* ledger.sync(repo, Option.getOrNull(range), !noOutputs);
+  Effect.fn(function* ({ repo, range, source, codexHome, maxOutput, noOutputs }) {
+    const path = yield* Path.Path;
+    const result = yield* Effect.flatMap(Ledger, (ledger) =>
+      ledger.sync(repo, Option.getOrNull(range), {
+        outputs: !noOutputs,
+        maxOutput,
+        source,
+      }),
+    ).pipe(
+      Effect.provide(
+        LedgerApp({
+          appServer: source === "codex-app-server",
+          codexHome: Option.getOrNull(Option.map(codexHome, (dir) => path.resolve(dir))),
+        }),
+      ),
+    );
     yield* Console.log(
-      `${result.range}: ${result.added.length} added, ${result.existing} already in the ledger`,
+      `${result.range} (${result.sources.join(" + ") || "no sources"}): ${result.added.length} added, ${result.existing} already in the ledger`,
     );
     for (const a of result.added) {
       yield* Console.log(
@@ -54,13 +87,14 @@ const show = Command.make(
   "show",
   { repo, range },
   Effect.fn(function* ({ repo, range }) {
-    const ledger = yield* Ledger;
-    const view = yield* ledger.range(repo, Option.getOrNull(range));
+    const view = yield* Effect.flatMap(Ledger, (ledger) =>
+      ledger.range(repo, Option.getOrNull(range)),
+    ).pipe(Effect.provide(offline));
     yield* Console.log(`${view.repo} ${view.range}`);
     for (const c of view.commits) {
       const e = c.entry;
       const detail = e
-        ? `${e.thread.title} · ${e.entries.filter((x) => x.type === "action").length} actions${c.matchedBy === "patch-id" ? " · found by patch-id" : ""}`
+        ? `${e.thread.title} · ${e.entries.filter((x) => x.type === "action").length} actions · by ${e.match}${c.matchedBy === "patch-id" ? " · found by patch-id" : ""}`
         : "no agent history";
       yield* Console.log(`  ${c.commit.sha.slice(0, 8)} ${c.commit.subject}  — ${detail}`);
     }
@@ -71,6 +105,6 @@ Command.make("ledger").pipe(
   Command.withDescription("Agent history per commit, kept on the agent-ledger branch"),
   Command.withSubcommands([sync, show]),
   Command.run({ version: packageJson.version }),
-  Effect.provide(AppLive),
+  Effect.provide(NodeServices.layer),
   NodeRuntime.runMain,
 );

@@ -8,13 +8,18 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import type { Action, Entry, ThreadSummary, ThreadView } from "../core/domain.ts";
+import { LedgerEntry } from "../core/ledger.ts";
+import { CodexRollouts } from "./CodexRollouts.ts";
 import { CodexSessions } from "./CodexSessions.ts";
 import { Labeler } from "./Labeler.ts";
 import { Ledger } from "./Ledger.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 import { ThreadStore } from "./ThreadStore.ts";
+import * as Schema from "effect/Schema";
 
-/** Runs git with fixed identity and dates, so commits line up with the fake session's actions. */
+const decodeEntry = Schema.decodeUnknownSync(Schema.fromJsonString(LedgerEntry));
+
+/** Runs git with fixed identity and dates, so commits line up with the fake sessions' actions. */
 const git = (repo: string, args: ReadonlyArray<string>, date?: string) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -35,6 +40,34 @@ const git = (repo: string, args: ReadonlyArray<string>, date?: string) =>
     return out.trim();
   }).pipe(Effect.scoped);
 
+const tempDir = (prefix: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return yield* fs.realPath(yield* fs.makeTempDirectoryScoped({ prefix }));
+  });
+
+/** A repo on `main` with one commit, an identity (the service's commit-tree needs one; CI has none) and a bare origin. */
+const makeRepo = Effect.gen(function* () {
+  const path = yield* Path.Path;
+  const repo = yield* tempDir("toolreader-ledger-test-");
+  const origin = path.join(yield* tempDir("toolreader-ledger-origin-"), "origin.git");
+  yield* git(repo, ["init", "-q", "-b", "main"]);
+  yield* git(repo, ["config", "user.name", "Agent"]);
+  yield* git(repo, ["config", "user.email", "agent@example.test"]);
+  yield* git(repo, ["init", "-q", "--bare", origin]);
+  yield* git(repo, ["remote", "add", "origin", origin]);
+  const commitFile = (name: string, content: string, message: string, date: string) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.writeFileString(path.join(repo, name), content);
+      yield* git(repo, ["add", name]);
+      yield* git(repo, ["commit", "-q", "-m", message], date);
+      return yield* git(repo, ["rev-parse", "HEAD"]);
+    });
+  yield* commitFile("README.md", "hi\n", "init", "2026-01-01T09:00:00Z");
+  return { repo, origin, commitFile };
+});
+
 const action = (id: string, at: string, command: string, output?: string): Action => ({
   type: "action",
   id,
@@ -46,6 +79,98 @@ const action = (id: string, at: string, command: string, output?: string): Actio
   ...(output ? { output } : {}),
 });
 
+/** A `codex exec` rollout file, as Codex writes it, in `codexHome`. */
+const writeRollout = (
+  codexHome: string,
+  id: string,
+  cwd: string,
+  items: ReadonlyArray<{ at: string; item: object }>,
+  source: unknown = "exec",
+) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const dir = path.join(codexHome, "sessions", "2026", "01", "01");
+    yield* fs.makeDirectory(dir, { recursive: true });
+    const first = items[0]?.at ?? "2026-01-01T00:00:00.000Z";
+    const line = (timestamp: string, type: string, payload: object) =>
+      JSON.stringify({ timestamp, type, payload });
+    const lines = [
+      line(first, "session_meta", { id, timestamp: first, cwd, originator: "codex_exec", source }),
+      line(first, "event_msg", { type: "task_started", turn_id: `${id}-t1` }),
+      ...items.map(({ at, item }) =>
+        line(at, "event_msg", { type: "item_completed", turn_id: `${id}-t1`, item }),
+      ),
+      line(items.at(-1)?.at ?? first, "event_msg", { type: "task_complete", turn_id: `${id}-t1` }),
+    ];
+    yield* fs.writeFileString(
+      path.join(dir, `rollout-2026-01-01T00-00-00-${id}.jsonl`),
+      lines.join("\n"),
+    );
+  });
+const userMessage = (id: string, text: string) => ({
+  type: "UserMessage",
+  id,
+  content: [{ type: "text", text }],
+});
+const command = (id: string, script: string, output = "", exitCode = 0) => ({
+  type: "CommandExecution",
+  id,
+  command: ["/bin/zsh", "-lc", script],
+  cwd: "/repo",
+  status: "completed",
+  aggregated_output: output,
+  exit_code: exitCode,
+});
+
+/**
+ * Ledger over fakes for T3 (`t3`: the threads its database holds, or none when `dbPath` is
+ * missing) and labels, with the real rollout reader over `codexHome`.
+ */
+const ledgerLayer = (options: {
+  dbPath: string;
+  codexHome: string;
+  t3?: ReadonlyArray<ThreadView>;
+  labels?: Record<string, string>;
+}) =>
+  Ledger.layer.pipe(
+    Layer.provide(CodexRollouts.layer),
+    Layer.provide([
+      Layer.succeed(
+        ServerConfig,
+        ServerConfig.of({
+          port: 0,
+          home: "/home/me",
+          dbPath: options.dbPath,
+          codexBin: "codex",
+          codexHome: options.codexHome,
+          labelsPath: "",
+          distDir: "",
+        }),
+      ),
+      options.t3
+        ? Layer.succeed(
+            ThreadStore,
+            ThreadStore.of({
+              list: Effect.succeed(options.t3.map((v) => v.thread)),
+              get: (id) => Effect.succeed(options.t3!.find((v) => v.thread.id === id)!),
+              head: () => Effect.die("unused"),
+              codexThreadIds: Effect.succeed(new Set(["owned-by-t3"])),
+              projects: Effect.succeed([]),
+            }),
+          )
+        : ThreadStore.empty,
+      CodexSessions.disabled,
+      Layer.succeed(
+        Labeler,
+        Labeler.of({
+          forThread: () => Effect.succeed(options.labels ?? {}),
+          label: () => Effect.die("unused"),
+        }),
+      ),
+    ]),
+  );
+
 describe("Ledger", () => {
   it.live(
     "syncs agent commits onto the ledger branch and reads a range back, even after an amend",
@@ -53,22 +178,7 @@ describe("Ledger", () => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const repo = yield* fs.realPath(
-          yield* fs.makeTempDirectoryScoped({ prefix: "toolreader-ledger-test-" }),
-        );
-        const commitFile = (name: string, content: string, message: string, date: string) =>
-          Effect.gen(function* () {
-            yield* fs.writeFileString(path.join(repo, name), content);
-            yield* git(repo, ["add", name]);
-            yield* git(repo, ["commit", "-q", "-m", message], date);
-            return yield* git(repo, ["rev-parse", "HEAD"]);
-          });
-
-        yield* git(repo, ["init", "-q", "-b", "main"]);
-        // The service's own git calls (commit-tree) need an identity; CI has none globally.
-        yield* git(repo, ["config", "user.name", "Agent"]);
-        yield* git(repo, ["config", "user.email", "agent@example.test"]);
-        yield* commitFile("README.md", "hi\n", "init", "2026-01-01T09:00:00Z");
+        const { repo, commitFile } = yield* makeRepo;
         yield* git(repo, ["switch", "-q", "-c", "feat/x"]);
         const first = yield* commitFile(
           "a.ts",
@@ -127,59 +237,22 @@ describe("Ledger", () => {
           actionCount: 4,
           worktree: repo,
         };
-        const view: ThreadView = {
-          thread: { ...summary, head: "h" },
-          entries,
-          labels: { c2: "Committed b" },
-        };
-
-        const layer = Ledger.layer.pipe(
-          Layer.provide([
-            Layer.succeed(
-              ServerConfig,
-              ServerConfig.of({
-                port: 0,
-                home: "/home/me",
-                dbPath: "",
-                codexBin: "codex",
-                codexHome: "/home/me/.codex",
-                labelsPath: "",
-                distDir: "",
-              }),
-            ),
-            Layer.succeed(
-              ThreadStore,
-              ThreadStore.of({
-                list: Effect.succeed([summary]),
-                get: () => Effect.succeed(view),
-                head: () => Effect.die("unused"),
-                codexThreadIds: Effect.succeed(new Set()),
-                projects: Effect.succeed([]),
-              }),
-            ),
-            Layer.succeed(
-              CodexSessions,
-              CodexSessions.of({
-                list: Effect.succeed([]),
-                get: () => Effect.die("unused"),
-                head: () => Effect.die("unused"),
-                ready: Effect.void,
-              }),
-            ),
-            Layer.succeed(
-              Labeler,
-              Labeler.of({
-                forThread: () => Effect.succeed({ c2: "Committed b" }),
-                label: () => Effect.die("unused"),
-              }),
-            ),
-          ]),
-        );
+        const dbPath = path.join(yield* tempDir("toolreader-t3-"), "state.sqlite");
+        yield* fs.writeFileString(dbPath, "");
+        // T3 ran this Codex session itself: its rollout must not count twice (it would match by SHA).
+        const codexHome = yield* tempDir("toolreader-codex-home-");
+        yield* writeRollout(codexHome, "owned-by-t3", repo, [
+          {
+            at: "2026-01-01T10:02:00.000Z",
+            item: command("x", "git commit -m 'feat: a'", `[feat/x ${first.slice(0, 7)}] feat: a`),
+          },
+        ]);
 
         yield* Effect.gen(function* () {
           const ledger = yield* Ledger;
-          const result = yield* ledger.sync(repo, null, true);
+          const result = yield* ledger.sync(repo, null);
           assert.strictEqual(result.range, "main..HEAD");
+          assert.deepStrictEqual(result.sources, ["t3", "codex-rollouts"]);
           assert.deepStrictEqual(
             result.added.map((a) => [a.commit.subject, a.match, a.actions]),
             [
@@ -208,7 +281,7 @@ describe("Ledger", () => {
           );
 
           // A second sync finds nothing new.
-          const again = yield* ledger.sync(repo, null, true);
+          const again = yield* ledger.sync(repo, null, { source: "t3" });
           assert.strictEqual(again.added.length, 0);
           assert.strictEqual(again.existing, 2);
 
@@ -237,7 +310,90 @@ describe("Ledger", () => {
             ],
           );
           assert.deepStrictEqual(range.commits[1]?.entry?.labels, { c2: "Committed b" });
-        }).pipe(Effect.provide(layer));
+        }).pipe(
+          Effect.provide(
+            ledgerLayer({
+              dbPath,
+              codexHome,
+              t3: [{ thread: { ...summary, head: "h" }, entries, labels: { c2: "Committed b" } }],
+              labels: { c2: "Committed b" },
+            }),
+          ),
+        );
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live(
+    "works headless from Codex rollout files: no T3, a commit a later step made, clipped outputs",
+    () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const { repo, commitFile } = yield* makeRepo;
+        const codexHome = yield* tempDir("toolreader-codex-home-");
+        yield* git(repo, ["switch", "-q", "-c", "feat/x"]);
+        const byAgent = yield* commitFile("a.ts", "a\n", "feat: a", "2026-01-01T10:02:30Z");
+        const byCi = yield* commitFile("b.ts", "b\n", "feat: b", "2026-01-01T10:30:00Z");
+
+        // Session 1 commits itself and prints the SHA.
+        yield* writeRollout(codexHome, "s1", repo, [
+          { at: "2026-01-01T10:00:00.000Z", item: userMessage("u1", "Add a\nmore detail") },
+          { at: "2026-01-01T10:01:00.000Z", item: command("c1", "printf 'a\\n' > a.ts") },
+          {
+            at: "2026-01-01T10:02:00.000Z",
+            item: command(
+              "c2",
+              "git add a.ts && git commit -m 'feat: a'",
+              `[feat/x ${byAgent.slice(0, 7)}] feat: a\n`,
+            ),
+          },
+        ]);
+        // Session 2 only edits (the sandbox blocks .git); CI commits after it ends.
+        yield* writeRollout(codexHome, "s2", path.join(repo, "sub"), [
+          { at: "2026-01-01T10:10:00.000Z", item: userMessage("u2", "Add b") },
+          { at: "2026-01-01T10:11:00.000Z", item: command("c3", "cat big.log", "x".repeat(5000)) },
+          { at: "2026-01-01T10:20:00.000Z", item: command("c4", "printf 'b\\n' > b.ts") },
+        ]);
+        // Neither counts: a subagent in the repo, and a session elsewhere.
+        yield* writeRollout(
+          codexHome,
+          "child",
+          repo,
+          [{ at: "2026-01-01T10:25:00.000Z", item: command("c5", "ls") }],
+          { subagent: { other: "guardian" } },
+        );
+        yield* writeRollout(codexHome, "other", "/elsewhere", [
+          { at: "2026-01-01T10:25:00.000Z", item: command("c6", "ls") },
+        ]);
+
+        yield* Effect.gen(function* () {
+          const ledger = yield* Ledger;
+          const result = yield* ledger.sync(repo, null, { maxOutput: 1000 });
+          assert.deepStrictEqual(result.sources, ["codex-rollouts"]);
+          assert.deepStrictEqual(
+            result.added.map((a) => [a.commit.sha, a.thread, a.match, a.actions]),
+            [
+              [byAgent, "Add a", "sha", 2],
+              [byCi, "Add b", "session", 2],
+            ],
+          );
+          const entry = decodeEntry(
+            yield* git(repo, ["show", `agent-ledger:commits/${byCi}.json`]),
+          );
+          assert.strictEqual(entry.thread.id, "codex:s2");
+          assert.deepStrictEqual(
+            entry.entries.map((e) => e.id),
+            ["u2", "c3", "c4"],
+          );
+          const big = entry.entries.find((e) => e.id === "c3");
+          // normalize keeps 1500 + 1500 characters already; the ledger clips what is left.
+          const clipped = big?.type === "action" ? (big.clipped ?? 0) : 0;
+          assert.isAbove(clipped, 0);
+          assert.include(big?.type === "action" ? big.output : "", `[${clipped} bytes clipped]`);
+
+          // Asking for a source that isn't there is an error; auto just skips it.
+          const missing = yield* Effect.flip(ledger.sync(repo, null, { source: "t3" }));
+          assert.include(missing.message, "No T3 database");
+        }).pipe(Effect.provide(ledgerLayer({ dbPath: "/nonexistent/state.sqlite", codexHome })));
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

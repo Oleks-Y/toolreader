@@ -46,6 +46,8 @@ export const Action = Schema.Struct({
   command: Schema.optional(Schema.String),
   exitCode: Schema.optional(Schema.Number),
   output: Schema.optional(Schema.String),
+  /** Bytes cut from the middle of `output` (ledger `--max-output`). */
+  clipped: Schema.optional(Schema.Number),
   files: Schema.optional(Schema.Array(FileChange)),
   /** Each command of a shell chain with its own kind, for per-command coloring. */
   parts: Schema.optional(Schema.Array(Schema.Struct({ kind: ActionKind, title: Schema.String }))),

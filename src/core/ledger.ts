@@ -29,8 +29,11 @@ export const LedgerEntry = Schema.Struct({
     provider: Schema.NullOr(Schema.String),
     origin: Schema.NullOr(Schema.String),
   }),
-  /** How the commit was tied to the session: its SHA in `git commit` output, or commit time. */
-  match: Schema.Literals(["sha", "time"]),
+  /**
+   * How the commit was tied to the session: its SHA in `git commit` output, the time of a
+   * `git commit` action, or (no commit action anywhere) a session that ended before the commit.
+   */
+  match: Schema.Literals(["sha", "time", "session"]),
   outputs: Schema.Literals(["included", "omitted"]),
   redactions: Schema.Number,
   /** History since the agent's previous commit in that thread (or the thread start), up to this commit. */
@@ -104,8 +107,7 @@ export function matchCommit(
 
 /**
  * History that produced a commit: everything after the previous commit action in the same thread
- * (or from the thread start) up to and including this commit action. Leading turns with no actions
- * (pure discussion) are dropped, and a segment that starts mid-turn gets that turn's prompt back.
+ * (or from the thread start) up to and including this commit action.
  */
 export function segmentFor(
   entries: ReadonlyArray<Entry>,
@@ -113,8 +115,52 @@ export function segmentFor(
   allCommitActions: ReadonlyArray<CommitAction>,
 ): Entry[] {
   const previous = allCommitActions.findLast((a) => a.index < commitAction.index);
-  const from = previous ? previous.index + 1 : 0;
-  const turns = splitTurns(entries.slice(from, commitAction.index + 1));
+  return segmentBetween(entries, previous ? previous.index + 1 : 0, commitAction.index + 1);
+}
+
+/**
+ * A session that ended between the previous commit and this one, for commits no `git commit`
+ * action made (an agent edits, a later step commits: CI, where the sandbox blocks `.git`).
+ * The latest such session wins.
+ */
+export function matchSession<S extends { readonly entries: ReadonlyArray<Entry> }>(
+  commit: LedgerCommit,
+  previousAt: string | null,
+  sessions: ReadonlyArray<S>,
+): S | null {
+  const at = Date.parse(commit.committedAt);
+  const after = previousAt ? Date.parse(previousAt) : -Infinity;
+  let best: { session: S; last: number } | null = null;
+  for (const session of sessions) {
+    const lastAt = session.entries.at(-1)?.at;
+    if (!lastAt) continue;
+    const last = Date.parse(lastAt);
+    if (last <= after || last > at + CLOCK_SKEW_MS) continue;
+    if (!best || last > best.last) best = { session, last };
+  }
+  // ponytail: one session per commit; several agents feeding one commit keep only the last.
+  return best?.session ?? null;
+}
+
+/** The part of a session `matchSession` ties to a commit: after its last commit action and the previous commit. */
+export function sessionSegment(
+  entries: ReadonlyArray<Entry>,
+  commitActions: ReadonlyArray<CommitAction>,
+  previousAt: string | null,
+): Entry[] {
+  const afterCommit = (commitActions.at(-1)?.index ?? -1) + 1;
+  const since = previousAt ? Date.parse(previousAt) : -Infinity;
+  const afterPrevious = entries.findIndex((e) => Date.parse(e.at) > since);
+  const from = Math.max(afterCommit, afterPrevious < 0 ? entries.length : afterPrevious);
+  return segmentBetween(entries, from, entries.length);
+}
+
+/**
+ * Entries `from`..`to` (exclusive). Leading turns with no actions (pure discussion) are dropped,
+ * and a segment that starts mid-turn gets that turn's prompt back.
+ */
+function segmentBetween(entries: ReadonlyArray<Entry>, from: number, to: number): Entry[] {
+  const turns = splitTurns(entries.slice(from, to));
   const firstWithActions = turns.findIndex((t) => t.entries.some((e) => e.type === "action"));
   const kept = turns.slice(Math.max(firstWithActions, 0));
   const out = kept.flatMap((t) => (t.prompt ? [t.prompt, ...t.entries] : [...t.entries]));
@@ -128,6 +174,30 @@ export function segmentFor(
 }
 
 export const ledgerPath = (sha: string) => `commits/${sha}.json`;
+
+const utf8 = new TextEncoder();
+const fromUtf8 = new TextDecoder();
+const isContinuation = (b: number | undefined) => b !== undefined && (b & 0xc0) === 0x80;
+
+/**
+ * Keeps the head and tail of each action output, `maxBytes` (UTF-8) in total, with a marker where
+ * the middle was cut; `clipped` records the bytes left out. 0 keeps outputs whole.
+ */
+export function clipOutputs(entries: ReadonlyArray<Entry>, maxBytes: number): Entry[] {
+  return entries.map((e) => {
+    if (maxBytes <= 0 || e.type !== "action" || !e.output) return e;
+    const bytes = utf8.encode(e.output);
+    if (bytes.length <= maxBytes) return e;
+    // Cut on character boundaries, never inside a multi-byte sequence.
+    let head = Math.floor(maxBytes / 2);
+    while (head > 0 && isContinuation(bytes[head])) head--;
+    let tail = bytes.length - (maxBytes - head);
+    while (tail < bytes.length && isContinuation(bytes[tail])) tail++;
+    const clipped = tail - head;
+    const output = `${fromUtf8.decode(bytes.subarray(0, head))}\n… [${clipped} bytes clipped] …\n${fromUtf8.decode(bytes.subarray(tail))}`;
+    return { ...e, output, clipped };
+  });
+}
 
 /** A commit range as the viewer shows it: each commit with its agent history, if any. */
 export const LedgerRange = Schema.Struct({

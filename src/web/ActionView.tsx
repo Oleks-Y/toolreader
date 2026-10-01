@@ -629,6 +629,9 @@ function ActionDetail({ a }: { a: Action }) {
           failed={a.status === "failed"}
         />
       )}
+      {a.clipped !== undefined && (
+        <div className="dim">output clipped: {a.clipped} bytes from the middle were left out</div>
+      )}
     </div>
   );
 }

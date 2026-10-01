@@ -1,7 +1,15 @@
 import { assert, describe, it } from "@effect/vitest";
 
 import type { Action, Entry } from "./domain.ts";
-import { findCommitActions, matchCommit, segmentFor, type LedgerCommit } from "./ledger.ts";
+import {
+  clipOutputs,
+  findCommitActions,
+  matchCommit,
+  matchSession,
+  segmentFor,
+  sessionSegment,
+  type LedgerCommit,
+} from "./ledger.ts";
 
 const action = (
   id: string,
@@ -125,5 +133,59 @@ describe("ledger", () => {
       segmentFor(talk, actions[1]!, actions).map((e) => e.id),
       ["q2", "w1", "c1"],
     );
+  });
+
+  it("ties a commit no session made to the session that ended between it and the previous commit", () => {
+    // CI: `codex exec` edits (the sandbox blocks .git), a later step commits.
+    const edits: Entry[] = [
+      user("p", "2026-01-01T10:00:00Z"),
+      action("w1", "2026-01-01T10:01:00Z", "sed -i x a.ts"),
+      action("w2", "2026-01-01T10:02:00Z", "npm test"),
+    ];
+    const older = { entries: [action("o", "2026-01-01T08:00:00Z", "sed -i o a.ts")] };
+    const latest = { entries: edits };
+    const at = commit("abc", "2026-01-01T10:05:00Z");
+    assert.strictEqual(matchSession(at, "2026-01-01T09:00:00Z", [older, latest]), latest);
+    assert.strictEqual(matchSession(at, null, [older]), older, "first commit: no lower bound");
+    assert.strictEqual(
+      matchSession(at, "2026-01-01T10:03:00Z", [latest]),
+      null,
+      "ended before the previous commit",
+    );
+    assert.strictEqual(
+      matchSession(commit("abc", "2026-01-01T10:01:30Z"), null, [latest]),
+      null,
+      "still running at commit time",
+    );
+    // Only what came after the previous commit and after the session's own last commit action.
+    const mixed: Entry[] = [...entries, action("w3", "2026-01-01T10:20:00Z", "sed -i z c.ts")];
+    assert.deepStrictEqual(
+      sessionSegment(mixed, findCommitActions(mixed), "2026-01-01T10:06:00Z").map((e) => e.id),
+      ["u2", "w3"],
+    );
+    assert.deepStrictEqual(
+      sessionSegment(edits, [], "2026-01-01T10:00:30Z").map((e) => e.id),
+      ["p", "w1", "w2"],
+    );
+  });
+
+  it("clips outputs to head and tail on character boundaries", () => {
+    const long = action(
+      "x",
+      "2026-01-01T10:00:00Z",
+      "cat log",
+      `${"a".repeat(10)}éé${"b".repeat(10)}`,
+    );
+    const [clipped] = clipOutputs([long], 12);
+    assert.deepStrictEqual(clipped, {
+      ...long,
+      output: "aaaaaa\n… [12 bytes clipped] …\nbbbbbb",
+      clipped: 12,
+    });
+    // Cuts never split the two-byte "é".
+    const [accents] = clipOutputs([{ ...long, output: "ééééé" }], 5);
+    assert.strictEqual(accents?.type === "action" && accents.output, "é\n… [6 bytes clipped] …\né");
+    assert.deepStrictEqual(clipOutputs([long], 0), [long], "0 keeps outputs whole");
+    assert.deepStrictEqual(clipOutputs([long], 100), [long], "short outputs stay");
   });
 });
