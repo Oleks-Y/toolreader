@@ -18,7 +18,8 @@ import { CODEX_ID_PREFIX } from "./CodexSessions.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 import { ThreadStore } from "./ThreadStore.ts";
 
-const DIRS = ["sessions", "archived_sessions"];
+/** Where Codex keeps rollout files, under its home. */
+export const ROLLOUT_DIRS = ["sessions", "archived_sessions"];
 const ROLLOUT = /(?:^|\/)rollout-[^/]*\.jsonl$/;
 
 export class CodexRollouts extends Context.Service<
@@ -74,7 +75,7 @@ export class CodexRollouts extends Context.Service<
       const list = Effect.gen(function* () {
         const owned = yield* store.codexThreadIds;
         const found: Array<{ file: string; archived: boolean }> = [];
-        for (const dir of DIRS) {
+        for (const dir of ROLLOUT_DIRS) {
           const root = path.join(config.codexHome, dir);
           const names = yield* fs
             .readDirectory(root, { recursive: true })

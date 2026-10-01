@@ -32,7 +32,7 @@ import {
   type LedgerCommitView,
   type LedgerRange,
 } from "../core/ledger.ts";
-import { CodexRollouts } from "./CodexRollouts.ts";
+import { CodexRollouts, ROLLOUT_DIRS } from "./CodexRollouts.ts";
 import { CODEX_ID_PREFIX, CodexSessions } from "./CodexSessions.ts";
 import { Labeler } from "./Labeler.ts";
 import { ServerConfig } from "./ServerConfig.ts";
@@ -290,12 +290,13 @@ export class Ledger extends Context.Service<
           .filter((l) => l.startsWith("worktree "))
           .map((l) => l.slice("worktree ".length));
         const hasT3 = yield* exists(config.dbPath);
-        const hasRollouts = yield* exists(path.join(config.codexHome, "sessions"));
+        const rolloutDirs = ROLLOUT_DIRS.map((dir) => path.join(config.codexHome, dir));
+        const hasRollouts = (yield* Effect.forEach(rolloutDirs, exists)).some(Boolean);
         if (source === "t3" && !hasT3)
           return yield* new LedgerFailed({ message: `No T3 database at ${config.dbPath}` });
         if (source === "codex-rollouts" && !hasRollouts)
           return yield* new LedgerFailed({
-            message: `No Codex sessions in ${path.join(config.codexHome, "sessions")}`,
+            message: `No Codex sessions in ${rolloutDirs.join(" or ")}`,
           });
 
         const sources: string[] = [];

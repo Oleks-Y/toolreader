@@ -104,11 +104,12 @@ const writeRollout = (
   cwd: string,
   items: ReadonlyArray<{ at: string; item: object }>,
   source: unknown = "exec",
+  folder = "sessions",
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const dir = path.join(codexHome, "sessions", "2026", "01", "01");
+    const dir = path.join(codexHome, folder, "2026", "01", "01");
     yield* fs.makeDirectory(dir, { recursive: true });
     const first = items[0]?.at ?? "2026-01-01T00:00:00.000Z";
     const line = (timestamp: string, type: string, payload: object) =>
@@ -814,6 +815,37 @@ describe("Ledger", () => {
           ledgerLayer({ dbPath: "/nonexistent/state.sqlite", codexHome: "/nonexistent" }),
         ),
       );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("reads a Codex home that holds only archived sessions", () =>
+    Effect.gen(function* () {
+      const { repo, commitFile } = yield* makeRepo;
+      const codexHome = yield* tempDir("toolreader-codex-home-");
+      yield* git(repo, ["switch", "-q", "-c", "feat/x"]);
+      const sha = yield* commitFile("a.ts", "a\n", "feat: a", "2026-01-01T10:02:30Z");
+      yield* writeRollout(
+        codexHome,
+        "old",
+        repo,
+        [
+          { at: "2026-01-01T10:01:00.000Z", item: userMessage("u1", "Add a") },
+          {
+            at: "2026-01-01T10:02:00.000Z",
+            item: command("c1", "git commit -m 'feat: a'", `[feat/x ${sha.slice(0, 7)}] feat: a\n`),
+          },
+        ],
+        "exec",
+        "archived_sessions",
+      );
+      yield* Effect.gen(function* () {
+        const ledger = yield* Ledger;
+        const named = yield* ledger.sync(repo, null, { source: "codex-rollouts" });
+        assert.deepStrictEqual(
+          named.added.map((a) => [a.commit.sha, a.match]),
+          [[sha, "sha"]],
+        );
+      }).pipe(Effect.provide(ledgerLayer({ dbPath: "/nonexistent/state.sqlite", codexHome })));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });
