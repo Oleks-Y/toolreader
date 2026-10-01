@@ -641,30 +641,40 @@ export class Ledger extends Context.Service<
             (yield* git(repo, ["rev-parse", "--git-path", "hooks/pre-push"])).trim(),
           );
           const current = (yield* exists(file)) ? yield* fs.readFileString(file) : null;
-          const ours = current?.includes(HOOK_MARKER) ?? false;
           const script = prePushHook(command);
+          // Ours means exactly what we write: a marked hook someone edited is theirs now.
+          const changed = current !== null && current !== script && current.includes(HOOK_MARKER);
+          const foreign = current !== null && current !== script && !changed;
+          if (changed)
+            return yield* new LedgerFailed({
+              message: `${file} has changed since toolreader wrote it; leaving it alone. Edit or remove it by hand.`,
+            });
           if (action === "uninstall") {
             if (current === null) return `No pre-push hook at ${file}.`;
-            if (!ours)
+            if (foreign)
               return yield* new LedgerFailed({
                 message: `${file} is not toolreader's hook; leaving it alone.`,
               });
             yield* fs.remove(file);
             return `Removed ${file}.`;
           }
-          if (current !== null && !ours)
+          if (foreign)
             return yield* new LedgerFailed({
               message: [
                 `${file} already exists and is not toolreader's; leaving it alone.`,
-                "To chain the ledger, add this to it (it reads the same stdin):",
-                script.slice(script.indexOf('[ "$1"'), script.lastIndexOf("exit 0")).trimEnd(),
+                "To chain the ledger, run this from it with the push's stdin (a copy, if your hook reads it too):",
+                // A subshell, so its `exit 0`s end only the ledger part.
+                `(\n${script
+                  .split("\n")
+                  .filter((l) => l && !l.startsWith("#"))
+                  .join("\n")}\n)`,
               ].join("\n"),
             });
           if (current === script) return `Already installed: ${file}.`;
           yield* fs.makeDirectory(path.dirname(file), { recursive: true });
           yield* fs.writeFileString(file, script);
           yield* fs.chmod(file, 0o755);
-          return `${current === null ? "Installed" : "Updated"} ${file}.`;
+          return `Installed ${file}.`;
         },
         Effect.catchTag("PlatformError", (e) =>
           Effect.fail(new LedgerFailed({ message: e.message })),

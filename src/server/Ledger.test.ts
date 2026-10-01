@@ -551,13 +551,16 @@ describe("Ledger", () => {
             `sync --repo ${repo} --range ${main}..${next} --push`,
           ]);
 
-          assert.strictEqual(yield* ledger.hook(repo, "uninstall", ""), `Removed ${hookFile}.`);
+          assert.strictEqual(
+            yield* ledger.hook(repo, "uninstall", `'${fake}'`),
+            `Removed ${hookFile}.`,
+          );
           yield* fs.writeFileString(hookFile, "#!/bin/sh\nexit 0\n");
           const refused = yield* Effect.flip(ledger.hook(repo, "install", `'${fake}'`));
           assert.include(refused.message, "not toolreader's");
           assert.include(refused.message, "--push");
           assert.strictEqual(yield* fs.readFileString(hookFile), "#!/bin/sh\nexit 0\n");
-          yield* Effect.flip(ledger.hook(repo, "uninstall", ""));
+          yield* Effect.flip(ledger.hook(repo, "uninstall", `'${fake}'`));
           assert.isTrue(yield* fs.exists(hookFile));
         }).pipe(
           Effect.provide(
@@ -784,6 +787,33 @@ describe("Ledger", () => {
         );
         assert.isTrue(yield* fs.exists(path.join(repo, ".git", "hooks", "pre-push")));
       }).pipe(Effect.provide(ledgerLayer({ dbPath: "/nonexistent/state.sqlite", codexHome })));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("never overwrites or removes a hook the user changed", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { repo } = yield* makeRepo;
+      const hookFile = path.join(repo, ".git", "hooks", "pre-push");
+      yield* Effect.gen(function* () {
+        const ledger = yield* Ledger;
+        yield* ledger.hook(repo, "install", "'/bin/toolreader'");
+        const script = yield* fs.readFileString(hookFile);
+        const edited = script.replace(/exit 0\n$/, "./check-before-push.sh || exit 1\nexit 0\n");
+        assert.notStrictEqual(edited, script);
+        yield* fs.writeFileString(hookFile, edited);
+
+        const reinstall = yield* Effect.flip(ledger.hook(repo, "install", "'/bin/toolreader'"));
+        assert.include(reinstall.message, "changed");
+        const uninstall = yield* Effect.flip(ledger.hook(repo, "uninstall", "'/bin/toolreader'"));
+        assert.include(uninstall.message, "changed");
+        assert.strictEqual(yield* fs.readFileString(hookFile), edited);
+      }).pipe(
+        Effect.provide(
+          ledgerLayer({ dbPath: "/nonexistent/state.sqlite", codexHome: "/nonexistent" }),
+        ),
+      );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });
