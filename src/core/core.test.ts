@@ -60,6 +60,12 @@ describe("core", () => {
       ["web:curl https://a.dev"],
     );
     assert.deepStrictEqual(titles("echo `date +%s` > stamp.txt"), ["edit:write stamp.txt"]);
+    // An escaped quote inside the substitution does not close it.
+    assert.deepStrictEqual(titles(`TOKEN=$(printf "a\\"b") && git push`), ["git:git push"]);
+    assert.deepStrictEqual(titles(`echo "$(printf ")")" > f.txt && git push`), [
+      "edit:write f.txt",
+      "git:git push",
+    ]);
     assert.deepStrictEqual(titles("command -v psql || brew install libpq"), [
       "read:which psql",
       "setup:brew install libpq",

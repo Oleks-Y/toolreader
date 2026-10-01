@@ -118,6 +118,13 @@ function tokenize(command: string): Token[] {
     } else if (c === '"') {
       i++;
       while (i < command.length && command[i] !== '"') {
+        if ((command[i] === "$" && command[i + 1] === "(") || command[i] === "`") {
+          // A substitution may hold its own quotes: `"$(printf ")")"`.
+          const end = substitutionEnd(command, i);
+          word += command.slice(i, end);
+          i = end;
+          continue;
+        }
         // POSIX: inside double quotes a backslash only escapes $ ` " \ and newline.
         if (command[i] === "\\" && /["\\$`\n]/.test(command[i + 1] ?? "")) i++;
         word += command[i];
@@ -158,18 +165,36 @@ function tokenize(command: string): Token[] {
 /** Index just past the `$(…)` or `` `…` `` starting at `start`, skipping quoted parens. */
 function substitutionEnd(command: string, start: number): number {
   if (command[start] === "`") {
-    const close = command.indexOf("`", start + 1);
-    return close < 0 ? command.length : close + 1;
+    for (let i = start + 1; i < command.length; i++) {
+      if (command[i] === "\\") i++;
+      else if (command[i] === "`") return i + 1;
+    }
+    return command.length;
   }
   let depth = 0;
   for (let i = start + 1; i < command.length; i++) {
     const c = command[i]!;
-    if (c === "'" || c === '"') {
-      const close = command.indexOf(c, i + 1);
+    if (c === "\\") i++;
+    else if (c === "'") {
+      const close = command.indexOf("'", i + 1);
       if (close < 0) return command.length;
       i = close;
-    } else if (c === "(") depth++;
+    } else if (c === '"') i = doubleQuoteEnd(command, i) - 1;
+    else if (c === "`") i = substitutionEnd(command, i) - 1;
+    else if (c === "(") depth++;
     else if (c === ")" && --depth === 0) return i + 1;
+  }
+  return command.length;
+}
+
+/** Index just past the double-quoted string opening at `start`: skips escapes and substitutions. */
+function doubleQuoteEnd(command: string, start: number): number {
+  for (let i = start + 1; i < command.length; i++) {
+    const c = command[i]!;
+    if (c === "\\") i++;
+    else if ((c === "$" && command[i + 1] === "(") || c === "`")
+      i = substitutionEnd(command, i) - 1;
+    else if (c === '"') return i + 1;
   }
   return command.length;
 }
