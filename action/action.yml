@@ -1,0 +1,51 @@
+name: toolreader ledger
+description: Record agent history per commit on the agent-ledger branch, or build a static page of a range.
+inputs:
+  command:
+    description: "`sync` writes ledger entries for the range; `site` writes a static page of it."
+    required: true
+  repo:
+    description: Repository path.
+    default: .
+  range:
+    description: "Commits, as `git log` takes them (e.g. `base..head`). Default: <default branch>..HEAD."
+    default: ""
+  codex-home:
+    description: "sync: Codex home whose rollouts to read. Default: $CODEX_HOME or ~/.codex."
+    default: ""
+  max-output:
+    description: "sync: bytes kept per action output (0 keeps it whole). Default: the CLI's (8192)."
+    default: ""
+  push:
+    description: "sync: push agent-ledger to origin (needs `contents: write`)."
+    default: "false"
+  out:
+    description: "site: directory to write index.html into."
+    default: ledger-site
+  args:
+    description: "Extra flags for the command, e.g. `--match-sessions` or `--session <id>`."
+    default: ""
+  package:
+    description: "toolreader to install: a .tgz from `npm pack`, or a checkout of the toolreader repo (built here). Default: the checkout this action is in."
+    default: ""
+  node-version:
+    description: Node.js version (toolreader needs 24.13 or later).
+    default: "24"
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v5
+      with:
+        node-version: ${{ inputs.node-version }}
+    - shell: bash
+      run: '"$GITHUB_ACTION_PATH/run.sh"'
+      env:
+        INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_RANGE: ${{ inputs.range }}
+        INPUT_CODEX_HOME: ${{ inputs.codex-home }}
+        INPUT_MAX_OUTPUT: ${{ inputs.max-output }}
+        INPUT_PUSH: ${{ inputs.push }}
+        INPUT_OUT: ${{ inputs.out }}
+        INPUT_ARGS: ${{ inputs.args }}
+        INPUT_PACKAGE: ${{ inputs.package }}
