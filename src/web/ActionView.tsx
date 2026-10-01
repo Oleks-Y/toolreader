@@ -145,17 +145,23 @@ function proofLink(view: ThreadView, scope: ProofScope) {
 }
 
 /**
- * A live thread (`threadId`, fetched and polled) or a proof-of-work file (`artifact`, read-only:
- * no polling, labeling or export).
+ * A live thread (`threadId`, fetched and polled), a proof-of-work file (`artifact`), or a given
+ * `view` (ledger entries). Without `threadId` it is read-only: no polling, labeling or export.
+ * `embedded` renders only the turn tree, for pages that show several histories.
  */
 export function ActionView({
   threadId,
   artifact,
+  view: givenView,
+  embedded = false,
 }: {
   threadId?: string;
   artifact?: ProofArtifact;
+  view?: ThreadView;
+  embedded?: boolean;
 }) {
-  const [view, setView] = useState<ThreadView | null>(artifact?.view ?? null);
+  const readOnly = threadId === undefined;
+  const [view, setView] = useState<ThreadView | null>(artifact?.view ?? givenView ?? null);
   const [error, setError] = useState<string | null>(null);
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
   const [range, setRange] = useState<Range | null>(null);
@@ -175,7 +181,7 @@ export function ActionView({
   useEffect(() => void load(), [load]);
   useEffect(() => localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)), [prefs]);
   useEffect(() => {
-    if (view) document.title = `${view.thread.title} · toolreader`;
+    if (view && !embedded) document.title = `${view.thread.title} · toolreader`;
   }, [view?.thread.title]);
 
   // ponytail: polls a cheap head marker while running; switch to a push stream if this ever matters.
@@ -282,6 +288,30 @@ export function ActionView({
   );
   const set = (patch: Partial<Prefs>) => setPrefs((p) => ({ ...p, ...patch }));
   const ctx: Ctx = { labels: view.labels, showLabels: prefs.labels, open, highlight };
+  const tree = (
+    <div className="tree">
+      {turns.map((turn, i) => (
+        <TurnBlock
+          key={turn.id}
+          turn={turn}
+          prevDay={i > 0 ? fmtDay(turns[i - 1]!.stats.start) : ""}
+          ctx={ctx}
+          labeling={labeling[turn.id]}
+          onLabel={readOnly ? undefined : () => labelTurn(turn)}
+          exportLink={
+            readOnly
+              ? undefined
+              : proofLink(view, {
+                  turns: { from: turn.index + 1, to: turn.index + 1 },
+                  range: null,
+                })
+          }
+        />
+      ))}
+      {turns.length === 0 && <p className="dim">No entries.</p>}
+    </div>
+  );
+  if (embedded) return tree;
 
   return (
     <main className="viewer">
@@ -372,27 +402,7 @@ export function ActionView({
         Drag across the lanes to filter by time · double-click to clear · click a dot to jump to it
       </p>
 
-      <div className="tree">
-        {turns.map((turn, i) => (
-          <TurnBlock
-            key={turn.id}
-            turn={turn}
-            prevDay={i > 0 ? fmtDay(turns[i - 1]!.stats.start) : ""}
-            ctx={ctx}
-            labeling={labeling[turn.id]}
-            onLabel={artifact ? undefined : () => labelTurn(turn)}
-            exportLink={
-              artifact
-                ? undefined
-                : proofLink(view, {
-                    turns: { from: turn.index + 1, to: turn.index + 1 },
-                    range: null,
-                  })
-            }
-          />
-        ))}
-        {turns.length === 0 && <p className="dim">No entries.</p>}
-      </div>
+      {tree}
     </main>
   );
 }

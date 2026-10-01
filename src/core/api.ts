@@ -6,6 +6,7 @@ import * as HttpApiGroup from "effect/unstable/httpapi/HttpApiGroup";
 import * as HttpApiSchema from "effect/unstable/httpapi/HttpApiSchema";
 
 import { LabelItem, Labels, ThreadHead, ThreadSummary, ThreadView } from "./domain.ts";
+import { LedgerRange } from "./ledger.ts";
 
 export class ThreadNotFound extends Schema.TaggedErrorClass<ThreadNotFound>()("ThreadNotFound", {
   threadId: Schema.String,
@@ -74,4 +75,20 @@ export class LabelsApi extends HttpApiGroup.make("labels")
   )
   .prefix("/api") {}
 
-export class ToolreaderApi extends HttpApi.make("toolreader").add(ThreadsApi).add(LabelsApi) {}
+export class LedgerApi extends HttpApiGroup.make("ledger")
+  .add(
+    HttpApiEndpoint.get("repos", "/ledger/repos", {
+      success: Schema.Array(Schema.Struct({ path: Schema.String, title: Schema.String })),
+    }),
+    HttpApiEndpoint.get("range", "/ledger/range", {
+      query: { repo: Schema.String, range: Schema.optional(Schema.String) },
+      success: LedgerRange,
+      error: LedgerFailed.pipe(HttpApiSchema.status(400)),
+    }),
+  )
+  .prefix("/api") {}
+
+export class ToolreaderApi extends HttpApi.make("toolreader")
+  .add(ThreadsApi)
+  .add(LabelsApi)
+  .add(LedgerApi) {}

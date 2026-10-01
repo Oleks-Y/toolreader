@@ -12,6 +12,7 @@ import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 import { InvalidProofScope, ToolreaderApi } from "../core/api.ts";
 import { CODEX_ID_PREFIX, CodexSessions } from "./CodexSessions.ts";
 import { Labeler } from "./Labeler.ts";
+import { Ledger } from "./Ledger.ts";
 import { parseTurns, Proofs } from "./Proofs.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 import { ThreadStore } from "./ThreadStore.ts";
@@ -109,8 +110,22 @@ const StaticRoute = HttpRouter.add(
   }).pipe(Effect.orDie),
 );
 
+const LedgerHandlers = HttpApiBuilder.group(
+  ToolreaderApi,
+  "ledger",
+  Effect.fn(function* (handlers) {
+    const ledger = yield* Ledger;
+    const store = yield* ThreadStore;
+    return handlers
+      .handle("repos", () =>
+        store.projects.pipe(Effect.map((ps) => ps.map((p) => ({ path: p.root, title: p.title })))),
+      )
+      .handle("range", ({ query }) => ledger.range(query.repo, query.range ?? null));
+  }),
+);
+
 const ApiRoutes = HttpApiBuilder.layer(ToolreaderApi).pipe(
-  Layer.provide([ThreadsHandlers, LabelsHandlers]),
+  Layer.provide([ThreadsHandlers, LabelsHandlers, LedgerHandlers]),
 );
 
 export const HttpServerLive = Layer.unwrap(
