@@ -51,6 +51,15 @@ Read-only viewer for what coding agents _did_ in T3 Code threads. Actions come f
 - Outputs are included by default (they double the size: a typical turn is ~19 KB, ~6 KB in git) and can be dropped with `--no-outputs`. Every free-text field is redacted, and the home directory becomes `~`. Redaction errs toward over-redacting.
 - It is a faithful record, not tamper-proof evidence.
 
+## Commit ledger
+
+- Goal: see what the agent did for each commit, e.g. for a PR's `main..HEAD`.
+- Entries live on a separate `agent-ledger` branch with its own history, never in the code history: `commits/<sha>.json` (`LedgerEntry`, `src/core/ledger.ts`) and `patch-ids.json` (patch-id → sha). Sync is manual (`vp run ledger -- sync`), and pushing the branch shares it.
+- Matching a commit to a session in the repo's worktrees: a SHA printed by `git commit` (`[branch abc1234] subject`) wins; otherwise the latest successful `git commit` action that started up to 10 minutes before the commit time. Commits nobody matches are listed as "no agent history".
+- An entry holds the history since that thread's previous commit action (or its start), up to the commit action. Leading discussion-only turns are dropped; a segment that starts mid-turn keeps the turn's prompt.
+- After a rebase or amend that keeps the diff, `git patch-id --stable` finds the entry again (shown as "found by patch-id").
+- Outputs and redaction work as for proof-of-work artifacts.
+
 ## Codex labels (on demand)
 
 - A "Label with Codex" button on each turn sends that turn's non-trivial actions and fold groups to `codex exec --output-schema`, run read-only and ephemeral.

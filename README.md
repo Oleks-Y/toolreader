@@ -26,6 +26,16 @@ vp run export -- <threadId> [--turns 3-5] [--from ISO --to ISO] [--no-outputs] [
 
 Secrets (API keys, tokens, `Authorization` headers, private keys, `*_PASSWORD=`/`*_TOKEN=` values, URL credentials) are replaced with `[redacted]` before writing.
 
+Commit ledger: per-commit agent history, kept on a separate `agent-ledger` branch (`commits/<sha>.json` + `patch-ids.json`) so the code branch stays clean.
+
+```bash
+vp run ledger -- sync [--repo .] [--range main..HEAD] [--no-outputs]   # add entries for agent commits in the range
+git push origin agent-ledger                                           # share it
+vp run ledger -- show [--repo .] [--range main..HEAD]                  # list commits and their entries
+```
+
+`#/ledger?repo=<path>&range=main..HEAD` shows each commit of the range with the actions that produced it. Entries are redacted like proof-of-work exports and found again by patch-id after a rebase or amend.
+
 Env: `PORT` (4777), `T3_DB` (database path), `CODEX_BIN` (`codex`), `TOOLREADER_LABELS`.
 
 Stack and conventions are copied from t3code: Vite+ (`vp`), Effect 4, `tsgo` + Effect language service, oxlint/oxfmt.

@@ -24,10 +24,12 @@ Setup, libraries and conventions are copied from `~/proj/t3code`. When in doubt,
   - `CodexSessions.ts` lists and reads Codex sessions that ran outside T3, through a long-lived `codex app-server` process. Sessions T3 owns (its resume cursors) and subagent threads are skipped.
   - `NodeSqliteClient.ts` is copied from t3code. Re-copy it rather than editing it.
   - `Proofs.ts` builds proof-of-work artifacts (`core/proof.ts`: schema, scope selection, redaction); `export.ts` is the CLI and `app.ts` the service wiring shared with `bin.ts`.
+  - `Ledger.ts` syncs per-commit history onto the `agent-ledger` branch with git plumbing only (temp index, `commit-tree`, `update-ref` with the old value; never touches HEAD or the working tree) and reads ranges back. Matching and segmenting are pure, in `core/ledger.ts`. `ledgerCli.ts` is the CLI. Sessions are tied to a repo by `ThreadSummary.worktree`; it waits on `CodexSessions.ready` so Codex sessions are listed first.
 - `src/codex-app-server`: t3code's Codex app-server client, copied. Its `README.md` lists the two local edits to re-apply when re-copying.
 - `src/web`: React UI. Calls the server only through the typed client in `client.ts`.
   - `code.tsx`: syntax highlighting for expanded bodies, as t3code does it: Shiki through `@pierre/diffs`' shared highlighter, `FileDiff` for file diffs, `react-markdown` for notes. `codeLang.ts` picks the language (pure, tested).
   - `FileDiff` virtualizes against the window scroll: never put it inside a scroll box, or it renders blank.
+  - `LedgerPage.tsx` (`#/ledger`) renders each commit's entry through `ActionView` with `view` + `embedded` (read-only: no labeling or export).
 - `oxlint-plugin`: custom lint rules copied from t3code.
 - `scripts/themes.py` generates `src/web/themes.css` (six themes, one hue per action kind) and fails if any two kinds get too close in color. Edit the script, never the CSS; re-run it with `python3 scripts/themes.py`.
 
