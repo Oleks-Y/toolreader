@@ -205,7 +205,7 @@ export function clipOutputs(entries: ReadonlyArray<Entry>, maxBytes: number): En
 }
 
 /**
- * The entry for `commit`: the segment's entries, the thread's title and the labels redacted like
+ * The entry for `commit`: the segment's entries, the commit subject, the thread's title and the labels redacted like
  * every other free-text field (the title is the first prompt line), and outputs clipped. Labels
  * are kept for the segment's entries and fold groups.
  */
@@ -232,7 +232,7 @@ export function buildEntry(input: {
   );
   return {
     formatVersion: LEDGER_FORMAT_VERSION,
-    commit: input.commit,
+    commit: { ...input.commit, subject: clean(input.commit.subject) },
     thread,
     match: input.match,
     outputs: input.outputs ? "included" : "omitted",

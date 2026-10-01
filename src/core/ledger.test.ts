@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 
 import type { Action, Entry } from "./domain.ts";
 import {
+  buildEntry,
   clipOutputs,
   findCommitActions,
   matchCommit,
@@ -11,6 +12,7 @@ import {
   sessionSegment,
   type LedgerCommit,
 } from "./ledger.ts";
+import { publicRange } from "./ledgerSite.ts";
 
 const action = (
   id: string,
@@ -202,5 +204,41 @@ describe("ledger", () => {
     assert.strictEqual(accents?.type === "action" && accents.output, "é\n… [6 bytes clipped] …\né");
     assert.deepStrictEqual(clipOutputs([long], 0), [long], "0 keeps outputs whole");
     assert.deepStrictEqual(clipOutputs([long], 100), [long], "short outputs stay");
+  });
+
+  it("publishes a range by its remote's owner/name, with commit subjects redacted", () => {
+    const commit: LedgerCommit = {
+      sha: "a".repeat(40),
+      subject: "fix: API_TOKEN=supersecret in /home/me/proj",
+      committedAt: "2026-01-01T10:00:00Z",
+      patchId: null,
+    };
+    const entry = buildEntry({
+      commit,
+      thread: { id: "t", title: "Fix it", source: "codex", provider: null, origin: null },
+      match: "sha",
+      segment: [action("c1", "2026-01-01T09:59:00Z", "git commit -m fix")],
+      labels: {},
+      outputs: true,
+      maxOutput: 0,
+      home: "/home/me",
+    });
+    assert.strictEqual(entry.commit.subject, "fix: API_TOKEN=[redacted] in ~/proj");
+    const view = publicRange(
+      {
+        repo: "/home/me/private-client/backend",
+        range: "main..HEAD",
+        remoteUrl: "https://github.com/acme/backend",
+        commits: [{ commit, entry: { ...entry, commit }, matchedBy: "sha" }],
+      },
+      "/home/me",
+    );
+    assert.strictEqual(view.repo, "acme/backend");
+    assert.strictEqual(view.commits[0]!.commit.subject, "fix: API_TOKEN=[redacted] in ~/proj");
+    assert.strictEqual(
+      view.commits[0]!.entry!.commit.subject,
+      "fix: API_TOKEN=[redacted] in ~/proj",
+    );
+    assert.notInclude(JSON.stringify(view), "/home/me");
   });
 });

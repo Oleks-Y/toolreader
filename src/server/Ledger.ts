@@ -32,7 +32,7 @@ import {
   type LedgerCommitView,
   type LedgerRange,
 } from "../core/ledger.ts";
-import { ledgerSiteHtml } from "../core/ledgerSite.ts";
+import { ledgerSiteHtml, publicRange } from "../core/ledgerSite.ts";
 import { CodexRollouts, ROLLOUT_DIRS } from "./CodexRollouts.ts";
 import { CODEX_ID_PREFIX, CodexSessions } from "./CodexSessions.ts";
 import { Labeler } from "./Labeler.ts";
@@ -125,7 +125,7 @@ export class Ledger extends Context.Service<
       repo: string,
       range: string | null,
     ) => Effect.Effect<LedgerRange, LedgerFailed>;
-    /** Writes the static page of a range (`ledger site`) to `<out>/index.html`. */
+    /** Writes the static page of a range (`ledger site`, `publicRange`) to `<out>/index.html`. */
     readonly site: (
       repo: string,
       range: string | null,
@@ -691,7 +691,7 @@ export class Ledger extends Context.Service<
 
       const site = Effect.fn("Ledger.site")(
         function* (repo: string, rangeArg: string | null, out: string) {
-          const view = yield* range(repo, rangeArg);
+          const view = publicRange(yield* range(repo, rangeArg), config.home);
           const templateFile = path.join(config.distDir, "site", "index.html");
           const template = (yield* exists(templateFile))
             ? yield* fs.readFileString(templateFile)

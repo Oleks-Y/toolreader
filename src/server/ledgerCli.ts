@@ -13,8 +13,11 @@ import * as Path from "effect/Path";
 import { Argument, Command, Flag } from "effect/unstable/cli";
 
 import { LEDGER_BRANCH } from "../core/ledger.ts";
+import { publicRange } from "../core/ledgerSite.ts";
+import { redactText } from "../core/proof.ts";
 import { LedgerApp } from "./app.ts";
 import { Ledger, LEDGER_SOURCES, SYNC_DEFAULTS } from "./Ledger.ts";
+import { ServerConfig } from "./ServerConfig.ts";
 
 const repo = Flag.string("repo").pipe(
   Flag.withDescription("Repository (any path inside it)"),
@@ -27,6 +30,8 @@ const range = Flag.string("range").pipe(
   Flag.optional,
 );
 const offline = LedgerApp({ appServer: false, codexHome: null });
+/** Commit subjects come straight from git; CI logs are as public as the page. */
+const subject = (s: string) => redactText(s).text;
 
 const sync = Command.make(
   "sync",
@@ -99,16 +104,18 @@ const sync = Command.make(
     );
     for (const a of result.added) {
       yield* Console.log(
-        `  + ${a.commit.sha.slice(0, 8)} ${a.commit.subject}  ← ${a.thread} (${a.actions} actions, by ${a.match})`,
+        `  + ${a.commit.sha.slice(0, 8)} ${subject(a.commit.subject)}  ← ${a.thread} (${a.actions} actions, by ${a.match})`,
       );
     }
     for (const { commit: c, sessions } of result.ambiguous) {
       yield* Console.log(
-        `  ? ${c.sha.slice(0, 8)} ${c.subject}  (ambiguous: ${sessions.join(", ")}; pick one with --session)`,
+        `  ? ${c.sha.slice(0, 8)} ${subject(c.subject)}  (ambiguous: ${sessions.join(", ")}; pick one with --session)`,
       );
     }
     for (const c of result.unmatched) {
-      yield* Console.log(`  · ${c.sha.slice(0, 8)} ${c.subject}  (no agent history found)`);
+      yield* Console.log(
+        `  · ${c.sha.slice(0, 8)} ${subject(c.subject)}  (no agent history found)`,
+      );
     }
     if (result.pushed) yield* Console.log(`Pushed ${LEDGER_BRANCH} ${result.pushed.slice(0, 8)}`);
     else if (!push && result.added.length > 0)
@@ -120,9 +127,12 @@ const show = Command.make(
   "show",
   { repo, range },
   Effect.fn(function* ({ repo, range }) {
-    const view = yield* Effect.flatMap(Ledger, (ledger) =>
-      ledger.range(repo, Option.getOrNull(range)),
-    ).pipe(Effect.provide(offline));
+    // Its output goes to CI logs and job summaries: print the public view.
+    const view = yield* Effect.gen(function* () {
+      const { home } = yield* ServerConfig;
+      const ledger = yield* Ledger;
+      return publicRange(yield* ledger.range(repo, Option.getOrNull(range)), home);
+    }).pipe(Effect.provide(offline));
     yield* Console.log(`${view.repo} ${view.range}`);
     for (const c of view.commits) {
       const e = c.entry;

@@ -20,6 +20,7 @@ import * as Schema from "effect/Schema";
 
 const decodeEntry = Schema.decodeUnknownSync(Schema.fromJsonString(LedgerEntry));
 const decodeRange = Schema.decodeUnknownSync(Schema.fromJsonString(LedgerRange));
+const encodeRange = Schema.encodeSync(Schema.fromJsonString(LedgerRange));
 
 /** Runs git with fixed identity and dates, so commits line up with the fake sessions' actions. */
 const git = (repo: string, args: ReadonlyArray<string>, date?: string) =>
@@ -58,6 +59,28 @@ const gitRun = (repo: string, args: ReadonlyArray<string>, env: Record<string, s
       { concurrency: "unbounded" },
     );
     return { out: out.trim(), err, code: Number(code) };
+  }).pipe(Effect.scoped);
+
+/** Runs the toolreader CLI from source, as the hook and the action do. */
+const runCli = (args: ReadonlyArray<string>, env: Record<string, string>) =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const handle = yield* spawner.spawn(
+      ChildProcess.make(process.execPath, [path.join(import.meta.dirname, "bin.ts"), ...args], {
+        env,
+        extendEnv: true,
+      }),
+    );
+    const [out, err, code] = yield* Effect.all(
+      [
+        handle.stdout.pipe(Stream.decodeText(), Stream.mkString),
+        handle.stderr.pipe(Stream.decodeText(), Stream.mkString),
+        handle.exitCode,
+      ],
+      { concurrency: "unbounded" },
+    );
+    return { out, err, code: Number(code) };
   }).pipe(Effect.scoped);
 
 const tempDir = (prefix: string) =>
@@ -615,7 +638,7 @@ describe("Ledger", () => {
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it.live("writes a static page with the range inlined, as redacted as the ledger", () =>
+  it.live("publishes a range with every free-text field redacted and no local paths", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -624,7 +647,13 @@ describe("Ledger", () => {
       const distDir = yield* tempDir("toolreader-dist-");
       const out = path.join(yield* tempDir("toolreader-site-"), "pr", "7");
       yield* git(repo, ["switch", "-q", "-c", "feat/x"]);
-      const sha = yield* commitFile("a.ts", "a\n", "feat: a", "2026-01-01T10:02:30Z");
+      const sha = yield* commitFile(
+        "a.ts",
+        "a\n",
+        "feat: a with API_TOKEN=subjectsecret",
+        "2026-01-01T10:02:30Z",
+      );
+      yield* commitFile("b.ts", "b\n", "fix: API_TOKEN=humansecret", "2026-01-01T11:00:00Z");
       yield* writeRollout(codexHome, "s1", repo, [
         {
           at: "2026-01-01T10:00:00.000Z",
@@ -649,7 +678,9 @@ describe("Ledger", () => {
         const { file, view } = yield* ledger.site(repo, null, out);
         assert.strictEqual(file, path.join(out, "index.html"));
         const html = yield* fs.readFileString(file);
-        assert.notInclude(html, "supersecret");
+        for (const secret of ["supersecret", "subjectsecret", "humansecret"])
+          assert.notInclude(html, secret);
+        assert.notInclude(html, repo, "no absolute repo path");
         assert.notInclude(html, "</script> in text", "data can't close its script element");
         // One data element, before the app script that reads it.
         const match =
@@ -658,10 +689,28 @@ describe("Ledger", () => {
           );
         assert.isNotNull(match);
         const inlined = decodeRange(match![1]!);
-        assert.deepStrictEqual(inlined, view);
+        assert.deepStrictEqual(inlined, decodeRange(encodeRange(view)));
         assert.strictEqual(inlined.range, "main..HEAD");
         const entry = inlined.commits.find((c) => c.commit.sha === sha)!.entry!;
         assert.include(entry.thread.title, "API_TOKEN=[redacted] and keep </script> in text");
+        assert.strictEqual(entry.commit.subject, "feat: a with API_TOKEN=[redacted]");
+        assert.strictEqual(inlined.repo, path.basename(repo));
+        assert.deepStrictEqual(
+          inlined.commits.map((c) => c.commit.subject),
+          ["feat: a with API_TOKEN=[redacted]", "fix: API_TOKEN=[redacted]"],
+        );
+
+        // `ledger show` (the action's job summary) prints the same public view.
+        const show = yield* runCli(["ledger", "show", "--repo", repo], {
+          T3_DB: "/nonexistent/state.sqlite",
+          CODEX_HOME: codexHome,
+        });
+        assert.strictEqual(show.code, 0, show.err);
+        for (const secret of ["supersecret", "subjectsecret", "humansecret"])
+          assert.notInclude(show.out, secret);
+        assert.notInclude(show.out, repo);
+        assert.include(show.out, `${path.basename(repo)} main..HEAD`);
+        assert.include(show.out, "fix: API_TOKEN=[redacted]");
       }).pipe(
         Effect.provide(ledgerLayer({ dbPath: "/nonexistent/state.sqlite", codexHome, distDir })),
       );
