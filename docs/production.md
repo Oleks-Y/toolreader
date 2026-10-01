@@ -16,8 +16,19 @@ that branch. Nothing has to stay up.
 - `pre-push` rather than `post-commit`: it runs once per push, sees the whole pushed range, and pushes `agent-ledger` along with the code.
 - `--push` fetches `agent-ledger`, rebuilds the ledger commit on top of the remote tip and retries on a non-fast-forward. Entries are separate files, so concurrent CI jobs never conflict.
 - CI needs `contents: write` to push the ledger branch.
-- In CI the T3 database is absent and `codex app-server` is not needed: `ledger sync --source codex-rollouts --codex-home "$CODEX_HOME" --push` reads the job's rollout files.
-- Codex's `workspace-write` sandbox blocks writes to `.git`, so `git commit` fails inside `codex exec`. The usual shape is: the agent edits, a later workflow step commits. That commit has no `git commit` action in any session, so it is matched as `session`: the session in the workspace whose last activity falls between the previous commit and this one, with its history since the previous commit. SHA and time matches still win; when several sessions qualify, the latest one is used.
+- In CI the T3 database is absent and `codex app-server` is not needed; the job reads its own rollout files.
+- Codex's `workspace-write` sandbox blocks writes to `.git`, so `git commit` fails inside `codex exec`. The usual shape is: the agent edits, a later workflow step commits. That commit has no `git commit` action in any session, so nothing ties it to one by default. Two ways to tie it:
+  - `--session <id>` (repeatable) names the session: the most precise, when the job knows the id `codex exec` printed.
+  - `--match-sessions` takes the one session that edited files in this workspace and ended between the previous commit and this one. If several did, the commit gets no entry and is reported as ambiguous. It looks only at the given `--codex-home`, so it is safe with a job-local `CODEX_HOME` (never point it at a shared one).
+  - SHA and time matches always win over both.
+
+```bash
+export CODEX_HOME="$RUNNER_TEMP/codex"   # job-local: only this job's sessions
+codex exec -s workspace-write "…"
+git commit -am "…"                         # the step the sandbox wouldn't allow
+toolreader ledger sync --source codex-rollouts --codex-home "$CODEX_HOME" \
+  --range "$BASE..HEAD" --match-sessions --push
+```
 
 ## Storage
 

@@ -35,15 +35,15 @@ vp run ledger -- show [--repo .] [--range main..HEAD]                  # list co
 vp run ledger -- hook install [--repo .]                               # pre-push hook: sync what you push, --push
 ```
 
-`sync` options: `--source auto|t3|codex-app-server|codex-rollouts` (`auto`: T3 if its database exists, plus Codex rollout files), `--codex-home DIR` (default `$CODEX_HOME` or `~/.codex`), `--max-output BYTES` (per output, head and tail; default 8192, `0` keeps it), `--push` (build on origin's `agent-ledger` and push, retrying if another push wins).
+`sync` options: `--source auto|t3|codex-app-server|codex-rollouts` (`auto`: T3 if its database exists, plus Codex rollout files), `--codex-home DIR` (default `$CODEX_HOME` or `~/.codex`), `--max-output BYTES` (per output, head and tail; default 8192, `0` keeps it), `--push` (build on origin's `agent-ledger` and push, retrying if another push wins), `--session ID` / `--match-sessions` (for commits a later step made; see below).
 
 Headless, e.g. in CI after `codex exec`, with no T3 and no app-server:
 
 ```bash
-node src/server/ledgerCli.ts sync --source codex-rollouts --codex-home "$CODEX_HOME" --range "$BASE..HEAD" --push
+node src/server/ledgerCli.ts sync --source codex-rollouts --codex-home "$CODEX_HOME" --range "$BASE..HEAD" --match-sessions --push
 ```
 
-A commit a later step made (Codex's sandbox blocks `git commit`) is tied to the session that ended just before it ("matched by session").
+A commit a later step made (Codex's sandbox blocks `git commit`) has no session by default. `--session ID` names it; `--match-sessions` takes the one session that edited this worktree and ended before the commit, and reports the commit as ambiguous if several did. Use `--match-sessions` only with a `CODEX_HOME` holding just that job's sessions.
 
 `#/ledger?repo=<path>&range=main..HEAD` shows each commit of the range with the actions that produced it. Entries are redacted like proof-of-work exports and found again by patch-id after a rebase or amend.
 
