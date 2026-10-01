@@ -1,0 +1,1364 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent action viewer: style mocks</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --panel: #161920;
+        --panel2: #1c2029;
+        --line: #2a2f3a;
+        --fg: #d7dae0;
+        --dim: #8a909c;
+        --faint: #5c6270;
+        --read: #7aa2f7;
+        --edit: #e0af68;
+        --run: #9ece6a;
+        --ext: #bb9af7;
+        --fail: #f7768e;
+        --ok: #9ece6a;
+        --mono: ui-monospace, "SF Mono", Menlo, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font:
+          14px/1.5 -apple-system,
+          system-ui,
+          sans-serif;
+      }
+      main {
+        max-width: 1900px;
+        margin: 0 auto;
+        padding: 24px 28px 60px;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0 0 4px;
+      }
+      h2 {
+        font-size: 16px;
+        margin: 0;
+      }
+      p {
+        margin: 6px 0;
+        color: var(--dim);
+        max-width: 980px;
+      }
+      code,
+      .mono {
+        font-family: var(--mono);
+        font-size: 12.5px;
+      }
+      .meta {
+        color: var(--dim);
+        font-size: 13px;
+      }
+      table.rules {
+        border-collapse: collapse;
+        margin: 12px 0 22px;
+        font-size: 13px;
+      }
+      table.rules td {
+        border-top: 1px solid var(--line);
+        padding: 5px 14px 5px 0;
+        vertical-align: top;
+      }
+      table.rules td:first-child {
+        color: var(--dim);
+        white-space: nowrap;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(640px, 1fr));
+        gap: 18px;
+        overflow-x: auto;
+      }
+      .opt {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .opt > header {
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        gap: 12px;
+        align-items: baseline;
+      }
+      .letter {
+        font: 700 18px var(--mono);
+        color: var(--bg);
+        background: var(--fg);
+        border-radius: 4px;
+        padding: 0 8px;
+      }
+      .opt > header p {
+        margin: 0;
+        font-size: 12.5px;
+      }
+      .body {
+        padding: 10px 0;
+        overflow: auto;
+        max-height: 760px;
+      }
+      .threadbar {
+        padding: 4px 16px 10px;
+        font-size: 12.5px;
+        color: var(--dim);
+        border-bottom: 1px dashed var(--line);
+        margin-bottom: 6px;
+      }
+      .threadbar b {
+        color: var(--fg);
+        font-weight: 600;
+      }
+
+      /* shared chips */
+      .k {
+        display: inline-block;
+        width: 18px;
+        text-align: center;
+        font-family: var(--mono);
+      }
+      .k.read {
+        color: var(--read);
+      }
+      .k.edit {
+        color: var(--edit);
+      }
+      .k.run {
+        color: var(--run);
+      }
+      .k.fail {
+        color: var(--fail);
+      }
+      .k.ext {
+        color: var(--ext);
+      }
+      .add {
+        color: var(--ok);
+      }
+      .del {
+        color: var(--fail);
+      }
+      .new {
+        color: var(--edit);
+        font-size: 11px;
+        border: 1px solid var(--edit);
+        border-radius: 3px;
+        padding: 0 4px;
+      }
+      .exit {
+        color: var(--fail);
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+      .why {
+        color: var(--dim);
+        font-style: italic;
+      }
+      .path {
+        font-family: var(--mono);
+        font-size: 12.5px;
+      }
+      .path .dir {
+        color: var(--faint);
+      }
+
+      /* A: ledger */
+      details {
+        border: 0;
+      }
+      summary {
+        list-style: none;
+        cursor: pointer;
+      }
+      summary::-webkit-details-marker {
+        display: none;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 62px 20px 1fr auto;
+        gap: 8px;
+        padding: 3px 16px;
+        align-items: baseline;
+      }
+      .row:hover,
+      details[open] > summary.row {
+        background: var(--panel2);
+      }
+      .row .t {
+        color: var(--faint);
+        font: 12px var(--mono);
+      }
+      .row .r {
+        font: 12px var(--mono);
+        color: var(--dim);
+        white-space: nowrap;
+      }
+      .row.fail .main {
+        color: var(--fail);
+      }
+      .row.note .main {
+        color: var(--dim);
+        font-style: italic;
+      }
+      .row.user {
+        margin: 6px 0;
+      }
+      .row.user .main {
+        color: var(--fg);
+        font-weight: 600;
+      }
+      .detail {
+        margin: 2px 16px 8px 106px;
+        padding: 8px 10px;
+        background: #0b0d11;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        font: 12px/1.45 var(--mono);
+        white-space: pre-wrap;
+        color: var(--dim);
+        max-height: 320px;
+        overflow: auto;
+      }
+      .detail .a {
+        color: var(--ok);
+      }
+      .detail .d {
+        color: var(--fail);
+      }
+      .detail .h {
+        color: var(--ext);
+      }
+      .phase {
+        padding: 10px 16px 4px;
+        display: flex;
+        gap: 10px;
+        align-items: baseline;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--dim);
+      }
+      .phase b {
+        color: var(--fg);
+        letter-spacing: 0.06em;
+      }
+      .phase .bar {
+        flex: 1;
+        border-top: 1px solid var(--line);
+        transform: translateY(-3px);
+      }
+
+      /* B: by file */
+      .ftable {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      .ftable th {
+        text-align: left;
+        font-weight: 500;
+        color: var(--faint);
+        font-size: 11.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        padding: 4px 16px;
+      }
+      .ftable td {
+        padding: 4px 16px;
+        border-top: 1px solid var(--line);
+        vertical-align: top;
+      }
+      .ftable .grp td {
+        color: var(--dim);
+        font-size: 12px;
+        background: var(--panel2);
+      }
+      .spark {
+        display: inline-flex;
+        gap: 2px;
+        vertical-align: middle;
+      }
+      .spark i {
+        width: 7px;
+        height: 7px;
+        border-radius: 2px;
+        background: var(--edit);
+        display: inline-block;
+      }
+      .spark i.v {
+        background: var(--fail);
+      }
+      .spark i.r {
+        background: var(--read);
+        opacity: 0.6;
+      }
+
+      /* C: phase cards */
+      .cards {
+        padding: 4px 16px;
+        display: grid;
+        gap: 10px;
+      }
+      .card {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel2);
+      }
+      .card > summary {
+        padding: 10px 12px;
+        display: grid;
+        grid-template-columns: 90px 1fr auto;
+        gap: 10px;
+        align-items: baseline;
+      }
+      .card .ph {
+        font-weight: 700;
+      }
+      .card .ph.explore {
+        color: var(--read);
+      }
+      .card .ph.edit {
+        color: var(--edit);
+      }
+      .card .ph.verify {
+        color: var(--run);
+      }
+      .card .ph.fix {
+        color: var(--fail);
+      }
+      .card .stat {
+        color: var(--dim);
+        font-size: 12.5px;
+      }
+      .card .dur {
+        font: 12px var(--mono);
+        color: var(--faint);
+      }
+      .card .inner {
+        padding: 0 12px 10px 112px;
+        font-size: 13px;
+      }
+      .card .inner div {
+        padding: 1px 0;
+      }
+      .card .gist {
+        padding: 0 12px 10px 112px;
+        font-size: 12.5px;
+      }
+
+      /* D: swimlanes */
+      .lanes {
+        padding: 6px 16px;
+      }
+      .lanes svg {
+        width: 100%;
+        height: auto;
+        display: block;
+      }
+      .legend {
+        display: flex;
+        gap: 16px;
+        padding: 6px 16px;
+        font-size: 12px;
+        color: var(--dim);
+      }
+      .sel {
+        margin: 8px 16px;
+        padding: 8px 10px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        font-size: 13px;
+        background: var(--panel2);
+      }
+
+      .verdict {
+        margin-top: 26px;
+        border-top: 1px solid var(--line);
+        padding-top: 14px;
+      }
+      .verdict li {
+        margin: 4px 0;
+        color: var(--dim);
+      }
+      .verdict li b {
+        color: var(--fg);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Agent action viewer: four styles</h1>
+      <div class="meta">
+        Real data · t3 thread <b>“Implement Thread Messaging Fork”</b> · Codex · 2026‑08‑12
+        10:10–10:24 · first turn only (108 actions of 704)
+      </div>
+      <p>
+        All four mocks show the same 14 minutes. Click rows marked ▸ to expand them. Every style
+        applies the same readability rules; they differ only in layout.
+      </p>
+
+      <table class="rules">
+        <tr>
+          <td>Fold exploration</td>
+          <td>
+            Consecutive side‑effect‑free commands (<code>sed -n</code>, <code>cat</code>,
+            <code>rg</code>, <code>git status</code>…) collapse into one row: counts plus the files
+            and directories touched.
+          </td>
+        </tr>
+        <tr>
+          <td>Humanize commands</td>
+          <td>
+            Strip <code>/bin/zsh -lc "…"</code> and the <code>./node_modules/.bin/</code> prefix,
+            split <code>&amp;&amp;</code> chains, and show <code>sed -n '1,260p' X</code> as
+            <code>read X:1‑260</code>.
+          </td>
+        </tr>
+        <tr>
+          <td>Changes first</td>
+          <td>
+            File edits always show their path and <span class="add">+added</span>/<span class="del"
+              >−removed</span
+            >
+            line counts, or a <span class="new">new</span> badge for new files. The diff is one
+            click away.
+          </td>
+        </tr>
+        <tr>
+          <td>Failures loud</td>
+          <td>
+            Non‑zero exits turn red and show the first meaningful output line. Retries of the same
+            intent sit next to each other.
+          </td>
+        </tr>
+        <tr>
+          <td>Words are optional</td>
+          <td>
+            Agent notes and reasoning appear as one dim italic line (<span class="why">↳ …</span>)
+            and can be switched off.
+          </td>
+        </tr>
+      </table>
+
+      <div class="grid">
+        <!-- ===================== A. LEDGER ===================== -->
+        <section class="opt">
+          <header>
+            <span class="letter">A</span>
+            <div>
+              <h2>Ledger</h2>
+              <p>
+                One row per real action, in time order, with exploration folded. Phase dividers are
+                optional (shown here).
+              </p>
+            </div>
+          </header>
+          <div class="body">
+            <div class="threadbar">
+              <b>Implement Thread Messaging Fork</b> · codex · 13m 44s · 26 files
+              <span class="add">+236</span> <span class="del">−19</span> ·
+              <span class="exit">5 failed</span> · filter: <u>actions</u> · notes · reads
+            </div>
+
+            <div class="row user">
+              <span class="t">10:10:12</span><span class="k">❯</span
+              ><span class="main">implement docs/internals/t3-thread-messaging-fork-plan.html</span
+              ><span></span>
+            </div>
+
+            <div class="phase"><b>Explore</b> 10:10–10:15 · 5m 18s<span class="bar"></span></div>
+            <details>
+              <summary class="row">
+                <span class="t">10:10:34</span><span class="k read">◎</span
+                ><span class="main"
+                  >read plan
+                  <span class="path">docs/internals/t3-thread-messaging-fork-plan.html</span> ·
+                  codex memory · git status</span
+                ><span class="r">4 ▸</span>
+              </summary>
+              <div class="detail">
+                read docs/internals/t3-thread-messaging-fork-plan.html:1-260 search "thread
+                messaging|fork|T3 Code…" in ~/.codex/memories/MEMORY.md git status --short --branch;
+                log -1 read docs/internals/t3-thread-messaging-fork-plan.html:260-900
+              </div>
+            </details>
+            <div class="row note">
+              <span class="t">10:10:57</span><span class="k">↳</span
+              ><span class="main"
+                >Branch is newer than the plan’s snapshot; keep the untracked .conduit/. Scope: full
+                first release incl. thread_create.</span
+              ><span></span>
+            </div>
+            <details>
+              <summary class="row">
+                <span class="t">10:11:07</span><span class="k read">◎</span
+                ><span class="main"
+                  >explored <b>55 reads · 14 searches</b> across
+                  <span class="path">server/orchestration</span>,
+                  <span class="path">server/mcp</span>, <span class="path">contracts</span>,
+                  <span class="path">web/chat</span>, <span class="path">mobile/threads</span></span
+                ><span class="r">4m ▸</span>
+              </summary>
+              <div class="detail">
+                read .repos/effect-smol/LLMS.md:1-420 read
+                server/orchestration/Services/OrchestrationEngine.ts read
+                server/orchestration/decider.ts:860-1065 <span class="h">(4×)</span> read
+                server/mcp/McpInvocationContext.ts, McpSessionRegistry.ts read
+                server/orchestration/Layers/ProviderCommandReactor.ts:1050-1215 read
+                server/orchestration/Layers/ProjectionSnapshotQuery.ts:1-260 read
+                server/ws.ts:710-1035 read mobile/features/threads/ThreadFeed.tsx
+                <span class="h">(6×)</span> read web/components/chat/MessagesTimeline.tsx
+                <span class="h">(3×)</span> search
+                "ProjectionThreadMessages|thread_messages|origin_json|Migration" search
+                "turn-start-requested|sendTurn|messageId|messages" search
+                "PreviewAutomationUnavailableError" <span class="d">exit 1 (no match)</span> … 57
+                more
+              </div>
+            </details>
+            <div class="row note">
+              <span class="t">10:15:30</span><span class="k">↳</span
+              ><span class="main"
+                >Keep the existing command path; new MCP tools dispatch existing commands, decider
+                owns origin data.</span
+              ><span></span>
+            </div>
+
+            <div class="phase">
+              <b>Edit</b> 10:16–10:21 · 5m 07s · 26 files<span class="bar"></span>
+            </div>
+            <details>
+              <summary class="row">
+                <span class="t">10:16:23</span><span class="k edit">✎</span
+                ><span class="main"
+                  >6 files ·
+                  <span class="path"><span class="dir">contracts/</span>orchestration.ts</span>
+                  <span class="add">+14</span> ·
+                  <span class="path"><span class="dir">contracts/</span>threadMessaging.ts</span>
+                  <span class="new">new</span> ·
+                  <span class="path"><span class="dir">contracts/</span>mcp.ts</span>
+                  <span class="new">new</span> …</span
+                ><span class="r">▸</span>
+              </summary>
+              <div class="detail">
+                contracts/src/orchestration.ts
+                <span class="a">+14</span> contracts/src/threadMessaging.ts
+                <span class="a">new</span> contracts/src/mcp.ts
+                <span class="a">new</span> contracts/src/index.ts
+                <span class="a">+2</span> server/mcp/McpInvocationContext.ts
+                <span class="a">+3</span> <span class="d">−4</span> server/mcp/McpSessionRegistry.ts
+                <span class="a">+1</span> <span class="d">−1</span>
+              </div>
+            </details>
+            <details open>
+              <summary class="row">
+                <span class="t">10:16:42</span><span class="k edit">✎</span
+                ><span class="main"
+                  ><span class="path"
+                    ><span class="dir">server/orchestration/</span>decider.ts</span
+                  ></span
+                ><span class="r"><span class="add">+48</span> <span class="del">−5</span> ▾</span>
+              </summary>
+              <div class="detail">
+                <span class="h">@@ -914,3 +914,3 @@</span>
+                case "thread.turn.start": {
+                <span class="d">- const targetThread = yield* requireThread({</span>
+                <span class="a">+ const targetThread = yield* requireThreadNotArchived({</span>
+                <span class="h">@@ -919,4 +919,36 @@</span>
+                <span class="a">+ if (targetThread.deletedAt !== null) {</span>
+                <span class="a">+ return yield* new OrchestrationCommandInvariantError({</span>
+                <span class="a">+ detail: `Thread '${command.threadId}' is deleted …`,</span>
+                <span class="a">+ const sourceMessageThread = command.sourceThreadId</span>
+                <span class="a"
+                  >+ ? yield* requireThreadNotArchived({ … threadId: command.sourceThreadId })</span
+                >
+                <span class="a">+ if (sourceMessageThread?.id === targetThread.id) {</span>
+                <span class="a"
+                  >+ detail: `Thread '${targetThread.id}' cannot send a message to itself.`,</span
+                >
+                …
+              </div>
+            </details>
+            <div class="row">
+              <span class="t">10:16:54</span><span class="k edit">✎</span
+              ><span class="main"
+                ><span class="path"
+                  ><span class="dir">server/orchestration/</span>projector.ts</span
+                >
+                <span class="add">+2</span> ·
+                <span class="path"
+                  ><span class="dir">client-runtime/state/</span>threadReducer.ts</span
+                >
+                <span class="add">+2</span></span
+              ><span class="r"></span>
+            </div>
+            <div class="row">
+              <span class="t">10:17:19</span><span class="k edit">✎</span
+              ><span class="main"
+                >5 files ·
+                <span class="path"
+                  ><span class="dir">persistence/Migrations/</span
+                  >041_ProjectionThreadMessageOrigin.ts</span
+                >
+                <span class="new">new</span> · <span class="path">ProjectionThreadMessages.ts</span>
+                <span class="add">+19</span> <span class="del">−1</span> …</span
+              ><span class="r">▸</span>
+            </div>
+            <div class="row">
+              <span class="t">10:17:47</span><span class="k edit">✎</span
+              ><span class="main"
+                ><span class="path"
+                  ><span class="dir">orchestration/Layers/</span>ProjectionSnapshotQuery.ts</span
+                ></span
+              ><span class="r"><span class="add">+9</span> <span class="del">−5</span></span>
+            </div>
+            <div class="row">
+              <span class="t">10:18:07</span><span class="k edit">✎</span
+              ><span class="main"
+                ><span class="path"
+                  ><span class="dir">orchestration/Layers/</span>ProviderCommandReactor.ts</span
+                ></span
+              ><span class="r"><span class="add">+34</span> <span class="del">−1</span></span>
+            </div>
+            <div class="row">
+              <span class="t">10:19:51</span><span class="k edit">✎</span
+              ><span class="main"
+                ><span class="path">AgentThreadMessaging.ts</span> <span class="new">new</span> ×2
+                (Layers, Services)</span
+              ><span class="r"></span>
+            </div>
+            <div class="row">
+              <span class="t">10:20:28</span><span class="k edit">✎</span
+              ><span class="main"
+                >4 files ·
+                <span class="path"><span class="dir">mcp/toolkits/threads/</span>tools.ts</span>
+                <span class="new">new</span> · <span class="path">handlers.ts</span>
+                <span class="new">new</span> · <span class="path">McpHttpServer.ts</span>
+                <span class="add">+10</span> · <span class="path">server.ts</span>
+                <span class="add">+5</span></span
+              ><span class="r">▸</span>
+            </div>
+            <div class="row">
+              <span class="t">10:21:30</span><span class="k edit">✎</span
+              ><span class="main"
+                >3 files · <span class="path"><span class="dir">mobile/</span>ThreadFeed.tsx</span>
+                <span class="add">+28</span> ·
+                <span class="path"><span class="dir">web/</span>ChatView.tsx</span>
+                <span class="add">+13</span> · <span class="path">MessagesTimeline.tsx</span>
+                <span class="add">+17</span></span
+              ><span class="r">▸</span>
+            </div>
+            <div class="row note">
+              <span class="t">10:21:47</span><span class="k">↳</span
+              ><span class="main"
+                >Durable path in place: origin optional in old events, nullable projection column,
+                restored by snapshots. Validating next.</span
+              ><span></span>
+            </div>
+
+            <div class="phase">
+              <b>Verify</b> 10:21–10:24 · 2m 08s ·
+              <span style="color: var(--fail)">4 of 6 failed</span><span class="bar"></span>
+            </div>
+            <details>
+              <summary class="row fail">
+                <span class="t">10:21:48</span><span class="k fail">✗</span
+                ><span class="main mono">bun install --frozen-lockfile</span
+                ><span class="r"><span class="exit">exit 1</span> ▸</span>
+              </summary>
+              <div class="detail">
+                InvalidPnpmLockfile: failed to migrate lockfile: 'pnpm-lock.yaml' error: lockfile
+                had changes, but lockfile is frozen
+              </div>
+            </details>
+            <details>
+              <summary class="row fail">
+                <span class="t">10:22:09</span><span class="k fail">✗</span
+                ><span class="main mono">vp i</span
+                ><span class="r"><span class="exit">exit 1 · Operation not permitted</span> ▸</span>
+              </summary>
+              <div class="detail">error: Operation not permitted (os error 1)</div>
+            </details>
+            <div class="row">
+              <span class="t">10:22:48</span><span class="k run">✓</span
+              ><span class="main mono">vp i</span><span class="r">retry · 39s</span>
+            </div>
+            <div class="row">
+              <span class="t">10:23:04</span><span class="k run">✓</span
+              ><span class="main mono">vp run --filter @t3tools/contracts typecheck</span
+              ><span class="r"></span>
+            </div>
+            <details>
+              <summary class="row fail">
+                <span class="t">10:23:08</span><span class="k fail">✗</span
+                ><span class="main mono">vp run --filter t3 typecheck</span
+                ><span class="r"><span class="exit">exit 1 · decider.ts(463)</span> ▸</span>
+              </summary>
+              <div class="detail">
+                src/orchestration/decider.ts(463,16): TS377019 `yield* Effect.fail(...)` passes a
+                yieldable error value src/orchestration/decider.ts(474,16): TS377019 …
+              </div>
+            </details>
+            <div class="row">
+              <span class="t">10:23:45</span><span class="k edit">✎</span
+              ><span class="main"
+                ><span class="path">decider.ts</span> · <span class="path">server.ts</span></span
+              ><span class="r">fix</span>
+            </div>
+            <details>
+              <summary class="row fail">
+                <span class="t">10:23:56</span><span class="k fail">✗</span
+                ><span class="main mono">vp run --filter t3 typecheck</span
+                ><span class="r"><span class="exit">exit 1 · bin.test.ts(51)</span> ▸</span>
+              </summary>
+              <div class="detail">
+                src/bin.test.ts(51,3): error TS377030: This has any in the requirements channel and
+                any in the error channel…
+              </div>
+            </details>
+          </div>
+        </section>
+
+        <!-- ===================== B. BY FILE ===================== -->
+        <section class="opt">
+          <header>
+            <span class="letter">B</span>
+            <div>
+              <h2>By file</h2>
+              <p>
+                One row per file changed, grouped by area. The timeline order is lost, but you see
+                at a glance where the agent looked and what it changed.
+              </p>
+            </div>
+          </header>
+          <div class="body">
+            <div class="threadbar">
+              <b>Implement Thread Messaging Fork</b> · 26 files <span class="add">+236</span>
+              <span class="del">−19</span> · 8 new · last check
+              <span class="exit">✗ typecheck t3</span>
+            </div>
+            <table class="ftable">
+              <tr>
+                <th>File</th>
+                <th>Change</th>
+                <th>Timeline</th>
+                <th>Before editing</th>
+              </tr>
+              <tr class="grp">
+                <td colspan="4">packages/contracts · 6 files · ✓ typecheck contracts</td>
+              </tr>
+              <tr>
+                <td class="path">orchestration.ts</td>
+                <td><span class="add">+14</span></td>
+                <td>
+                  <span class="spark"><i class="r"></i><i class="r"></i><i></i></span> 10:16
+                </td>
+                <td class="meta">read 3×</td>
+              </tr>
+              <tr>
+                <td class="path">threadMessaging.ts</td>
+                <td><span class="new">new</span></td>
+                <td>
+                  <span class="spark"><i></i></span> 10:16
+                </td>
+                <td class="meta">—</td>
+              </tr>
+              <tr>
+                <td class="path">mcp.ts</td>
+                <td><span class="new">new</span></td>
+                <td>
+                  <span class="spark"><i></i></span> 10:16
+                </td>
+                <td class="meta">—</td>
+              </tr>
+              <tr>
+                <td class="path">previewAutomation.ts</td>
+                <td><span class="add">+2</span></td>
+                <td>
+                  <span class="spark"><i class="r"></i><i class="r"></i><i></i></span> 10:20
+                </td>
+                <td class="meta">read 2×</td>
+              </tr>
+              <tr>
+                <td class="path">index.ts</td>
+                <td><span class="add">+2</span></td>
+                <td>
+                  <span class="spark"><i></i></span> 10:16
+                </td>
+                <td class="meta">—</td>
+              </tr>
+              <tr class="grp">
+                <td colspan="4">
+                  apps/server/orchestration · 8 files ·
+                  <span class="exit">✗ typecheck t3 (decider.ts:463)</span>
+                </td>
+              </tr>
+              <tr>
+                <td class="path">decider.ts</td>
+                <td><span class="add">+48</span> <span class="del">−5</span></td>
+                <td>
+                  <span class="spark"
+                    ><i class="r"></i><i class="r"></i><i class="r"></i><i class="r"></i><i></i
+                    ><i class="v"></i><i></i><i class="v"></i
+                  ></span>
+                  10:16 · 10:23
+                </td>
+                <td class="meta">read 4×, edited 2×</td>
+              </tr>
+              <tr>
+                <td class="path">Layers/ProviderCommandReactor.ts</td>
+                <td><span class="add">+34</span> <span class="del">−1</span></td>
+                <td>
+                  <span class="spark"
+                    ><i class="r"></i><i class="r"></i><i class="r"></i><i></i
+                  ></span>
+                  10:18
+                </td>
+                <td class="meta">read 3×</td>
+              </tr>
+              <tr>
+                <td class="path">Layers/ProjectionSnapshotQuery.ts</td>
+                <td><span class="add">+9</span> <span class="del">−5</span></td>
+                <td>
+                  <span class="spark"
+                    ><i class="r"></i><i class="r"></i><i class="r"></i><i></i
+                  ></span>
+                  10:17
+                </td>
+                <td class="meta">read 3×</td>
+              </tr>
+              <tr>
+                <td class="path">Layers/ProjectionPipeline.ts</td>
+                <td><span class="add">+5</span></td>
+                <td>
+                  <span class="spark"><i class="r"></i><i class="r"></i><i></i></span> 10:17
+                </td>
+                <td class="meta">read 2×</td>
+              </tr>
+              <tr>
+                <td class="path">Layers/AgentThreadMessaging.ts</td>
+                <td><span class="new">new</span></td>
+                <td>
+                  <span class="spark"><i></i></span> 10:19
+                </td>
+                <td class="meta">—</td>
+              </tr>
+              <tr>
+                <td class="path">Services/AgentThreadMessaging.ts</td>
+                <td><span class="new">new</span></td>
+                <td>
+                  <span class="spark"><i></i></span> 10:19
+                </td>
+                <td class="meta">—</td>
+              </tr>
+              <tr>
+                <td class="path">projector.ts</td>
+                <td><span class="add">+2</span></td>
+                <td>
+                  <span class="spark"><i class="r"></i><i></i></span> 10:16
+                </td>
+                <td class="meta">read 1×</td>
+              </tr>
+              <tr class="grp">
+                <td colspan="4">apps/server/persistence · 4 files</td>
+              </tr>
+              <tr>
+                <td class="path">Layers/ProjectionThreadMessages.ts</td>
+                <td><span class="add">+19</span> <span class="del">−1</span></td>
+                <td>
+                  <span class="spark"><i class="r"></i><i></i></span> 10:17
+                </td>
+                <td class="meta">read 1×</td>
+              </tr>
+              <tr>
+                <td class="path">Migrations/041_ProjectionThreadMessageOrigin.ts</td>
+                <td><span class="new">new</span></td>
+                <td>
+                  <span class="spark"><i class="r"></i><i></i></span> 10:17
+                </td>
+                <td class="meta">read 040_*, 007_* as templates</td>
+              </tr>
+              <tr>
+                <td class="path">Migrations.ts · Services/ProjectionThreadMessages.ts</td>
+                <td><span class="add">+4</span></td>
+                <td>
+                  <span class="spark"><i></i></span> 10:17
+                </td>
+                <td class="meta">—</td>
+              </tr>
+              <tr class="grp">
+                <td colspan="4">apps/server/mcp + server.ts · 6 files</td>
+              </tr>
+              <tr>
+                <td class="path">toolkits/threads/tools.ts · handlers.ts</td>
+                <td><span class="new">new</span> ×2</td>
+                <td>
+                  <span class="spark"><i></i></span> 10:20
+                </td>
+                <td class="meta">read preview toolkit as template</td>
+              </tr>
+              <tr>
+                <td class="path">McpHttpServer.ts</td>
+                <td><span class="add">+10</span> <span class="del">−1</span></td>
+                <td>
+                  <span class="spark"><i></i></span> 10:20
+                </td>
+                <td class="meta">—</td>
+              </tr>
+              <tr>
+                <td class="path">server.ts</td>
+                <td><span class="add">+5</span> <span class="del">−1</span></td>
+                <td>
+                  <span class="spark"
+                    ><i class="r"></i><i class="r"></i><i class="r"></i><i></i><i class="r"></i
+                    ><i></i
+                  ></span>
+                  10:20 · 10:23
+                </td>
+                <td class="meta">read 5×</td>
+              </tr>
+              <tr>
+                <td class="path">McpInvocationContext.ts · McpSessionRegistry.ts</td>
+                <td><span class="add">+4</span> <span class="del">−5</span></td>
+                <td>
+                  <span class="spark"><i class="r"></i><i></i></span> 10:16
+                </td>
+                <td class="meta">read 2×</td>
+              </tr>
+              <tr class="grp">
+                <td colspan="4">clients · 4 files · not verified</td>
+              </tr>
+              <tr>
+                <td class="path">mobile/…/ThreadFeed.tsx</td>
+                <td><span class="add">+28</span></td>
+                <td>
+                  <span class="spark"
+                    ><i class="r"></i><i class="r"></i><i class="r"></i><i class="r"></i
+                    ><i class="r"></i><i class="r"></i><i></i
+                  ></span>
+                  10:21
+                </td>
+                <td class="meta">read 6×</td>
+              </tr>
+              <tr>
+                <td class="path">web/…/MessagesTimeline.tsx</td>
+                <td><span class="add">+17</span></td>
+                <td>
+                  <span class="spark"
+                    ><i class="r"></i><i class="r"></i><i class="r"></i><i></i
+                  ></span>
+                  10:21
+                </td>
+                <td class="meta">read 3×</td>
+              </tr>
+              <tr>
+                <td class="path">web/…/ChatView.tsx</td>
+                <td><span class="add">+13</span></td>
+                <td>
+                  <span class="spark"
+                    ><i class="r"></i><i class="r"></i><i class="r"></i><i></i
+                  ></span>
+                  10:21
+                </td>
+                <td class="meta">read 3×</td>
+              </tr>
+              <tr>
+                <td class="path">client-runtime/…/threadReducer.ts</td>
+                <td><span class="add">+2</span></td>
+                <td>
+                  <span class="spark"><i class="r"></i><i></i></span> 10:16
+                </td>
+                <td class="meta">read 1×</td>
+              </tr>
+            </table>
+            <p style="padding: 8px 16px" class="meta">
+              Spark squares: <span class="spark"><i class="r"></i></span> read ·
+              <span class="spark"><i></i></span> edit ·
+              <span class="spark"><i class="v"></i></span> failed check touching this file.
+            </p>
+          </div>
+        </section>
+
+        <!-- ===================== C. PHASE CARDS ===================== -->
+        <section class="opt">
+          <header>
+            <span class="letter">C</span>
+            <div>
+              <h2>Phase cards</h2>
+              <p>
+                The thread is split automatically into phases. Each collapsed card is a one-line
+                summary; opening it shows the Ledger rows.
+              </p>
+            </div>
+          </header>
+          <div class="body">
+            <div class="threadbar">
+              <b>Implement Thread Messaging Fork</b> · turn 1 of 2 · 13m 44s
+            </div>
+            <div class="cards">
+              <details class="card">
+                <summary>
+                  <span class="ph explore">Explore</span
+                  ><span class="stat"
+                    >73 reads/searches · 0 changes · 12 areas · read
+                    <span class="path">decider.ts</span> 4×,
+                    <span class="path">ThreadFeed.tsx</span> 6×</span
+                  ><span class="dur">5m 18s ▸</span>
+                </summary>
+                <div class="gist why">
+                  ↳ Keep the existing command path; new MCP tools dispatch existing commands,
+                  decider owns origin data.
+                </div>
+              </details>
+              <details class="card" open>
+                <summary>
+                  <span class="ph edit">Edit</span
+                  ><span class="stat"
+                    >26 files · <span class="add">+236</span> <span class="del">−19</span> · 8 new ·
+                    contracts → server → persistence → mcp → clients</span
+                  ><span class="dur">5m 07s ▾</span>
+                </summary>
+                <div class="inner">
+                  <div>
+                    <span class="k edit">✎</span> contracts: orchestration.ts
+                    <span class="add">+14</span>, threadMessaging.ts <span class="new">new</span>,
+                    mcp.ts <span class="new">new</span>
+                  </div>
+                  <div>
+                    <span class="k edit">✎</span> decider.ts <span class="add">+48</span>
+                    <span class="del">−5</span> · ProviderCommandReactor.ts
+                    <span class="add">+34</span> <span class="del">−1</span>
+                  </div>
+                  <div>
+                    <span class="k edit">✎</span> migration 041_ProjectionThreadMessageOrigin
+                    <span class="new">new</span> + projection wiring
+                  </div>
+                  <div>
+                    <span class="k edit">✎</span> MCP threads toolkit <span class="new">new</span> ·
+                    AgentThreadMessaging service <span class="new">new</span>
+                  </div>
+                  <div>
+                    <span class="k edit">✎</span> web + mobile timelines show message origin (+58)
+                  </div>
+                </div>
+              </details>
+              <details class="card" open>
+                <summary>
+                  <span class="ph fix">Verify</span
+                  ><span class="stat"
+                    ><span class="exit">4 of 6 failed</span> · install retried 2× · typecheck t3 ✗ →
+                    fix → ✗</span
+                  ><span class="dur">2m 08s ▾</span>
+                </summary>
+                <div class="inner">
+                  <div>
+                    <span class="k fail">✗</span> bun install --frozen-lockfile
+                    <span class="meta">— wrong package manager</span>
+                  </div>
+                  <div>
+                    <span class="k fail">✗</span> vp i
+                    <span class="meta">— Operation not permitted</span>
+                  </div>
+                  <div><span class="k run">✓</span> vp i</div>
+                  <div><span class="k run">✓</span> typecheck contracts</div>
+                  <div>
+                    <span class="k fail">✗</span> typecheck t3
+                    <span class="meta">— decider.ts(463) TS377019</span>
+                  </div>
+                  <div><span class="k edit">✎</span> decider.ts, server.ts</div>
+                  <div>
+                    <span class="k fail">✗</span> typecheck t3
+                    <span class="meta">— bin.test.ts(51) TS377030</span>
+                  </div>
+                </div>
+              </details>
+              <details class="card">
+                <summary>
+                  <span class="ph verify">Turn 2</span
+                  ><span class="stat">❯ “run a demo” · 10:44</span><span class="dur">▸</span>
+                </summary>
+              </details>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===================== D. SWIMLANES ===================== -->
+        <section class="opt">
+          <header>
+            <span class="letter">D</span>
+            <div>
+              <h2>Swimlanes</h2>
+              <p>
+                Time runs left to right, one lane per kind of action. Each dot is a real action from
+                this turn; red dots are failures. Good for spotting thrashing, poor for reading
+                details.
+              </p>
+            </div>
+          </header>
+          <div class="body">
+            <div class="threadbar">
+              <b>Implement Thread Messaging Fork</b> · 108 actions · hover a dot
+            </div>
+            <div class="legend">
+              <span><span class="k read">●</span> read / search</span
+              ><span><span class="k edit">●</span> edit</span
+              ><span><span class="k run">●</span> run</span
+              ><span><span class="k ext">●</span> external (web, MCP, git push, PR)</span
+              ><span><span class="k fail">●</span> failed</span>
+            </div>
+            <div class="lanes"><svg id="sw" viewBox="0 0 900 250"></svg></div>
+            <div class="sel" id="swsel">
+              Hover a dot to see the action. Clicking it would open the Ledger row.
+            </div>
+            <p style="padding: 0 16px" class="meta">
+              In the real view, dragging across a range would filter a Ledger panel below to that
+              time window.
+            </p>
+          </div>
+        </section>
+      </div>
+
+      <div class="verdict">
+        <h2>How they compare</h2>
+        <ul>
+          <li>
+            <b>A · Ledger</b>: best for reading step by step what happened. Scales to long threads
+            only with folding and phase headers.
+          </li>
+          <li>
+            <b>B · By file</b>: best for “what did it touch, and was it checked?”. Loses order and
+            cause and effect.
+          </li>
+          <li>
+            <b>C · Phase cards</b>: best overview of a 700-action thread. Needs a reliable phase
+            splitter, which is the risky part to build.
+          </li>
+          <li>
+            <b>D · Swimlanes</b>: best for spotting loops and dead time. Weakest for reading what
+            was actually done.
+          </li>
+          <li>
+            <b>Recommendation: A with C’s phase headers</b> (as drawn in A), plus B as a toggle.
+            Answer with letters, e.g. “A+C” or “A, drop phases”.
+          </li>
+        </ul>
+      </div>
+    </main>
+
+    <script>
+      // Real (secondsFromUserMessage, kind, exitCode) for all 108 actions in turn 1.
+      const D = [
+        [21, "read", 0],
+        [21, "read", 0],
+        [21, "read", 0],
+        [28, "read", 0],
+        [54, "read", 0],
+        [54, "read", 0],
+        [54, "read", 0],
+        [54, "read", 0],
+        [54, "read", 0],
+        [54, "read", 0],
+        [62, "read", 0],
+        [66, "read", 0],
+        [78, "read", 0],
+        [78, "read", 0],
+        [78, "read", 0],
+        [78, "read", 0],
+        [78, "read", 0],
+        [87, "read", 0],
+        [87, "read", 0],
+        [87, "read", 0],
+        [87, "read", 0],
+        [87, "read", 0],
+        [97, "read", 0],
+        [97, "read", 0],
+        [97, "read", 0],
+        [97, "read", 0],
+        [97, "read", 0],
+        [111, "read", 0],
+        [111, "read", 0],
+        [111, "read", 0],
+        [111, "read", 0],
+        [111, "read", 0],
+        [111, "read", 0],
+        [120, "read", 0],
+        [120, "read", 0],
+        [120, "read", 0],
+        [120, "read", 0],
+        [120, "read", 0],
+        [126, "read", 0],
+        [130, "read", 0],
+        [134, "read", 0],
+        [143, "read", 0],
+        [147, "read", 0],
+        [150, "read", 0],
+        [155, "read", 0],
+        [159, "read", 0],
+        [165, "read", 0],
+        [170, "read", 1],
+        [174, "read", 0],
+        [188, "read", 0],
+        [195, "read", 0],
+        [199, "read", 0],
+        [202, "read", 0],
+        [216, "read", 0],
+        [216, "read", 0],
+        [216, "read", 0],
+        [216, "read", 0],
+        [216, "read", 0],
+        [224, "read", 0],
+        [224, "read", 0],
+        [224, "read", 0],
+        [224, "read", 0],
+        [224, "read", 0],
+        [231, "read", 0],
+        [238, "read", 0],
+        [242, "read", 0],
+        [251, "read", 0],
+        [257, "read", 0],
+        [280, "read", 0],
+        [289, "read", 0],
+        [293, "read", 0],
+        [320, "read", 0],
+        [325, "read", 0],
+        [370, "edit", 0],
+        [389, "edit", 0],
+        [402, "edit", 0],
+        [407, "read", 0],
+        [427, "edit", 0],
+        [431, "read", 0],
+        [436, "read", 0],
+        [442, "read", 0],
+        [446, "read", 0],
+        [455, "edit", 0],
+        [460, "read", 0],
+        [475, "edit", 0],
+        [499, "read", 0],
+        [578, "edit", 0],
+        [616, "edit", 0],
+        [622, "edit", 0],
+        [630, "read", 0],
+        [635, "read", 0],
+        [647, "read", 0],
+        [655, "read", 0],
+        [677, "edit", 0],
+        [688, "read", 0],
+        [688, "read", 0],
+        [688, "read", 0],
+        [696, "run", 1],
+        [702, "read", 0],
+        [708, "read", 0],
+        [717, "run", 1],
+        [756, "run", 0],
+        [765, "read", 0],
+        [772, "run", 0],
+        [776, "run", 1],
+        [792, "read", 0],
+        [812, "edit", 0],
+        [823, "run", 1],
+      ];
+      const labels = {
+        696: "✗ bun install --frozen-lockfile",
+        717: "✗ vp i — Operation not permitted",
+        756: "✓ vp i",
+        772: "✓ typecheck contracts",
+        776: "✗ typecheck t3 — decider.ts(463)",
+        823: "✗ typecheck t3 — bin.test.ts(51)",
+        370: "✎ 6 files (contracts, mcp)",
+        389: "✎ decider.ts +48 −5",
+        402: "✎ projector.ts, threadReducer.ts",
+        427: "✎ 5 files (persistence, migration 041)",
+        455: "✎ ProjectionSnapshotQuery.ts +9 −5",
+        475: "✎ ProviderCommandReactor.ts +34 −1",
+        578: "✎ AgentThreadMessaging ×2 new",
+        616: "✎ 4 files (MCP threads toolkit, server.ts)",
+        622: "✎ previewAutomation.ts +2",
+        677: "✎ 3 files (web + mobile timelines)",
+        812: "✎ decider.ts, server.ts",
+        170: "◎ search PreviewAutomationUnavailableError — no match",
+      };
+      const lanes = ["read", "edit", "run", "ext"],
+        names = { read: "read", edit: "edit", run: "run", ext: "external" };
+      const col = { read: "#7aa2f7", edit: "#e0af68", run: "#9ece6a", ext: "#bb9af7" };
+      const svg = document.getElementById("sw"),
+        sel = document.getElementById("swsel"),
+        NS = "http://www.w3.org/2000/svg";
+      const x0 = 70,
+        x1 = 880,
+        T = 840,
+        ly = (i) => 30 + i * 48,
+        X = (s) => x0 + (s / T) * (x1 - x0);
+      const el = (t, a) => {
+        const e = document.createElementNS(NS, t);
+        for (const k in a) e.setAttribute(k, a[k]);
+        svg.appendChild(e);
+        return e;
+      };
+      [
+        [0, 321, "Explore"],
+        [321, 690, "Edit"],
+        [690, 840, "Verify"],
+      ].forEach(([a, b, n], i) => {
+        el("rect", {
+          x: X(a),
+          y: 8,
+          width: X(b) - X(a),
+          height: 200,
+          fill: i % 2 ? "#1a1e27" : "#161920",
+        });
+        const t = el("text", { x: X(a) + 4, y: 20, fill: "#5c6270", "font-size": 11 });
+        t.textContent = n;
+      });
+      lanes.forEach((l, i) => {
+        el("line", { x1: x0, x2: x1, y1: ly(i) + 14, y2: ly(i) + 14, stroke: "#2a2f3a" });
+        const t = el("text", { x: 8, y: ly(i) + 18, fill: "#8a909c", "font-size": 12 });
+        t.textContent = names[l];
+      });
+      const seen = {};
+      D.forEach(([s, k, e]) => {
+        const i = lanes.indexOf(k);
+        const n = (seen[s + k] = (seen[s + k] || 0) + 1);
+        const c = el("circle", {
+          cx: X(s),
+          cy: ly(i) + 14 - (n - 1) * 5,
+          r: e ? 5.5 : 4,
+          fill: e ? "#f7768e" : col[k],
+          opacity: k === "read" && !e ? 0.7 : 1,
+          style: "cursor:pointer",
+        });
+        c.addEventListener("mouseenter", () => {
+          const t = new Date(Date.UTC(2026, 7, 12, 10, 10, 13) + s * 1000)
+            .toISOString()
+            .slice(11, 19);
+          sel.textContent =
+            t +
+            "  " +
+            (labels[s] && (k !== "read" || e)
+              ? labels[s]
+              : k === "read"
+                ? "◎ read/search (folded in Ledger)"
+                : k);
+        });
+      });
+      for (let m = 0; m <= 14; m += 2) {
+        const s = m * 60 - 13;
+        if (s < 0) continue;
+        const t = el("text", { x: X(s) - 14, y: 230, fill: "#5c6270", "font-size": 11 });
+        t.textContent = "10:" + String(10 + m).padStart(2, "0");
+      }
+    </script>
+  </body>
+</html>

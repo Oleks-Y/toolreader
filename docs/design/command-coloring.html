@@ -1,0 +1,879 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>toolreader: command coloring options</title>
+    <style>
+      body {
+        margin: 0;
+        background: #0b0c10;
+        color: #d7dae0;
+        font:
+          14px/1.5 -apple-system,
+          system-ui,
+          sans-serif;
+      }
+      main {
+        max-width: 1900px;
+        margin: 0 auto;
+        padding: 22px 26px 60px;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0 0 4px;
+      }
+      h2 {
+        font-size: 16px;
+        margin: 26px 0 4px;
+      }
+      h3 {
+        font-size: 14px;
+        margin: 0;
+      }
+      p {
+        color: #8a909c;
+        max-width: 1000px;
+        margin: 6px 0;
+      }
+      code {
+        font:
+          12.5px ui-monospace,
+          "SF Mono",
+          Menlo,
+          monospace;
+      }
+      table.cats {
+        border-collapse: collapse;
+        font-size: 13px;
+        margin: 10px 0;
+      }
+      table.cats td {
+        border-top: 1px solid #2a2f3a;
+        padding: 4px 16px 4px 0;
+        vertical-align: top;
+      }
+      table.cats td:first-child {
+        color: #8a909c;
+        white-space: nowrap;
+      }
+      .grid {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: repeat(auto-fit, minmax(820px, 1fr));
+      }
+      .opt {
+        border-radius: 8px;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        background: var(--panel);
+        color: var(--fg);
+      }
+      .opt > header {
+        display: flex;
+        gap: 10px;
+        align-items: baseline;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--line);
+      }
+      .letter {
+        font:
+          700 16px ui-monospace,
+          monospace;
+        background: var(--fg);
+        color: var(--panel);
+        border-radius: 4px;
+        padding: 0 7px;
+      }
+      .opt header p {
+        margin: 0;
+        font-size: 12.5px;
+        color: var(--dim);
+      }
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        padding: 8px 14px;
+        border-bottom: 1px dashed var(--line);
+      }
+      .legend span {
+        font:
+          11.5px ui-monospace,
+          monospace;
+        padding: 0 7px;
+        border-radius: 999px;
+        border: 1px solid color-mix(in srgb, var(--c) 50%, transparent);
+        color: var(--c);
+        background: color-mix(in srgb, var(--c) 10%, transparent);
+      }
+      .rows {
+        padding: 6px 0 10px;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 70px 18px 1fr auto;
+        gap: 8px;
+        padding: 2px 14px;
+        align-items: baseline;
+        font:
+          12.5px/1.6 ui-monospace,
+          "SF Mono",
+          Menlo,
+          monospace;
+      }
+      .row:hover {
+        background: color-mix(in srgb, var(--fg) 5%, transparent);
+      }
+      .t {
+        color: var(--faint);
+      }
+      .r {
+        color: var(--fail);
+        white-space: nowrap;
+      }
+      .icon {
+        text-align: center;
+      }
+      .sep {
+        color: var(--faint);
+        padding: 0 2px;
+      }
+      /* token colors */
+      .c-read {
+        color: var(--read);
+      }
+      .c-search {
+        color: var(--search);
+      }
+      .c-write {
+        color: var(--write);
+      }
+      .c-git {
+        color: var(--git);
+      }
+      .c-gh {
+        color: var(--gh);
+      }
+      .c-docker {
+        color: var(--docker);
+      }
+      .c-setup {
+        color: var(--setup);
+      }
+      .c-build {
+        color: var(--build);
+      }
+      .c-test {
+        color: var(--test);
+      }
+      .c-run {
+        color: var(--run);
+      }
+      .c-mcp {
+        color: var(--mcp);
+      }
+      .c-mcpTool {
+        color: var(--mcpTool);
+      }
+      .c-web {
+        color: var(--web);
+      }
+      .c-agent {
+        color: var(--agent);
+      }
+      .k-cmd {
+        font-weight: 700;
+      }
+      .k-flag {
+        color: var(--flag);
+      }
+      .k-str {
+        color: var(--str);
+        font-style: italic;
+      }
+      .k-path {
+        color: var(--path);
+        opacity: 0.9;
+      }
+      .k-num {
+        color: var(--num);
+      }
+      .k-op {
+        color: var(--op);
+      }
+      .k-kw {
+        color: var(--faint);
+      }
+      .k-json {
+        color: var(--json);
+      }
+      .k-arg {
+        color: var(--fg);
+      }
+      .add {
+        color: var(--ok);
+      }
+      .del {
+        color: var(--fail);
+      }
+      .failed .k-arg,
+      .failed .k-path {
+        text-decoration: none;
+      }
+      .failed {
+        background: color-mix(in srgb, var(--fail) 7%, transparent);
+      }
+      /* style A: only command words colored */
+      .style-A .k-flag,
+      .style-A .k-str,
+      .style-A .k-path,
+      .style-A .k-num,
+      .style-A .k-json,
+      .style-A .k-arg {
+        color: var(--dim);
+      }
+      .style-A .part {
+        box-shadow: none;
+      }
+      /* style C: powerline-ish segments */
+      .style-C .part {
+        background: color-mix(in srgb, var(--pc) 13%, transparent);
+        border-left: 2px solid var(--pc);
+        border-radius: 0 4px 4px 0;
+        padding: 0 6px;
+        margin-right: 4px;
+        display: inline;
+        box-decoration-break: clone;
+        -webkit-box-decoration-break: clone;
+      }
+      .style-C .sep {
+        display: none;
+      }
+      .controls {
+        display: flex;
+        gap: 14px;
+        align-items: center;
+        margin: 10px 0;
+        flex-wrap: wrap;
+      }
+      .controls label {
+        cursor: pointer;
+      }
+      .verdict li {
+        color: #8a909c;
+        margin: 3px 0;
+      }
+      .verdict b {
+        color: #d7dae0;
+      }
+
+      /* ---------- themes (generated on an OKLCH hue wheel; every category pair checked) ---------- */
+      .th-tokyo {
+        --panel: #161920;
+        --line: #2a2f3a;
+        --fg: #c0caf5;
+        --dim: #737aa2;
+        --faint: #565f89;
+        --ok: #77b95f;
+        --read: #84b2fd;
+        --search: #9cd1ff;
+        --web: #b8befe;
+        --write: #efac44;
+        --git: #b98cea;
+        --gh: #cc9fff;
+        --docker: #00aadd;
+        --setup: #d97741;
+        --build: #dfd65f;
+        --run: #77b95f;
+        --test: #58eec6;
+        --mcp: #f999da;
+        --mcpTool: #feb6ee;
+        --agent: #ffffff;
+        --fail: #fe8b83;
+        --flag: #737aa2;
+        --str: #c0caf5;
+        --path: #c0caf5;
+        --num: #c0caf5;
+        --op: #565f89;
+        --json: #565f89;
+      }
+      .th-catppuccin {
+        --panel: #1e1e2e;
+        --line: #313244;
+        --fg: #cdd6f4;
+        --dim: #7f849c;
+        --faint: #585b70;
+        --ok: #8ec27d;
+        --read: #98bffe;
+        --search: #b7dcfd;
+        --web: #c7cdff;
+        --write: #f1bd73;
+        --git: #c19fe9;
+        --gh: #d5b2fe;
+        --docker: #50b5de;
+        --setup: #d98c63;
+        --build: #e9e38a;
+        --run: #8ec27d;
+        --test: #8bf6d6;
+        --mcp: #fbaee1;
+        --mcpTool: #feccf2;
+        --agent: #ffffff;
+        --fail: #fda19a;
+        --flag: #7f849c;
+        --str: #cdd6f4;
+        --path: #cdd6f4;
+        --num: #cdd6f4;
+        --op: #585b70;
+        --json: #585b70;
+      }
+      .th-starship {
+        --panel: #121212;
+        --line: #2b2b2b;
+        --fg: #e4e4e4;
+        --dim: #8a8a8a;
+        --faint: #5f5f5f;
+        --ok: #60b73c;
+        --read: #7aabfc;
+        --search: #8fcbfe;
+        --web: #b1b7fd;
+        --write: #efa30f;
+        --git: #b97df7;
+        --gh: #c797fd;
+        --docker: #05a4d4;
+        --setup: #e16607;
+        --build: #dcd015;
+        --run: #60b73c;
+        --test: #19ebbf;
+        --mcp: #ff86da;
+        --mcpTool: #ffaaec;
+        --agent: #ffffff;
+        --fail: #fe7f78;
+        --flag: #8a8a8a;
+        --str: #e4e4e4;
+        --path: #e4e4e4;
+        --num: #e4e4e4;
+        --op: #5f5f5f;
+        --json: #5f5f5f;
+      }
+      .th-dracula {
+        --panel: #282a36;
+        --line: #44475a;
+        --fg: #f8f8f2;
+        --dim: #a4a9c4;
+        --faint: #6272a4;
+        --ok: #77ca58;
+        --read: #98bffe;
+        --search: #b7dcfd;
+        --web: #c7cdff;
+        --write: #feb84d;
+        --git: #c797fd;
+        --gh: #d5b2fe;
+        --docker: #11b8ec;
+        --setup: #f47b31;
+        --build: #efe345;
+        --run: #77ca58;
+        --test: #4fffd2;
+        --mcp: #fdade2;
+        --mcpTool: #feccf2;
+        --agent: #ffffff;
+        --fail: #fda19a;
+        --flag: #a4a9c4;
+        --str: #f8f8f2;
+        --path: #f8f8f2;
+        --num: #f8f8f2;
+        --op: #6272a4;
+        --json: #6272a4;
+      }
+      .th-gruvbox {
+        --panel: #282828;
+        --line: #3c3836;
+        --fg: #ebdbb2;
+        --dim: #a89984;
+        --faint: #7c6f64;
+        --ok: #65ad61;
+        --read: #7ca2f6;
+        --search: #89c3ff;
+        --web: #b0adfe;
+        --write: #d9a440;
+        --git: #b180d4;
+        --gh: #c493e8;
+        --docker: #159bd1;
+        --setup: #c57034;
+        --build: #c9cb61;
+        --run: #65ad61;
+        --test: #4edfc2;
+        --mcp: #eb8ec4;
+        --mcpTool: #fca2df;
+        --agent: #ffffff;
+        --fail: #eb8373;
+        --flag: #a89984;
+        --str: #ebdbb2;
+        --path: #ebdbb2;
+        --num: #ebdbb2;
+        --op: #7c6f64;
+        --json: #7c6f64;
+      }
+      .th-github-light {
+        --panel: #ffffff;
+        --line: #d0d7de;
+        --fg: #1f2328;
+        --dim: #59636e;
+        --faint: #8c959f;
+        --ok: #428824;
+        --read: #3065be;
+        --search: #02578b;
+        --web: #4b48a8;
+        --write: #815709;
+        --git: #8959ba;
+        --gh: #7847a6;
+        --docker: #008ab3;
+        --setup: #c96222;
+        --build: #554f00;
+        --run: #428824;
+        --test: #045b48;
+        --mcp: #913378;
+        --mcpTool: #7b226d;
+        --agent: #000000;
+        --fail: #af3c3a;
+        --flag: #59636e;
+        --str: #1f2328;
+        --path: #1f2328;
+        --num: #1f2328;
+        --op: #8c959f;
+        --json: #8c959f;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Command coloring: pick a style and themes</h1>
+      <p>
+        Every row below is taken from the session in your screenshot, plus a few common ones (cargo,
+        go, pnpm, gh, git push). <b>Hue = what the command does</b>; token type inside a command
+        (flag, string, path) only changes brightness or italics, so it can't be confused with a
+        category.
+      </p>
+      <p>
+        v2: palettes are generated on a fixed hue wheel (one hue per category, alternating
+        lightness) and every pair of categories is checked for perceptual distance (OKLab ΔE ≥
+        0.075). v1 had clashes such as go = search in Tokyo Night. v3: toolchain colors are gone;
+        commands are colored by intent (setup, build, run, test), whatever the toolchain.
+      </p>
+
+      <table class="cats">
+        <tr>
+          <td>MCP</td>
+          <td>
+            own color for the server (<code>t3-code</code>) and a lighter shade for the tool
+            (<code>preview_click</code>); JSON args dimmed
+          </td>
+        </tr>
+        <tr>
+          <td>Read-only</td>
+          <td>
+            <code>read</code> (cat/sed/head/tail) and <code>search</code>/<code>list</code>
+            (rg/grep/find/ls) are close shades of one color
+          </td>
+        </tr>
+        <tr>
+          <td>Writes</td>
+          <td>
+            <code>write</code>, <code>sed -i</code>, <code>rm/mv/cp</code>, file edits: one warm
+            color
+          </td>
+        </tr>
+        <tr>
+          <td>git / gh</td>
+          <td>their own color. Read-only git (status, diff, log) uses the same hue but dimmer</td>
+        </tr>
+        <tr>
+          <td>docker</td>
+          <td>its own color (docker, compose, kubectl)</td>
+        </tr>
+        <tr>
+          <td>setup</td>
+          <td>
+            installs and fetches, any toolchain: <code>pnpm install</code>,
+            <code>uv pip install</code>, <code>go mod download</code>, <code>cargo fetch</code>,
+            <code>brew install</code>
+          </td>
+        </tr>
+        <tr>
+          <td>build</td>
+          <td>
+            compiles and checks: <code>vp build</code>, <code>go build</code>,
+            <code>cargo build</code>, <code>tsc</code>, <code>typecheck</code>, <code>lint</code>
+          </td>
+        </tr>
+        <tr>
+          <td>run</td>
+          <td>
+            dev servers, scripts and anything unrecognized: <code>pnpm dev</code>,
+            <code>go run</code>, <code>cargo run</code>, <code>python3 script.py</code>,
+            <code>make …</code>
+          </td>
+        </tr>
+        <tr>
+          <td>test</td>
+          <td>
+            every test run: <code>go test</code>, <code>vp test</code>, <code>cargo test</code>,
+            <code>bun test</code>, <code>pnpm test</code>, <code>pytest</code>, <code>vitest</code>,
+            <code>jest</code>
+          </td>
+        </tr>
+        <tr>
+          <td>Other</td>
+          <td>
+            web fetch/search is a shade of the read family; subagents are white (black on light)
+          </td>
+        </tr>
+      </table>
+
+      <h2>1 · How much to color</h2>
+      <p>The same rows in the same theme (Tokyo Night).</p>
+      <div class="grid" id="styles"></div>
+
+      <h2>2 · Themes</h2>
+      <div class="controls">
+        Style for the theme previews:
+        <label><input type="radio" name="st" value="A" /> A command words</label>
+        <label><input type="radio" name="st" value="B" checked /> B full syntax</label>
+        <label><input type="radio" name="st" value="C" /> C segments</label>
+      </div>
+      <div class="grid" id="themes"></div>
+
+      <div class="verdict">
+        <h2>Notes</h2>
+        <ul>
+          <li>
+            <b>B is my default pick:</b> the category shows at a glance from the command word, and
+            the args stay readable.
+          </li>
+          <li>
+            <b>C</b> makes chained commands (<code>a · b · c</code>) easiest to tell apart, but long
+            rows get busy.
+          </li>
+          <li>
+            Themes would go in a toolbar dropdown (saved like the other switches). The swimlane dots
+            and kind chips would follow the same palette.
+          </li>
+          <li>
+            Answer with a style letter and the themes to ship, e.g. “B, Tokyo + Catppuccin + GitHub
+            Light”.
+          </li>
+        </ul>
+      </div>
+    </main>
+
+    <script>
+      // Rows: [time, status, parts]; each part = [category, text]. "mcp" text is "server · tool json".
+      const ROWS = [
+        [
+          "10:35:00",
+          "ok",
+          [
+            [
+              "mcp",
+              't3-code · preview_click {"tabId":"tab_1","locator":"role=button[name=\'Restore access\']"}',
+            ],
+          ],
+        ],
+        [
+          "10:34:19",
+          "ok",
+          [
+            [
+              "mcp",
+              't3-code · preview_evaluate {"tabId":"tab_1","expression":"fetch(\'/api/admin/auth/login\',{method:\'POST\'…"}',
+            ],
+          ],
+        ],
+        [
+          "10:34:32",
+          "failed",
+          [
+            ["read", "read /tmp/staff-restore-simplified-tests.log"],
+            ["search", 'search "restore (integration)" in /tmp/staff-restore-simplified-tests.log'],
+          ],
+          "exit 1",
+        ],
+        [
+          "10:35:09",
+          "ok",
+          [
+            ["git", "git status --short"],
+            ["git", "git diff origin/main --name-only -- drizzle"],
+            ["read", "read /tmp/staff-restore-simplified-tests.log"],
+          ],
+        ],
+        [
+          "10:35:21",
+          "ok",
+          [
+            ["search", 'search "(fail)|timed out" in /tmp/staff-restore-simplified-tests.log'],
+            [
+              "docker",
+              'docker compose -p staff-invite-tests -f .docker/compose.staff-invite-tests.yml run --rm tests "bun test --timeout 60000 …" > /tmp/focused.log',
+            ],
+          ],
+        ],
+        [
+          "10:36:34",
+          "ok",
+          [
+            ["read", "read /tmp/staff-restore-simplified-runtime-retry.log"],
+            ["gh", "gh pr view 175 --json baseRefName,headRefOid,changedFiles"],
+          ],
+        ],
+        [
+          "10:37:29",
+          "ok",
+          [
+            ["read", "read /tmp/staff-restore-simplified-runtime-retry.log"],
+            ["search", "list tests/integration"],
+            ["docker", 'docker stats --no-stream --format "{{.Name}} {{.MemUsage}}"'],
+          ],
+        ],
+        ["10:20:01", "ok", [["setup", "pnpm install --frozen-lockfile"]]],
+        [
+          "10:20:15",
+          "ok",
+          [
+            ["setup", "uv pip install -r requirements.txt"],
+            ["setup", "go mod download"],
+          ],
+        ],
+        [
+          "10:20:30",
+          "ok",
+          [
+            ["setup", "cargo fetch --locked"],
+            ["setup", "brew install ripgrep"],
+          ],
+        ],
+        [
+          "10:21:02",
+          "ok",
+          [
+            ["build", "vp build"],
+            ["build", "go build ./cmd/server"],
+          ],
+        ],
+        ["10:21:40", "ok", [["build", "cargo build --release --locked"]]],
+        ["10:23:08", "failed", [["build", "vp run --filter t3 typecheck"]], "exit 1"],
+        [
+          "10:24:10",
+          "ok",
+          [["test", "cargo test --locked --manifest-path native/resource-monitor/Cargo.toml"]],
+        ],
+        ["10:24:31", "ok", [["test", "go test ./internal/... -run TestStaffInvite -count 1"]]],
+        [
+          "10:35:58",
+          "ok",
+          [
+            [
+              "test",
+              "bun test --timeout 60000 tests/integration/modules/pam/services/staff-invite.service.test.ts",
+            ],
+          ],
+        ],
+        [
+          "10:36:02",
+          "ok",
+          [
+            ["test", "vp test run src/core"],
+            ["test", "pytest tests/test_staff.py -x"],
+          ],
+        ],
+        ["10:36:05", "failed", [["test", "pnpm --filter t3 test"]], "exit 1"],
+        [
+          "10:24:50",
+          "ok",
+          [
+            ["run", "python3 - <<PY"],
+            ["write", "write /tmp/report.md"],
+          ],
+        ],
+        [
+          "10:27:30",
+          "ok",
+          [
+            ["run", "pnpm dev"],
+            ["run", "go run ./cmd/server --port 8080"],
+          ],
+        ],
+        ["10:27:45", "ok", [["run", "make -C infra deploy-preview ENV=staging"]]],
+        [
+          "10:25:02",
+          "ok",
+          [
+            ["write", "sed -i src/admin/staff/page.tsx"],
+            ["write", "rm -rf .t3/cache"],
+          ],
+        ],
+        ["10:25:20", "edit", [["write", "apps/server/src/orchestration/decider.ts"]], "+48 −5"],
+        [
+          "10:26:05",
+          "ok",
+          [
+            ["git", "git push -u origin fix/staff-reinvite"],
+            ["gh", 'gh pr create --title "fix(pam): allow staff re-invite after revocation"'],
+          ],
+        ],
+        ["10:26:40", "ok", [["web", "fetch https://pptr.dev/guides/page-interactions"]]],
+        ["10:27:12", "ok", [["agent", "subagent (Explore): Map t3code pieces for action viewer"]]],
+      ];
+
+      const ICON = {
+        setup: "⇣",
+        build: "⚒",
+        run: "▶",
+        test: "✔",
+        mcp: "⚙",
+        read: "◎",
+        search: "⌕",
+        write: "✎",
+        git: "⎇",
+        gh: "⎇",
+        docker: "◆",
+        web: "◍",
+        agent: "⧉",
+      };
+      const VERBS = new Set(["read", "search", "list", "write", "fetch", "subagent"]);
+      const LEGEND = [
+        ["mcp", "mcp"],
+        ["read", "read"],
+        ["search", "search"],
+        ["web", "web"],
+        ["write", "write"],
+        ["git", "git"],
+        ["gh", "gh"],
+        ["docker", "docker"],
+        ["setup", "setup"],
+        ["build", "build"],
+        ["run", "run"],
+        ["test", "test"],
+        ["agent", "agent"],
+      ];
+
+      const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+      function words(text) {
+        // split keeping quoted strings together
+        return text.match(/"[^"]*"|'[^']*'|\{.*\}$|\S+/g) ?? [];
+      }
+      function tokenClass(w, i, cat) {
+        if (i === 0) return `k-cmd c-${cat}`;
+        if (
+          cat === "git" ||
+          cat === "gh" ||
+          cat === "docker" ||
+          ["setup", "build", "run", "test"].includes(cat)
+        ) {
+          if (i === 1 && !w.startsWith("-")) return `c-${cat}`; // subcommand
+        }
+        if (/^(>>?|<<?\w*|\||&&|;)$/.test(w) || w.startsWith("<<")) return "k-op";
+        if (w === "in" || w === "--") return "k-kw";
+        if (w.startsWith("-")) return "k-flag";
+        if (/^["']/.test(w)) return "k-str";
+        if (/^\d+$/.test(w)) return "k-num";
+        if (/[/.]/.test(w)) return "k-path";
+        return "k-arg";
+      }
+      function renderPart([cat, text]) {
+        let html;
+        if (cat === "mcp") {
+          const m = /^(\S+) · (\S+)\s*(.*)$/.exec(text);
+          html = `<span class="k-cmd c-mcp">${esc(m[1])}</span><span class="sep">·</span><span class="c-mcpTool k-cmd">${esc(m[2])}</span> <span class="k-json">${esc(m[3])}</span>`;
+        } else {
+          html = words(text)
+            .map((w, i) => `<span class="${tokenClass(w, i, cat)}">${esc(w)}</span>`)
+            .join(" ");
+        }
+        return `<span class="part" style="--pc: var(--${cat})">${html}</span>`;
+      }
+      function renderRows(style) {
+        return ROWS.map(([t, status, parts, right]) => {
+          const cat = parts[parts.length - 1][0];
+          const icon =
+            status === "failed"
+              ? `<span style="color:var(--fail)">✗</span>`
+              : `<span class="c-${parts.some((p) => p[0] === "mcp") ? "mcp" : cat}">${ICON[cat]}</span>`;
+          const body = parts.map(renderPart).join('<span class="sep"> · </span>');
+          const r = right
+            ? status === "edit"
+              ? `<span class="add">+48</span> <span class="del">−5</span>`
+              : right
+            : "";
+          return `<div class="row ${status === "failed" ? "failed" : ""}"><span class="t">${t}</span><span class="icon">${icon}</span><span>${body}</span><span class="r">${r}</span></div>`;
+        }).join("");
+      }
+      function card(letter, title, desc, theme, style) {
+        const legend = LEGEND.map(([c, l]) => `<span style="--c: var(--${c})">${l}</span>`).join(
+          "",
+        );
+        return `<section class="opt th-${theme} style-${style}"><header><span class="letter">${letter}</span><div><h3>${title}</h3><p>${desc}</p></div></header><div class="legend">${legend}</div><div class="rows">${renderRows(style)}</div></section>`;
+      }
+
+      document.getElementById("styles").innerHTML = [
+        card(
+          "A",
+          "Command words",
+          "Only the command and its subcommand are colored; args are muted. Calmest option.",
+          "tokyo",
+          "A",
+        ),
+        card(
+          "B",
+          "Full syntax",
+          "Command bold in its category color; flags dim, strings, paths and numbers each get a color, like bat or zsh-syntax-highlighting.",
+          "tokyo",
+          "B",
+        ),
+        card(
+          "C",
+          "Segments",
+          "Like B, but each chained command sits on a tinted segment in its category color, like a Starship powerline prompt.",
+          "tokyo",
+          "C",
+        ),
+      ].join("");
+
+      const MIN_DIST = {
+        tokyo: 0.1,
+        catppuccin: 0.09,
+        starship: 0.099,
+        dracula: 0.095,
+        gruvbox: 0.096,
+        "github-light": 0.086,
+      };
+      const THEMES = [
+        ["1", "Tokyo Night", "Cool blues, the current viewer look.", "tokyo"],
+        [
+          "2",
+          "Catppuccin Mocha",
+          "Soft pastels; low contrast between categories, easy on the eyes.",
+          "catppuccin",
+        ],
+        [
+          "3",
+          "Starship",
+          "Saturated terminal colors on near-black, like a Starship prompt.",
+          "starship",
+        ],
+        ["4", "Dracula", "High-contrast neons.", "dracula"],
+        ["5", "Gruvbox Dark", "Warm, retro; good for long reading sessions.", "gruvbox"],
+        ["6", "GitHub Light", "Light option for daytime.", "github-light"],
+      ];
+      const renderThemes = (style) => {
+        document.getElementById("themes").innerHTML = THEMES.map(([n, title, desc, th]) =>
+          card(n, title, `${desc} Closest pair of categories: ΔE ${MIN_DIST[th]}.`, th, style),
+        ).join("");
+      };
+      renderThemes("B");
+      document
+        .querySelectorAll('input[name="st"]')
+        .forEach((el) => el.addEventListener("change", () => renderThemes(el.value)));
+    </script>
+  </body>
+</html>
