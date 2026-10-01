@@ -226,8 +226,9 @@ export function ActionView({ threadId }: { threadId: string }) {
         <h1>{t.title}</h1>
         <span className={`status-dot ${t.status}`} title={t.status} />
         <span className="dim">
-          {t.projectTitle} · {t.provider} · {actions.length} actions · {total.files} files{" "}
-          <span className="add">+{total.added}</span> <span className="del">−{total.removed}</span>
+          {t.projectTitle} · {t.source === "t3" ? `t3 · ${t.provider}` : (t.origin ?? t.source)} ·{" "}
+          {actions.length} actions · {total.files} files <span className="add">+{total.added}</span>{" "}
+          <span className="del">−{total.removed}</span>
           {total.failed > 0 && <span className="fail"> · {total.failed} failed</span>}
         </span>
       </header>

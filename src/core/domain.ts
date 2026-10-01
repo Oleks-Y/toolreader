@@ -68,8 +68,15 @@ export type Entry = typeof Entry.Type;
 export const ThreadStatus = Schema.Literals(["running", "idle", "error"]);
 export type ThreadStatus = typeof ThreadStatus.Type;
 
+export const ThreadSource = Schema.Literals(["t3", "codex"]);
+export type ThreadSource = typeof ThreadSource.Type;
+
 export const ThreadSummary = Schema.Struct({
+  /** T3 thread ids are bare; other sources are namespaced, e.g. `codex:<threadId>`. */
   id: Schema.String,
+  source: ThreadSource,
+  /** Which client started the session, e.g. "Codex Desktop", "codex-tui", "codex_exec". */
+  origin: Schema.NullOr(Schema.String),
   title: Schema.String,
   projectId: Schema.String,
   projectTitle: Schema.String,
@@ -77,7 +84,8 @@ export const ThreadSummary = Schema.Struct({
   status: ThreadStatus,
   archived: Schema.Boolean,
   updatedAt: Schema.String,
-  actionCount: Schema.Number,
+  /** Null when unknown without reading the whole session (Codex). */
+  actionCount: Schema.NullOr(Schema.Number),
 });
 export type ThreadSummary = typeof ThreadSummary.Type;
 

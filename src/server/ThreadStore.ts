@@ -72,12 +72,20 @@ const decodeThreadHeadRows = Schema.decodeUnknownEffect(Schema.Array(ThreadHeadR
 /** Malformed payloads degrade to an untyped tool row instead of dropping the thread. */
 const decodePayload = Schema.decodeUnknownOption(Schema.fromJsonString(ToolPayload));
 
+export type T3Project = { readonly id: string; readonly title: string; readonly root: string };
+const ProjectRow = Schema.Struct({ id: Schema.String, title: Schema.String, root: Schema.String });
+const decodeProjectRows = Schema.decodeUnknownEffect(Schema.Array(ProjectRow));
+const CursorRow = Schema.Struct({ threadId: Schema.NullOr(Schema.String) });
+const decodeCursorRows = Schema.decodeUnknownEffect(Schema.Array(CursorRow));
+
 const toStatus = (s: string | null): ThreadStatus =>
   s === "running" || s === "starting" ? "running" : s === "error" ? "error" : "idle";
 
 function toSummary(r: ThreadRow, actionCount: number, lastActivity: string | null): ThreadSummary {
   return {
     id: r.id,
+    source: "t3",
+    origin: null,
     title: r.title,
     projectId: r.projectId,
     projectTitle: r.projectTitle,
@@ -95,6 +103,9 @@ export class ThreadStore extends Context.Service<
     readonly list: Effect.Effect<ReadonlyArray<ThreadSummary>>;
     readonly get: (id: string, labels: Labels) => Effect.Effect<ThreadView, ThreadNotFound>;
     readonly head: (id: string) => Effect.Effect<ThreadHead, ThreadNotFound>;
+    /** Codex thread ids T3 runs itself (from its resume cursors), so other sources can skip them. */
+    readonly codexThreadIds: Effect.Effect<ReadonlySet<string>>;
+    readonly projects: Effect.Effect<ReadonlyArray<T3Project>>;
   }
 >()("toolreader/server/ThreadStore") {
   static readonly layer = Layer.effect(
@@ -190,8 +201,22 @@ export class ThreadStore extends Context.Service<
         };
       });
 
+      const codexThreadIds = sql`
+        select json_extract(resume_cursor_json, '$.threadId') threadId
+        from provider_session_runtime where provider_name = 'codex'`.pipe(
+        Effect.flatMap(decodeCursorRows),
+        Effect.map((rows) => new Set(rows.flatMap((r) => (r.threadId ? [r.threadId] : [])))),
+        Effect.orDie,
+      );
+
+      const projects = sql`
+        select project_id id, title, workspace_root root from projection_projects where deleted_at is null`.pipe(
+        Effect.flatMap(decodeProjectRows),
+        Effect.orDie,
+      );
+
       yield* list; // warm the action-count cache
-      return ThreadStore.of({ list, get, head });
+      return ThreadStore.of({ list, get, head, codexThreadIds, projects });
     }),
   );
 }

@@ -9,6 +9,7 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
 import { ToolreaderApi } from "../core/api.ts";
+import { CODEX_ID_PREFIX, CodexSessions } from "./CodexSessions.ts";
 import { Labeler } from "./Labeler.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 import { ThreadStore } from "./ThreadStore.ts";
@@ -21,13 +22,30 @@ const ThreadsHandlers = HttpApiBuilder.group(
   "threads",
   Effect.fn(function* (handlers) {
     const store = yield* ThreadStore;
+    const codex = yield* CodexSessions;
     const labeler = yield* Labeler;
+    const codexId = (id: string) =>
+      id.startsWith(CODEX_ID_PREFIX) ? id.slice(CODEX_ID_PREFIX.length) : null;
     return handlers
-      .handle("list", () => store.list)
-      .handle("get", ({ params }) =>
-        labeler.forThread(params.id).pipe(Effect.flatMap((labels) => store.get(params.id, labels))),
+      .handle("list", () =>
+        Effect.all([store.list, codex.list], { concurrency: "unbounded" }).pipe(
+          Effect.map(([t3, other]) =>
+            [...t3, ...other].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)),
+          ),
+        ),
       )
-      .handle("head", ({ params }) => store.head(params.id));
+      .handle("get", ({ params }) =>
+        labeler.forThread(params.id).pipe(
+          Effect.flatMap((labels) => {
+            const id = codexId(params.id);
+            return id ? codex.get(id, labels) : store.get(params.id, labels);
+          }),
+        ),
+      )
+      .handle("head", ({ params }) => {
+        const id = codexId(params.id);
+        return id ? codex.head(id) : store.head(params.id);
+      });
   }),
 );
 

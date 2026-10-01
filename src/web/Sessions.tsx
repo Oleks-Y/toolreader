@@ -3,11 +3,28 @@ import type { ThreadSummary } from "../core/domain.ts";
 import { call, errorMessage } from "./client.ts";
 import { since } from "./util.ts";
 
+/** Which sessions to show; scripted `codex exec` runs are hidden by default. */
+type Shown = { t3: boolean; codex: boolean; scripted: boolean; archived: boolean };
+const SHOWN_KEY = "toolreader.sessions";
+
+function loadShown(): Shown {
+  const defaults: Shown = { t3: true, codex: true, scripted: false, archived: false };
+  try {
+    return { ...defaults, ...JSON.parse(localStorage.getItem(SHOWN_KEY) ?? "{}") };
+  } catch {
+    return defaults;
+  }
+}
+
+const badge = (t: ThreadSummary) =>
+  t.source === "t3" ? `t3 · ${t.provider ?? "?"}` : (t.origin ?? t.source);
+
 export function Sessions() {
   const [threads, setThreads] = useState<ReadonlyArray<ThreadSummary> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [archived, setArchived] = useState(false);
+  const [shown, setShown] = useState<Shown>(loadShown);
+  useEffect(() => localStorage.setItem(SHOWN_KEY, JSON.stringify(shown)), [shown]);
 
   useEffect(() => {
     document.title = "toolreader";
@@ -22,15 +39,17 @@ export function Sessions() {
     const q = query.trim().toLowerCase();
     const byProject = new Map<string, { title: string; threads: ThreadSummary[] }>();
     for (const t of threads ?? []) {
-      if (t.archived && !archived) continue;
-      if (q && !`${t.title} ${t.projectTitle} ${t.provider}`.toLowerCase().includes(q)) continue;
+      if (t.archived && !shown.archived) continue;
+      if (!shown[t.source]) continue;
+      if (t.origin === "codex_exec" && !shown.scripted) continue;
+      if (q && !`${t.title} ${t.projectTitle} ${badge(t)}`.toLowerCase().includes(q)) continue;
       const g = byProject.get(t.projectId) ?? { title: t.projectTitle, threads: [] };
       g.threads.push(t);
       byProject.set(t.projectId, g);
     }
     // Threads arrive newest first, so groups end up ordered by their newest thread.
     return [...byProject.values()];
-  }, [threads, query, archived]);
+  }, [threads, query, shown]);
 
   const running = threads?.filter((t) => t.status === "running").length ?? 0;
 
@@ -44,14 +63,16 @@ export function Sessions() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        <label className="switch">
-          <input
-            type="checkbox"
-            checked={archived}
-            onChange={(e) => setArchived(e.target.checked)}
-          />{" "}
-          archived
-        </label>
+        {(["t3", "codex", "scripted", "archived"] as const).map((key) => (
+          <label key={key} className="switch">
+            <input
+              type="checkbox"
+              checked={shown[key]}
+              onChange={(e) => setShown((s) => ({ ...s, [key]: e.target.checked }))}
+            />{" "}
+            {key}
+          </label>
+        ))}
         <span className="dim">
           {threads ? `${threads.length} threads` : "loading…"}
           {running > 0 && <span className="running-count"> · {running} running</span>}
@@ -71,8 +92,10 @@ export function Sessions() {
             >
               <span className={`status-dot ${t.status}`} title={t.status} />
               <span className="thread-title">{t.title}</span>
-              <span className="provider">{t.provider ?? "?"}</span>
-              <span className="dim num">{t.actionCount} actions</span>
+              <span className={`provider source-${t.source}`}>{badge(t)}</span>
+              <span className="dim num">
+                {t.actionCount === null ? "" : `${t.actionCount} actions`}
+              </span>
               <span className="dim num">{since(t.updatedAt)}</span>
             </a>
           ))}

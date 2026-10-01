@@ -17,10 +17,13 @@ Setup, libraries and conventions are copied from `~/proj/t3code`. When in doubt,
   - `api.ts`: the `HttpApi` contract. Server and client both derive from it; never put server code here.
   - `payload.ts`: Schemas for T3's raw activity payloads, for every provider.
   - `normalize.ts`, `shell.ts`, `tree.ts`: pure transforms, from raw rows to entries to tree.
+  - `codex.ts`: turns Codex `thread/read` items into the same T3-shaped rows, and scans rollout files for item timestamps.
 - `src/server`: Effect services and the HTTP server.
   - `ThreadStore.ts` is the **only** module that knows T3's table layout. If T3 migrates, fix it there.
   - `Labeler.ts` runs `codex exec` and caches labels in `~/.toolreader/labels.json`.
+  - `CodexSessions.ts` lists and reads Codex sessions that ran outside T3, through a long-lived `codex app-server` process. Sessions T3 owns (its resume cursors) and subagent threads are skipped.
   - `NodeSqliteClient.ts` is copied from t3code. Re-copy it rather than editing it.
+- `src/codex-app-server`: t3code's Codex app-server client, copied. Its `README.md` lists the two local edits to re-apply when re-copying.
 - `src/web`: React UI. Calls the server only through the typed client in `client.ts`.
 - `oxlint-plugin`: custom lint rules copied from t3code.
 

@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import { CodexSessions } from "./CodexSessions.ts";
 import { HttpServerLive } from "./http.ts";
 import { Labeler } from "./Labeler.ts";
 import * as NodeSqliteClient from "./NodeSqliteClient.ts";
@@ -24,7 +25,8 @@ const Announce = Layer.effectDiscard(
 );
 
 const MainLive = Layer.mergeAll(HttpServerLive, Announce).pipe(
-  Layer.provide(Layer.mergeAll(ThreadStore.layer, Labeler.layer)),
+  Layer.provide(Layer.mergeAll(CodexSessions.layer, Labeler.layer)),
+  Layer.provideMerge(ThreadStore.layer),
   Layer.provide(SqlLive),
   Layer.provideMerge(ServerConfig.layer),
   Layer.provide(NodeServices.layer),

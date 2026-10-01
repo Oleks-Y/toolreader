@@ -1,7 +1,7 @@
 # toolreader
 
-Read-only viewer for what coding agents _did_ in T3 Code threads (Codex, Claude, Cursor).
-It reads T3's database `~/.t3/userdata/state.sqlite` read-only and never writes to T3.
+Read-only viewer for what coding agents _did_: T3 Code threads (Codex, Claude, Cursor) plus Codex sessions run outside T3 (CLI, TUI, Desktop, `codex exec`).
+It reads T3's database `~/.t3/userdata/state.sqlite` read-only, reads Codex history through `codex app-server`, and never writes to either.
 
 ```bash
 vp i              # install (runs effect-tsgo patch + git hooks)
@@ -12,7 +12,7 @@ vp check          # format + lint
 vp run typecheck  # tsgo with the Effect language service
 ```
 
-- `#/` lists every thread grouped by project. Running threads have a green dot.
+- `#/` lists every session grouped by project, with filters for t3, codex, scripted (`codex exec`, hidden by default) and archived. Running sessions have a green dot.
 - `#/t/<threadId>` shows the swimlane (drag to filter by time, click a dot to jump) over a turn → phase → action tree. Switches for kinds, notes, reasoning, failures only, folding and phases are saved in localStorage.
 - "✨ Label with Codex" on a turn runs `codex exec` (read-only, ephemeral) with T3's text-generation model and caches labels in `~/.toolreader/labels.json`.
 
