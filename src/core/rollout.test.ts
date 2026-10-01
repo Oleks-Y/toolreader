@@ -4,7 +4,7 @@ import * as Schema from "effect/Schema";
 import { CodexThreadRead, codexThreadToRows } from "./codex.ts";
 import type { Action } from "./domain.ts";
 import { normalize } from "./normalize.ts";
-import { parsePatch, scanRollout } from "./rollout.ts";
+import { parsePatch, scanRollout, shellJoin } from "./rollout.ts";
 
 const decodeRead = Schema.decodeUnknownSync(CodexThreadRead);
 
@@ -293,5 +293,12 @@ describe("rollout", () => {
     ];
     assert.strictEqual(actionsOf(lines, [], "interrupted").actions[0]?.status, "failed");
     assert.strictEqual(actionsOf(lines, [], "inProgress").actions[0]?.status, "running");
+  });
+
+  it("quotes argv like Codex (shlex)", () => {
+    assert.strictEqual(shellJoin(["ls", "-la", ""]), "ls -la ''");
+    assert.strictEqual(shellJoin(["sh", "-c", "echo 'hi'"]), `sh -c "echo 'hi'"`);
+    assert.strictEqual(shellJoin(["sh", "-c", "echo $HOME 'x'"]), `sh -c 'echo $HOME '"'x'"`);
+    assert.strictEqual(shellJoin(["printf", 'a\\tb "c"']), `printf "a\\\\tb \\"c\\""`);
   });
 });

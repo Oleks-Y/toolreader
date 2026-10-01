@@ -247,9 +247,47 @@ function commandResult(outputs: ReadonlyArray<string>): CommandResult {
   return { exitCode, output: parts.join(""), failed: failed || (exitCode ?? 0) !== 0 };
 }
 
-/** Joins argv the way Codex shows it, single-quoting words the shell would split. */
-const shellJoin = (argv: ReadonlyArray<string>) =>
-  argv.map((a) => (/^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, `'"'"'`)}'`)).join(" ");
+// Joins argv the way Codex shows it: Rust `shlex::try_join`. Each word is cut into chunks that are
+// left bare, single-quoted or double-quoted; `^` always starts a single-quoted chunk (zsh history).
+const BARE = /^[\w+\-./:@\]]$/;
+const BARE_OK = 1;
+const SINGLE_OK = 2;
+const DOUBLE_OK = 4;
+
+function quoteWord(word: string): string {
+  if (word === "") return "''";
+  let out = "";
+  let rest = word;
+  while (rest) {
+    let ok = BARE_OK | SINGLE_OK | DOUBLE_OK;
+    let i = 0;
+    if (rest[0] === "^") {
+      ok = SINGLE_OK;
+      i = 1;
+    }
+    for (; i < rest.length; i++) {
+      const c = rest[i]!;
+      if (c === "^") break;
+      let next = ok;
+      if (!BARE.test(c)) next &= ~BARE_OK;
+      if (c === "'" || c === "\\") next &= ~SINGLE_OK;
+      if (c === "!" || c === "$" || c === "`") next &= ~DOUBLE_OK;
+      if (next === 0) break;
+      ok = next;
+    }
+    const chunk = rest.slice(0, i);
+    rest = rest.slice(i);
+    out +=
+      ok & BARE_OK
+        ? chunk
+        : ok & SINGLE_OK
+          ? `'${chunk}'`
+          : `"${chunk.replace(/["\\]/g, (c) => `\\${c}`)}"`;
+  }
+  return out;
+}
+
+export const shellJoin = (argv: ReadonlyArray<string>) => argv.map(quoteWord).join(" ");
 
 /** apply_patch text → app-server fileChange changes. Update hunks keep bare `@@` headers. */
 export function parsePatch(patch: string) {
