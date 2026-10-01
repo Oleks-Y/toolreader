@@ -120,8 +120,8 @@ dev machine / CI runner                          service
    - one container image.
 4. **Automation:** CI upload through OIDC with the strict policy, opt-in background `watch` upload (only after retries, duplicate uploads, policy changes and deletion are tested), automatic proof pickup, search, more session readers (Claude Code, Cursor), and experimental line-level estimates.
 
-## Decisions for the developer
+## Decisions
 
-- **Before phase 3:** is it self-hosted first or SaaS first? Agent sessions often hold customer data, so self-hosting may be the easier sale. Is metadata-only the right default upload?
-- **Hosting provider:** this can wait until phase 3. Any provider that runs a container with Postgres and object storage works.
-- **The public website:** keep it on hold until the positioning above is agreed. The curated demo (four `codex exec` commits) works for either.
+- **Self-hosted first** (decided 2026-10-01). The service ships as one container image plus Postgres and S3-compatible storage (MinIO for self-hosters), run by the team itself. A hosted SaaS can come later from the same image.
+- **Open: the default upload.** The plan assumes metadata only, with content opt-in per field class. Self-hosting makes fuller defaults easier to accept, so this is still to be confirmed.
+- **The public website:** on hold until the positioning is agreed. The curated demo (four `codex exec` commits) works either way.
