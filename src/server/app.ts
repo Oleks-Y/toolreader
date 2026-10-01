@@ -1,4 +1,4 @@
-// Service wiring shared by the HTTP server (bin.ts) and the CLIs (export.ts, ledgerCli.ts).
+// Service wiring shared by the HTTP server (`serve`) and the other commands of bin.ts.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";

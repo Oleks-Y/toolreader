@@ -7,6 +7,16 @@ const apiPort = Number(process.env.PORT ?? 4777);
 export default defineConfig({
   plugins: [react()],
   server: { proxy: { "/api": `http://127.0.0.1:${apiPort}` } },
+  // The viewer goes to dist/client, the static ledger page to dist/site (vite.site.config.ts), and
+  // the CLI to dist/bin.mjs (`vp pack`, as t3code's server does: Node won't strip types in node_modules).
+  build: { outDir: "dist/client" },
+  pack: {
+    entry: ["src/server/bin.ts"],
+    outDir: "dist",
+    clean: false,
+    deps: { onlyBundle: false },
+    banner: { js: "#!/usr/bin/env node\n" },
+  },
   test: {
     environment: "node",
     exclude: ["**/node_modules/**", "**/dist/**"],

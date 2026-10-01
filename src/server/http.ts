@@ -81,7 +81,7 @@ const LabelsHandlers = HttpApiBuilder.group(
   }),
 );
 
-/** Serves the built web app from dist/, falling back to index.html. */
+/** Serves the built web app from dist/client, falling back to index.html. */
 const StaticRoute = HttpRouter.add(
   "GET",
   "*",
@@ -91,7 +91,7 @@ const StaticRoute = HttpRouter.add(
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const pathname = new URL(request.url, "http://localhost").pathname;
-    const root = path.resolve(distDir);
+    const root = path.resolve(distDir, "client");
     const file = path.resolve(root, `.${decodeURIComponent(pathname)}`);
     if (file !== root && !file.startsWith(`${root}${path.sep}`))
       return HttpServerResponse.text("Invalid path", { status: 400 });
@@ -104,7 +104,7 @@ const StaticRoute = HttpRouter.add(
     if (yield* fs.exists(index).pipe(Effect.orElseSucceed(() => false)))
       return yield* HttpServerResponse.file(index);
     return HttpServerResponse.text(
-      "Not built. Run `pnpm start`, or `pnpm dev` and open the Vite URL.",
+      "Not built. Run `vp run start`, or `vp run dev` and open the Vite URL.",
       { status: 503 },
     );
   }).pipe(Effect.orDie),

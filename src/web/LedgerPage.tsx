@@ -100,7 +100,7 @@ export function LedgerPage({ repo, range }: { repo: string; range: string }) {
         <p className="dim">
           {data.range} · {data.commits.length} commits · {withHistory} with agent history
           {withHistory < data.commits.length &&
-            " (run `vp run ledger -- sync` to add missing ones)"}
+            " (run `toolreader ledger sync` to add missing ones)"}
         </p>
       )}
       <div className="ledger">

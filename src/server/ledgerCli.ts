@@ -1,19 +1,16 @@
-// Commit ledger CLI:
-//   vp run ledger -- sync [--repo PATH] [--range A..B] [--source auto|t3|codex-app-server|codex-rollouts]
+// `toolreader ledger`:
+//   toolreader ledger sync [--repo PATH] [--range A..B] [--source auto|t3|codex-app-server|codex-rollouts]
 //                         [--codex-home DIR] [--max-output BYTES] [--no-outputs] [--push]
 //                         [--match-sessions | --session ID ...]
-//   vp run ledger -- show [--repo PATH] [--range A..B]          list commits and their history
-//   vp run ledger -- hook install|uninstall [--repo PATH]       pre-push hook: sync pushed commits, --push
+//   toolreader ledger show [--repo PATH] [--range A..B]          list commits and their history
+//   toolreader ledger hook install|uninstall [--repo PATH]       pre-push hook: sync pushed commits, --push
 // The range defaults to <default branch>..HEAD. Without --push, share it with `git push origin agent-ledger`.
-import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
-import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import { Argument, Command, Flag } from "effect/unstable/cli";
 
-import packageJson from "../../package.json" with { type: "json" };
 import { LEDGER_BRANCH } from "../core/ledger.ts";
 import { LedgerApp } from "./app.ts";
 import { Ledger, LEDGER_SOURCES, SYNC_DEFAULTS } from "./Ledger.ts";
@@ -140,10 +137,12 @@ const hook = Command.make(
   "hook",
   { action: Argument.choice("action", ["install", "uninstall"]), repo },
   Effect.fn(function* ({ action, repo }) {
-    // The hook runs this same CLI, with absolute paths so it works from any shell.
-    const self = [process.execPath, import.meta.filename].map(
-      (a) => `'${a.replace(/'/g, `'\\''`)}'`,
-    );
+    // The hook runs this same CLI (the script node started: bin.ts, or the bundled dist/bin.mjs),
+    // with absolute paths so it works from any shell.
+    const path = yield* Path.Path;
+    const self = [process.execPath, path.resolve(process.argv[1]!)]
+      .map((a) => `'${a.replace(/'/g, `'\\''`)}'`)
+      .concat("ledger");
     const message = yield* Effect.flatMap(Ledger, (ledger) =>
       ledger.hook(repo, action, self.join(" ")),
     ).pipe(Effect.provide(offline));
@@ -155,10 +154,7 @@ const hook = Command.make(
   ),
 );
 
-Command.make("ledger").pipe(
+export const ledgerCommand = Command.make("ledger").pipe(
   Command.withDescription("Agent history per commit, kept on the agent-ledger branch"),
   Command.withSubcommands([sync, show, hook]),
-  Command.run({ version: packageJson.version }),
-  Effect.provide(NodeServices.layer),
-  NodeRuntime.runMain,
 );

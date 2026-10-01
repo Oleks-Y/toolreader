@@ -759,7 +759,7 @@ describe("Ledger", () => {
         CODEX_BIN: "/nonexistent/codex",
         TOOLREADER_LABELS: path.join(codexHome, "labels.json"),
       };
-      const cli = `'${process.execPath}' '${path.join(import.meta.dirname, "ledgerCli.ts")}'`;
+      const cli = `'${process.execPath}' '${path.join(import.meta.dirname, "bin.ts")}' ledger`;
 
       yield* Effect.gen(function* () {
         const ledger = yield* Ledger;
