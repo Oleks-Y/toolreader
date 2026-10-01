@@ -665,4 +665,41 @@ describe("Ledger", () => {
         }).pipe(Effect.provide(ledgerLayer({ dbPath: "/nonexistent/state.sqlite", codexHome })));
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
+
+  it.live("refuses to move agent-ledger while another worktree has it checked out", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { repo, origin, commitFile } = yield* makeRepo;
+      const codexHome = yield* tempDir("toolreader-codex-home-");
+      yield* git(repo, ["push", "-q", "origin", "main"]);
+      yield* git(repo, ["switch", "-q", "-c", "feat/x"]);
+      const sha = yield* commitFile("a.ts", "a\n", "feat: a", "2026-01-01T10:02:30Z");
+      yield* writeRollout(codexHome, "s1", repo, [
+        { at: "2026-01-01T10:01:00.000Z", item: userMessage("u1", "Add a") },
+        {
+          at: "2026-01-01T10:02:00.000Z",
+          item: command("c1", "git commit -m 'feat: a'", `[feat/x ${sha.slice(0, 7)}] feat: a\n`),
+        },
+      ]);
+      yield* Effect.gen(function* () {
+        const ledger = yield* Ledger;
+        const l0 = (yield* ledger.sync(repo, null, { push: true })).pushed;
+        // Origin moves on to L1; here, a worktree has agent-ledger checked out at L0.
+        const other = yield* tempDir("toolreader-ledger-other-");
+        yield* git(other, ["clone", "-q", "--branch", "agent-ledger", origin, "."]);
+        yield* fs.writeFileString(path.join(other, "commits", `${"e".repeat(40)}.json`), "{}\n");
+        yield* git(other, ["add", "-A"]);
+        yield* git(other, ["commit", "-q", "-m", "ledger: elsewhere"]);
+        yield* git(other, ["push", "-q", "origin", "HEAD:agent-ledger"]);
+        const wt = path.join(yield* tempDir("toolreader-ledger-wt-"), "ledger");
+        yield* git(repo, ["worktree", "add", "-q", wt, "agent-ledger"]);
+
+        const refused = yield* Effect.flip(ledger.sync(repo, null, { push: true }));
+        assert.include(refused.message, "checked out");
+        assert.strictEqual(yield* git(wt, ["rev-parse", "HEAD"]), l0);
+        assert.strictEqual(yield* git(wt, ["status", "--porcelain"]), "");
+      }).pipe(Effect.provide(ledgerLayer({ dbPath: "/nonexistent/state.sqlite", codexHome })));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
 });

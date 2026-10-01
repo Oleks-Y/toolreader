@@ -455,6 +455,22 @@ export class Ledger extends Context.Service<
         }
       });
 
+      /**
+       * Sync moves agent-ledger with `update-ref`; under a worktree that has it checked out, that
+       * would move its HEAD and leave its index and files behind. So such a worktree stops sync.
+       */
+      const ensureNotCheckedOut = Effect.fn("Ledger.ensureNotCheckedOut")(function* (repo: string) {
+        const listing = yield* git(repo, ["worktree", "list", "--porcelain"]);
+        const holder = listing
+          .split("\n\n")
+          .map((block) => block.split("\n"))
+          .find((lines) => lines.includes(`branch ${LEDGER_REF}`));
+        if (holder)
+          return yield* new LedgerFailed({
+            message: `${LEDGER_BRANCH} is checked out in ${holder[0]?.slice("worktree ".length)}; switch that worktree to another branch before syncing.`,
+          });
+      });
+
       const sync = Effect.fn("Ledger.sync")(function* (
         repoArg: string,
         rangeArg: string | null,
@@ -462,6 +478,7 @@ export class Ledger extends Context.Service<
       ) {
         const options = { ...SYNC_DEFAULTS, ...partial };
         const repo = (yield* git(repoArg, ["rev-parse", "--show-toplevel"])).trim();
+        yield* ensureNotCheckedOut(repo);
         const range = rangeArg ?? (yield* defaultRange(repo));
         const { commits, previousAt } = yield* commitsIn(repo, range);
         const remote = options.push ? yield* fetchRemote(repo) : null;
