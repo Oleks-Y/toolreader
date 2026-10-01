@@ -202,7 +202,7 @@ describe("rollout", () => {
     assert.deepStrictEqual(
       actions.map((a) => [a.id, a.kind, a.status, a.title, a.output]),
       [
-        ["x1", "search", "ok", "list src", "a.ts\n"],
+        ["x1", "tool", "ok", "script: ls src", "a.ts\n"],
         ["exec-1", "tool", "ok", 'docs · search {"q":"x"}', "found"],
         ["x4", "tool", "failed", "script text(1 + 1);", "boom"],
       ],
@@ -301,6 +301,26 @@ describe("rollout", () => {
     assert.strictEqual(shellJoin(["sh", "-c", "echo $HOME 'x'"]), `sh -c 'echo $HOME '"'x'"`);
     assert.strictEqual(shellJoin(["printf", 'a\\tb "c"']), `printf "a\\\\tb \\"c\\""`);
   });
+  it("keeps a script command's exit code, and shows a script when it is unknown", () => {
+    const lines = [
+      custom("s1", "exec", 'text(await tools.exec_command({cmd: "pnpm test"}));'),
+      customOutput("s1", 'Script completed\nOutput:\n{"exit_code":1,"output":"1 test failed"}'),
+      custom(
+        "s2",
+        "exec",
+        'const r = await tools.exec_command({cmd: "pnpm lint"});\ntext(r.output);',
+      ),
+      customOutput("s2", "Script completed\nOutput:\nall clean\n"),
+    ];
+    assert.deepStrictEqual(
+      actionsOf(lines, []).actions.map((a) => [a.kind, a.status, a.title, a.exitCode, a.output]),
+      [
+        ["test", "failed", "pnpm test", 1, "1 test failed"],
+        ["tool", "ok", "script: pnpm lint", undefined, "all clean\n"],
+      ],
+    );
+  });
+
   it("keeps a command running until it finishes, and fails it if the turn ends first", () => {
     const lines = [
       event({ type: "task_started", turn_id: "turn-1" }),

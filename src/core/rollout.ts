@@ -40,6 +40,11 @@ const JsonOutput = Schema.Struct({
   metadata: opt(Schema.Struct({ exit_code: opt(Schema.Number) })),
 });
 const decodeJsonOutput = Schema.decodeUnknownOption(Schema.fromJsonString(JsonOutput));
+/** What a script prints when it passes on the whole `tools.exec_command` result (or one per command). */
+const ExecResult = Schema.Struct({ exit_code: Schema.Number, output: opt(Schema.String) });
+const decodeExecResults = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Union([ExecResult, Schema.Array(ExecResult)])),
+);
 const decodeJsonStringLiteral = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.String));
 const WebAction = Schema.Struct({
   type: opt(Schema.String),
@@ -445,11 +450,27 @@ export function rolloutItem(c: RolloutCall, ended = c.ended): Record<string, unk
     const cmds = scriptCommands(script);
     const result = c.outputs.map(body).join("");
     if (cmds.length) {
+      const decoded = Option.getOrUndefined(decodeExecResults(result.trim()));
+      const results = decoded === undefined ? [] : Array.isArray(decoded) ? decoded : [decoded];
+      if (results.length === cmds.length) {
+        const exitCode = results.find((r) => r.exit_code !== 0)?.exit_code ?? 0;
+        return {
+          ...base,
+          type: "commandExecution",
+          command: cmds.join("\n"),
+          exitCode,
+          aggregatedOutput: results.map((r) => r.output ?? "").join("\n"),
+          status: status(failed || exitCode !== 0),
+        };
+      }
+      // Most scripts print only `r.output`: the commands' exit codes are lost, so this stays a
+      // script, whose own status is all that is known.
       return {
         ...base,
-        type: "commandExecution",
-        command: cmds.join("\n"),
-        aggregatedOutput: result,
+        type: "dynamicToolCall",
+        tool: "script:",
+        arguments: cmds.join(" ; "),
+        result,
         status: status(failed),
       };
     }
