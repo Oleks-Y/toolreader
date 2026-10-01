@@ -5,6 +5,7 @@ import * as Layer from "effect/Layer";
 
 import { CodexSessions } from "./CodexSessions.ts";
 import { Labeler } from "./Labeler.ts";
+import { Ledger } from "./Ledger.ts";
 import * as NodeSqliteClient from "./NodeSqliteClient.ts";
 import { Proofs } from "./Proofs.ts";
 import { ServerConfig } from "./ServerConfig.ts";
@@ -18,7 +19,7 @@ const SqlLive = Layer.unwrap(
 );
 
 /** Every app service, plus the Node platform services they run on. */
-export const AppLive = Proofs.layer.pipe(
+export const AppLive = Layer.mergeAll(Proofs.layer, Ledger.layer).pipe(
   Layer.provideMerge(Layer.mergeAll(CodexSessions.layer, Labeler.layer)),
   Layer.provideMerge(ThreadStore.layer),
   Layer.provide(SqlLive),

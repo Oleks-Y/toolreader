@@ -94,6 +94,7 @@ function toSummary(r: ThreadRow, actionCount: number, lastActivity: string | nul
     archived: r.archivedAt !== null,
     updatedAt: lastActivity && lastActivity > r.updatedAt ? lastActivity : r.updatedAt,
     actionCount,
+    worktree: r.worktree,
   };
 }
 
@@ -194,7 +195,6 @@ export class ThreadStore extends Context.Service<
         return {
           thread: {
             ...toSummary(row, actionCount, activities.at(-1)?.at ?? null),
-            worktree: row.worktree,
             head: marker,
           },
           entries,

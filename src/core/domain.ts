@@ -98,6 +98,8 @@ export const ThreadSummary = Schema.Struct({
   updatedAt: Schema.String,
   /** Null when unknown without reading the whole session (Codex). */
   actionCount: Schema.NullOr(Schema.Number),
+  /** Directory the agent worked in (T3 worktree or project root, Codex cwd). */
+  worktree: Schema.NullOr(Schema.String),
 });
 export type ThreadSummary = typeof ThreadSummary.Type;
 
@@ -110,7 +112,6 @@ export type ThreadHead = typeof ThreadHead.Type;
 export const ThreadView = Schema.Struct({
   thread: Schema.Struct({
     ...ThreadSummary.fields,
-    worktree: Schema.NullOr(Schema.String),
     head: Schema.String,
   }),
   entries: Schema.Array(Entry),

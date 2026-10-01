@@ -2,6 +2,7 @@
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -62,6 +63,8 @@ export class CodexSessions extends Context.Service<
   CodexSessions,
   {
     readonly list: Effect.Effect<ReadonlyArray<ThreadSummary>>;
+    /** Completes once the first full listing has landed (or failed), so callers can rely on `list`. */
+    readonly ready: Effect.Effect<void>;
     /** `id` is the bare Codex thread id (without the `codex:` prefix). */
     readonly get: (id: string, labels: Labels) => Effect.Effect<ThreadView, ThreadNotFound>;
     readonly head: (id: string) => Effect.Effect<ThreadHead, ThreadNotFound>;
@@ -109,7 +112,12 @@ export class CodexSessions extends Context.Service<
           yield* Scope.close(startScope, Exit.void);
           const missing = (id: string) =>
             Effect.fail(new ThreadNotFound({ threadId: `${CODEX_ID_PREFIX}${id}` }));
-          return CodexSessions.of({ list: Effect.succeed([]), get: missing, head: missing });
+          return CodexSessions.of({
+            list: Effect.succeed([]),
+            get: missing,
+            head: missing,
+            ready: Effect.void,
+          });
         }
         const client = started.value;
         // Raw requests + loose schemas: a strict decode of the whole protocol would fail on every new Codex field.
@@ -153,7 +161,9 @@ export class CodexSessions extends Context.Service<
         }).pipe(Effect.catchCause((cause) => Effect.logWarning("Codex thread/list failed", cause)));
 
         // The first (full) load pages through everything and takes a few seconds, so it runs in the background.
+        const firstLoad = yield* Deferred.make<void>();
         yield* refresh.pipe(
+          Effect.andThen(Deferred.succeed(firstLoad, undefined)),
           Effect.andThen(refresh.pipe(Effect.repeat(Schedule.spaced(options.refreshEvery)))),
           Effect.forkScoped,
         );
@@ -183,6 +193,7 @@ export class CodexSessions extends Context.Service<
           archived: t.archived,
           updatedAt: isoFromSeconds(t.updatedAt),
           actionCount: null,
+          worktree: t.cwd ?? null,
         });
 
         const list = Effect.gen(function* () {
@@ -272,7 +283,6 @@ export class CodexSessions extends Context.Service<
             thread: {
               ...summarize(meta, projects, now),
               actionCount: entries.filter((e) => e.type === "action").length,
-              worktree: read.thread.cwd ?? null,
               head: marker,
             },
             entries,
@@ -280,7 +290,7 @@ export class CodexSessions extends Context.Service<
           };
         });
 
-        return CodexSessions.of({ list, get, head });
+        return CodexSessions.of({ list, get, head, ready: Deferred.await(firstLoad) });
       }),
     );
   }

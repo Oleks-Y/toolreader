@@ -101,8 +101,27 @@ export function segmentFor(
   commitAction: CommitAction,
   allCommitActions: ReadonlyArray<CommitAction>,
 ): Entry[] {
-  const previous = allCommitActions.filter((a) => a.index < commitAction.index).at(-1);
+  const previous = allCommitActions.findLast((a) => a.index < commitAction.index);
   return entries.slice(previous ? previous.index + 1 : 0, commitAction.index + 1);
 }
 
 export const ledgerPath = (sha: string) => `commits/${sha}.json`;
+
+/** A commit range as the viewer shows it: each commit with its agent history, if any. */
+export const LedgerRange = Schema.Struct({
+  repo: Schema.String,
+  range: Schema.String,
+  /** Web URL of the origin remote (credentials removed), for commit links. */
+  remoteUrl: Schema.NullOr(Schema.String),
+  commits: Schema.Array(LedgerCommitView),
+});
+export type LedgerRange = typeof LedgerRange.Type;
+
+/** `git@github.com:o/r.git` / `https://host/o/r.git` → `https://host/o/r`, for linking commits. */
+export function remoteWebUrl(remote: string | null): string | null {
+  if (!remote) return null;
+  const ssh = /^[\w.-]+@([\w.-]+):(.+?)(?:\.git)?$/.exec(remote);
+  if (ssh) return `https://${ssh[1]}/${ssh[2]}`;
+  const http = /^https?:\/\/(?:[^@/]+@)?([^/]+)\/(.+?)(?:\.git)?\/?$/.exec(remote);
+  return http ? `https://${http[1]}/${http[2]}` : null;
+}

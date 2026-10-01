@@ -21,6 +21,10 @@ export class ProofWriteFailed extends Schema.TaggedErrorClass<ProofWriteFailed>(
   { message: Schema.String },
 ) {}
 
+export class LedgerFailed extends Schema.TaggedErrorClass<LedgerFailed>()("LedgerFailed", {
+  message: Schema.String,
+}) {}
+
 export class LabelingFailed extends Schema.TaggedErrorClass<LabelingFailed>()("LabelingFailed", {
   message: Schema.String,
 }) {}
