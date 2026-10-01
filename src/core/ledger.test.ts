@@ -5,8 +5,9 @@ import {
   clipOutputs,
   findCommitActions,
   matchCommit,
-  matchSession,
+  madeEdits,
   segmentFor,
+  sessionsBetween,
   sessionSegment,
   type LedgerCommit,
 } from "./ledger.ts";
@@ -135,7 +136,7 @@ describe("ledger", () => {
     );
   });
 
-  it("ties a commit no session made to the session that ended between it and the previous commit", () => {
+  it("finds the sessions that ended between the previous commit and this one", () => {
     // CI: `codex exec` edits (the sandbox blocks .git), a later step commits.
     const edits: Entry[] = [
       user("p", "2026-01-01T10:00:00Z"),
@@ -145,18 +146,32 @@ describe("ledger", () => {
     const older = { entries: [action("o", "2026-01-01T08:00:00Z", "sed -i o a.ts")] };
     const latest = { entries: edits };
     const at = commit("abc", "2026-01-01T10:05:00Z");
-    assert.strictEqual(matchSession(at, "2026-01-01T09:00:00Z", [older, latest]), latest);
-    assert.strictEqual(matchSession(at, null, [older]), older, "first commit: no lower bound");
-    assert.strictEqual(
-      matchSession(at, "2026-01-01T10:03:00Z", [latest]),
-      null,
+    assert.deepStrictEqual(sessionsBetween(at, "2026-01-01T09:00:00Z", [older, latest]), [latest]);
+    assert.deepStrictEqual(
+      sessionsBetween(at, null, [older, latest]),
+      [older, latest],
+      "first commit: no lower bound, and every candidate is returned",
+    );
+    assert.deepStrictEqual(
+      sessionsBetween(at, "2026-01-01T10:03:00Z", [latest]),
+      [],
       "ended before the previous commit",
     );
-    assert.strictEqual(
-      matchSession(commit("abc", "2026-01-01T10:01:30Z"), null, [latest]),
-      null,
+    assert.deepStrictEqual(
+      sessionsBetween(commit("abc", "2026-01-01T10:01:30Z"), null, [latest]),
+      [],
       "still running at commit time",
     );
+    // Edits count, by tool or by a shell command that writes; reading and testing don't.
+    const run = (id: string, kind: Action["kind"], parts: Action["parts"] = []): Action => ({
+      ...action(id, "2026-01-01T10:00:00Z", id),
+      kind,
+      parts,
+    });
+    assert.isTrue(madeEdits([run("patch", "edit")]));
+    assert.isTrue(madeEdits([run("chain", "test", [{ kind: "edit", title: "write f.ts" }])]));
+    assert.isFalse(madeEdits([run("diff", "read"), run("test", "test")]));
+    assert.isFalse(madeEdits([{ ...run("bad", "edit"), status: "failed" }]));
     // Only what came after the previous commit and after the session's own last commit action.
     const mixed: Entry[] = [...entries, action("w3", "2026-01-01T10:20:00Z", "sed -i z c.ts")];
     assert.deepStrictEqual(

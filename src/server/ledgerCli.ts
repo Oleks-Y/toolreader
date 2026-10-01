@@ -1,6 +1,7 @@
 // Commit ledger CLI:
 //   vp run ledger -- sync [--repo PATH] [--range A..B] [--source auto|t3|codex-app-server|codex-rollouts]
 //                         [--codex-home DIR] [--max-output BYTES] [--no-outputs] [--push]
+//                         [--match-sessions | --session ID ...]
 //   vp run ledger -- show [--repo PATH] [--range A..B]          list commits and their history
 //   vp run ledger -- hook install|uninstall [--repo PATH]       pre-push hook: sync pushed commits, --push
 // The range defaults to <default branch>..HEAD. Without --push, share it with `git push origin agent-ledger`.
@@ -51,13 +52,32 @@ const sync = Command.make(
     noOutputs: Flag.boolean("no-outputs").pipe(
       Flag.withDescription("Leave command and tool outputs out (they are redacted otherwise)"),
     ),
+    matchSessions: Flag.boolean("match-sessions").pipe(
+      Flag.withDescription(
+        "Tie a commit no `git commit` action made to the one session here that edited files and ended before it (safe with a job-local CODEX_HOME)",
+      ),
+    ),
+    session: Flag.string("session").pipe(
+      Flag.withDescription("Tie such commits to this session (repeatable)"),
+      Flag.atLeast(0),
+    ),
     push: Flag.boolean("push").pipe(
       Flag.withDescription(
         "Write on top of origin's agent-ledger and push it, retrying if another push wins",
       ),
     ),
   },
-  Effect.fn(function* ({ repo, range, source, codexHome, maxOutput, noOutputs, push }) {
+  Effect.fn(function* ({
+    repo,
+    range,
+    source,
+    codexHome,
+    maxOutput,
+    noOutputs,
+    push,
+    matchSessions,
+    session,
+  }) {
     const path = yield* Path.Path;
     const result = yield* Effect.flatMap(Ledger, (ledger) =>
       ledger.sync(repo, Option.getOrNull(range), {
@@ -65,6 +85,8 @@ const sync = Command.make(
         maxOutput,
         source,
         push,
+        matchSessions,
+        sessions: session,
       }),
     ).pipe(
       Effect.provide(
@@ -80,6 +102,11 @@ const sync = Command.make(
     for (const a of result.added) {
       yield* Console.log(
         `  + ${a.commit.sha.slice(0, 8)} ${a.commit.subject}  ← ${a.thread} (${a.actions} actions, by ${a.match})`,
+      );
+    }
+    for (const { commit: c, sessions } of result.ambiguous) {
+      yield* Console.log(
+        `  ? ${c.sha.slice(0, 8)} ${c.subject}  (ambiguous: ${sessions.join(", ")}; pick one with --session)`,
       );
     }
     for (const c of result.unmatched) {

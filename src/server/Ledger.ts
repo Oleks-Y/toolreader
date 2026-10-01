@@ -21,11 +21,12 @@ import {
   LedgerEntry,
   ledgerPath,
   matchCommit,
-  matchSession,
+  madeEdits,
   prePushHook,
   remoteWebUrl,
   segmentFor,
   sessionSegment,
+  sessionsBetween,
   type CommitAction,
   type LedgerCommit,
   type LedgerCommitView,
@@ -64,12 +65,22 @@ export type SyncOptions = {
   readonly source: LedgerSource;
   /** Write on top of origin's agent-ledger and push it, retrying when another push wins. */
   readonly push: boolean;
+  /**
+   * For commits no `git commit` action made: tie each to the session in this worktree that made
+   * edits and ended between the previous commit and it. Several such sessions: none is attached.
+   * Only safe where every session is this job's own (CI with a job-local CODEX_HOME).
+   */
+  readonly matchSessions: boolean;
+  /** Sessions (ids, `codex:` optional) to tie such commits to, instead of guessing which. */
+  readonly sessions: ReadonlyArray<string>;
 };
 export const SYNC_DEFAULTS: SyncOptions = {
   outputs: true,
   maxOutput: 8192,
   source: "auto",
   push: false,
+  matchSessions: false,
+  sessions: [],
 };
 
 export type SyncResult = {
@@ -82,12 +93,17 @@ export type SyncResult = {
     actions: number;
   }>;
   readonly unmatched: ReadonlyArray<LedgerCommit>;
+  /** Commits several sessions could have produced: left without an entry rather than guessed. */
+  readonly ambiguous: ReadonlyArray<{ commit: LedgerCommit; sessions: ReadonlyArray<string> }>;
   readonly existing: number;
   /** The ledger commit now on origin, when `push` sent one. */
   readonly pushed: string | null;
 };
 
 type Session = {
+  /** Worked in the synced worktree itself, not another worktree of the repo. */
+  readonly here: boolean;
+  readonly edited: boolean;
   readonly entries: ReadonlyArray<Entry>;
   readonly actions: CommitAction[];
   readonly labels: Labels;
@@ -305,9 +321,18 @@ export class Ledger extends Context.Service<
           for (const s of yield* rollouts.list)
             found.push({ summary: s, load: (l) => rollouts.get(bare(s), l) });
         }
-        const inRepo = (dir: string | null) =>
-          !!dir && roots.some((root) => dir === root || dir.startsWith(`${root}/`));
-        return { sources, found: found.filter((f) => inRepo(f.summary.worktree)) };
+        // The innermost worktree holding the session's directory (worktrees can nest).
+        const rootOf = (dir: string | null) =>
+          roots
+            .filter((root) => !!dir && (dir === root || dir.startsWith(`${root}/`)))
+            .sort((a, b) => b.length - a.length)[0];
+        return {
+          sources,
+          found: found.flatMap((f) => {
+            const root = rootOf(f.summary.worktree);
+            return root ? [{ ...f, root }] : [];
+          }),
+        };
       });
 
       /**
@@ -450,13 +475,15 @@ export class Ledger extends Context.Service<
         // Load each session that worked here once.
         const sessions: Session[] = [];
         if (todo.length > 0) {
-          for (const { summary, load } of found) {
+          for (const { summary, load, root } of found) {
             const labels = yield* labeler.forThread(summary.id);
             const view = yield* load(labels).pipe(Effect.option);
             if (Option.isNone(view)) continue;
             const { entries, thread: t } = view.value;
             if (!entries.some((e) => e.type === "action")) continue;
             sessions.push({
+              here: root === repo,
+              edited: madeEdits(entries),
               entries,
               actions: findCommitActions(entries),
               labels: { ...view.value.labels },
@@ -471,12 +498,29 @@ export class Ledger extends Context.Service<
           }
         }
 
+        // Who may take a commit no `git commit` action made: the sessions named, or (when asked)
+        // the ones that edited this worktree.
+        const isNamed = (s: Session, name: string) =>
+          s.thread.id === name || s.thread.id === `${CODEX_ID_PREFIX}${name}`;
+        const missing = options.sessions.filter((name) => !sessions.some((s) => isNamed(s, name)));
+        if (todo.length > 0 && missing.length > 0)
+          return yield* new LedgerFailed({
+            message: `No session ${missing.join(", ")} in ${sources.join(" + ") || "any source"} for ${repo}`,
+          });
+        const eligible =
+          options.sessions.length > 0
+            ? sessions.filter((s) => options.sessions.some((name) => isNamed(s, name)))
+            : options.matchSessions
+              ? sessions.filter((s) => s.here && s.edited)
+              : [];
+
         const added: Array<SyncResult["added"][number]> = [];
         const unmatched: LedgerCommit[] = [];
+        const ambiguous: Array<SyncResult["ambiguous"][number]> = [];
         const writes: Write[] = [];
         for (const commit of todo) {
-          // A printed SHA anywhere wins; then the latest time match; then a session that ended
-          // before the commit without committing itself.
+          // A printed SHA anywhere wins; then the latest time match; then the one eligible session
+          // that ended between the previous commit and this one.
           const candidates = sessions.flatMap((s) => {
             const m = matchCommit(commit, s.actions);
             return m ? [{ session: s, ...m }] : [];
@@ -485,7 +529,12 @@ export class Ledger extends Context.Service<
             candidates.find((c) => c.match === "sha") ??
             candidates.sort((a, b) => (a.action.action.at < b.action.action.at ? 1 : -1))[0];
           const before = previousAt.get(commit.sha) ?? null;
-          const fallback = best ? null : matchSession(commit, before, sessions);
+          const between = best ? [] : sessionsBetween(commit, before, eligible);
+          if (between.length > 1) {
+            ambiguous.push({ commit, sessions: between.map((s) => s.thread.id) });
+            continue;
+          }
+          const fallback = between[0];
           const picked = best
             ? {
                 session: best.session,
@@ -536,6 +585,7 @@ export class Ledger extends Context.Service<
           sources,
           added,
           unmatched,
+          ambiguous,
           existing: commits.length - todo.length,
           pushed,
         };

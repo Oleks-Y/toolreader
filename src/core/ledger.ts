@@ -120,30 +120,34 @@ export function segmentFor(
 }
 
 /**
- * A session that ended between the previous commit and this one, for commits no `git commit`
- * action made (an agent edits, a later step commits: CI, where the sandbox blocks `.git`).
- * The latest such session wins.
+ * Sessions that ended between the previous commit and this one: candidates for a commit no
+ * `git commit` action made (an agent edits, a later step commits: CI, where the sandbox blocks
+ * `.git`). The caller decides which sessions may count, and attaches none when several do.
  */
-export function matchSession<S extends { readonly entries: ReadonlyArray<Entry> }>(
+export function sessionsBetween<S extends { readonly entries: ReadonlyArray<Entry> }>(
   commit: LedgerCommit,
   previousAt: string | null,
   sessions: ReadonlyArray<S>,
-): S | null {
+): S[] {
   const at = Date.parse(commit.committedAt);
   const after = previousAt ? Date.parse(previousAt) : -Infinity;
-  let best: { session: S; last: number } | null = null;
-  for (const session of sessions) {
+  return sessions.filter((session) => {
     const lastAt = session.entries.at(-1)?.at;
-    if (!lastAt) continue;
-    const last = Date.parse(lastAt);
-    if (last <= after || last > at + CLOCK_SKEW_MS) continue;
-    if (!best || last > best.last) best = { session, last };
-  }
-  // ponytail: one session per commit; several agents feeding one commit keep only the last.
-  return best?.session ?? null;
+    const last = lastAt ? Date.parse(lastAt) : NaN;
+    return last > after && last <= at + CLOCK_SKEW_MS;
+  });
 }
 
-/** The part of a session `matchSession` ties to a commit: after its last commit action and the previous commit. */
+/** The session changed files: an edit, or a shell command that writes one (`>`, heredoc, `sed -i`). */
+export const madeEdits = (entries: ReadonlyArray<Entry>) =>
+  entries.some(
+    (e) =>
+      e.type === "action" &&
+      e.status !== "failed" &&
+      (e.kind === "edit" || !!e.files?.length || !!e.parts?.some((p) => p.kind === "edit")),
+  );
+
+/** The part of a session tied to a commit by `sessionsBetween` to a commit: after its last commit action and the previous commit. */
 export function sessionSegment(
   entries: ReadonlyArray<Entry>,
   commitActions: ReadonlyArray<CommitAction>,

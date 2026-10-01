@@ -107,11 +107,18 @@ const writeRollout = (
       path.join(dir, `rollout-2026-01-01T00-00-00-${id}.jsonl`),
       lines.join("\n"),
     );
+    return path.join(dir, `rollout-2026-01-01T00-00-00-${id}.jsonl`);
   });
 const userMessage = (id: string, text: string) => ({
   type: "UserMessage",
   id,
   content: [{ type: "text", text }],
+});
+const fileChange = (id: string, file: string) => ({
+  type: "FileChange",
+  id,
+  changes: { [file]: { type: "add", content: "x\n" } },
+  status: "completed",
 });
 const command = (id: string, script: string, output = "", exitCode = 0) => ({
   type: "CommandExecution",
@@ -367,7 +374,7 @@ describe("Ledger", () => {
 
         yield* Effect.gen(function* () {
           const ledger = yield* Ledger;
-          const result = yield* ledger.sync(repo, null, { maxOutput: 1000 });
+          const result = yield* ledger.sync(repo, null, { maxOutput: 1000, matchSessions: true });
           assert.deepStrictEqual(result.sources, ["codex-rollouts"]);
           assert.deepStrictEqual(
             result.added.map((a) => [a.commit.sha, a.thread, a.match, a.actions]),
@@ -580,6 +587,82 @@ describe("Ledger", () => {
             }),
           ),
         );
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live(
+    "ties a commit to a session only when asked, only to one that edited here, never by guessing",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { repo, commitFile } = yield* makeRepo;
+        const codexHome = yield* tempDir("toolreader-codex-home-");
+        const elsewhere = path.join(yield* tempDir("toolreader-ledger-wt-"), "wt");
+        yield* git(repo, ["worktree", "add", "-q", "-b", "other", elsewhere]);
+        yield* git(repo, ["switch", "-q", "-c", "feat/x"]);
+        // The editor ends, a read-only reviewer ends later, then CI commits (parent at 09:00).
+        yield* writeRollout(codexHome, "editor", repo, [
+          { at: "2026-01-01T09:30:00.000Z", item: userMessage("u1", "Edit e") },
+          { at: "2026-01-01T10:00:00.000Z", item: fileChange("f1", path.join(repo, "e.ts")) },
+        ]);
+        const second = yield* writeRollout(codexHome, "editor2", repo, [
+          { at: "2026-01-01T09:40:00.000Z", item: userMessage("u2", "Edit f") },
+          { at: "2026-01-01T10:01:00.000Z", item: command("w2", "printf 'x' > f.ts") },
+        ]);
+        yield* writeRollout(codexHome, "reviewer", repo, [
+          { at: "2026-01-01T10:02:00.000Z", item: userMessage("u3", "Review") },
+          { at: "2026-01-01T10:04:00.000Z", item: command("d1", "git diff") },
+        ]);
+        // Edits in another worktree of the repo never count for this one.
+        yield* writeRollout(codexHome, "elsewhere", elsewhere, [
+          { at: "2026-01-01T10:02:00.000Z", item: userMessage("u4", "Other") },
+          { at: "2026-01-01T10:03:00.000Z", item: fileChange("f4", path.join(elsewhere, "o.ts")) },
+        ]);
+        const ci = yield* commitFile("e.ts", "x\n", "chore: CI commit", "2026-01-01T10:05:00Z");
+
+        yield* Effect.gen(function* () {
+          const ledger = yield* Ledger;
+          const byDefault = yield* ledger.sync(repo, null);
+          assert.deepStrictEqual(
+            [byDefault.added.length, byDefault.unmatched.map((c) => c.sha)],
+            [0, [ci]],
+            "off by default",
+          );
+
+          const twoEditors = yield* ledger.sync(repo, null, { matchSessions: true });
+          assert.deepStrictEqual(twoEditors.added.length, 0);
+          assert.deepStrictEqual(
+            twoEditors.ambiguous.map((a) => [a.commit.sha, [...a.sessions].sort()]),
+            [[ci, ["codex:editor", "codex:editor2"]]],
+          );
+
+          yield* fs.remove(second);
+          const oneEditor = yield* ledger.sync(repo, null, { matchSessions: true });
+          assert.deepStrictEqual(
+            oneEditor.added.map((a) => [a.commit.sha, a.match, a.thread]),
+            [[ci, "session", "Edit e"]],
+          );
+
+          // Read-only sessions never qualify on their own; naming one attributes it directly.
+          yield* writeRollout(codexHome, "reviewer2", repo, [
+            { at: "2026-01-01T10:10:00.000Z", item: userMessage("u5", "Review again") },
+            { at: "2026-01-01T10:20:00.000Z", item: command("d2", "git diff") },
+          ]);
+          const ci2 = yield* commitFile("g.ts", "g\n", "chore: CI again", "2026-01-01T10:30:00Z");
+          const readOnly = yield* ledger.sync(repo, null, { matchSessions: true });
+          assert.deepStrictEqual(
+            readOnly.unmatched.map((c) => c.sha),
+            [ci2],
+          );
+          const unknown = yield* Effect.flip(ledger.sync(repo, null, { sessions: ["nope"] }));
+          assert.include(unknown.message, "nope");
+          const named = yield* ledger.sync(repo, null, { sessions: ["reviewer2"] });
+          assert.deepStrictEqual(
+            named.added.map((a) => [a.commit.sha, a.match, a.thread]),
+            [[ci2, "session", "Review again"]],
+          );
+        }).pipe(Effect.provide(ledgerLayer({ dbPath: "/nonexistent/state.sqlite", codexHome })));
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });
