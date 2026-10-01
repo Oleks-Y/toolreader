@@ -113,6 +113,36 @@ describe("codex", () => {
     assert.strictEqual(messages[2]?.at, "2026-01-01T00:00:06.000Z");
   });
 
+  it("keeps a search that found nothing ok, though Codex marks it failed", () => {
+    const search = decodeRead({
+      thread: {
+        id: "t",
+        createdAt: 1_790_000_000,
+        updatedAt: 1_790_000_000,
+        turns: [
+          {
+            id: "x",
+            items: [
+              {
+                type: "commandExecution",
+                id: "c1",
+                status: "failed",
+                command: "/bin/zsh -lc 'rg -n missing src'",
+                exitCode: 1,
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const { activities, messages } = codexThreadToRows(search, new Map());
+    const [action] = normalize(activities, messages);
+    assert.deepStrictEqual(action?.type === "action" ? [action.status, action.noMatch] : [], [
+      "ok",
+      true,
+    ]);
+  });
+
   it("keeps Codex item order when timestamps are missing", () => {
     const cmd = (id: string) => ({
       type: "commandExecution",

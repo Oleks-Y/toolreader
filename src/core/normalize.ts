@@ -437,8 +437,9 @@ function toAction(id: string, at: string, p: ToolPayload, summary: string): Acti
   const { failed, ...rest } = draft;
   const title =
     rest.title || str(p.title) || str(summary) || (p.itemType ?? "tool").replace(/_/g, " ");
+  // Codex marks `rg` exit 1 as failed; a search that found nothing is not a failure.
   const status =
-    p.status === "failed" || p.status === "declined" || failed
+    ((p.status === "failed" || p.status === "declined") && !rest.noMatch) || failed
       ? "failed"
       : p.status === "inProgress"
         ? "running"
