@@ -104,7 +104,13 @@ function tokenize(command: string): Token[] {
   };
   for (let i = 0; i < command.length; i++) {
     const c = command[i]!;
-    if (c === "'") {
+    if ((c === "$" && command[i + 1] === "(") || c === "`") {
+      // A command substitution is part of its word, whatever it contains.
+      const end = substitutionEnd(command, i);
+      word += command.slice(i, end);
+      inWord = true;
+      i = end - 1;
+    } else if (c === "'") {
       const end = command.indexOf("'", i + 1);
       word += command.slice(i + 1, end < 0 ? undefined : end);
       inWord = true;
@@ -147,6 +153,25 @@ function tokenize(command: string): Token[] {
   }
   flush();
   return tokens;
+}
+
+/** Index just past the `$(…)` or `` `…` `` starting at `start`, skipping quoted parens. */
+function substitutionEnd(command: string, start: number): number {
+  if (command[start] === "`") {
+    const close = command.indexOf("`", start + 1);
+    return close < 0 ? command.length : close + 1;
+  }
+  let depth = 0;
+  for (let i = start + 1; i < command.length; i++) {
+    const c = command[i]!;
+    if (c === "'" || c === '"') {
+      const close = command.indexOf(c, i + 1);
+      if (close < 0) return command.length;
+      i = close;
+    } else if (c === "(") depth++;
+    else if (c === ")" && --depth === 0) return i + 1;
+  }
+  return command.length;
 }
 
 /** Splits a command into pipelines (by && || ; &), each a list of stages (by |), each a word list. */
@@ -319,6 +344,8 @@ function humanizeStage(words: string[]): Part | null {
   let i = 0;
   while (i < words.length && /^[A-Za-z_][\w]*=/.test(words[i]!)) i++; // env assignments
   const argv = words.slice(i);
+  if (argv[0] === "command" && /^-[vV]$/.test(argv[1] ?? ""))
+    return { kind: "read", title: `which ${argv.slice(2).join(" ")}` };
   if (argv[0] === "env" || argv[0] === "time" || argv[0] === "command" || argv[0] === "exec")
     argv.shift();
   const exe = argv[0];

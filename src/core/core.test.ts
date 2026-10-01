@@ -54,6 +54,18 @@ describe("core", () => {
     ]);
   });
 
+  it("keeps command substitutions inside their word", () => {
+    assert.deepStrictEqual(
+      titles(`TOKEN=$(head -n 1 ~/.token) && curl -H "x: $TOKEN" https://a.dev`),
+      ["web:curl https://a.dev"],
+    );
+    assert.deepStrictEqual(titles("echo `date +%s` > stamp.txt"), ["edit:write stamp.txt"]);
+    assert.deepStrictEqual(titles("command -v psql || brew install libpq"), [
+      "read:which psql",
+      "setup:brew install libpq",
+    ]);
+  });
+
   it("classifies commands by intent, whatever the toolchain", () => {
     const cases: Array<[string, string]> = [
       ["go test ./... -run X", "test"],
