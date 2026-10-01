@@ -50,20 +50,21 @@ export type LedgerCommitView = typeof LedgerCommitView.Type;
 export type CommitAction = {
   readonly index: number;
   readonly action: Action;
-  /** Short or full SHA when the output printed one (`[branch abc1234] subject`). */
-  readonly sha: string | null;
+  /** Short or full SHAs the output printed (`[branch abc1234] subject`), one per commit made. */
+  readonly shas: ReadonlyArray<string>;
 };
 
 const GIT_COMMIT = /\bgit\b(?:\s+-[cC]\s+\S+)*\s+commit\b/;
-const COMMIT_SUMMARY = /^\[[^\]\s]+(?: \([^)]*\))? ([0-9a-f]{7,40})\]/m;
+const COMMIT_SUMMARY = /^\[[^\]\s]+(?: \([^)]*\))? ([0-9a-f]{7,40})\]/gm;
 
-/** `git commit` actions in time order, with the SHA when the output shows it. */
+/** `git commit` actions in time order, with the SHAs the output shows. */
 export function findCommitActions(entries: ReadonlyArray<Entry>): CommitAction[] {
   const out: CommitAction[] = [];
   entries.forEach((e, index) => {
     if (e.type !== "action" || e.status === "failed" || !GIT_COMMIT.test(e.command ?? e.title))
       return;
-    out.push({ index, action: e, sha: COMMIT_SUMMARY.exec(e.output ?? "")?.[1] ?? null });
+    const shas = [...(e.output ?? "").matchAll(COMMIT_SUMMARY)].map((m) => m[1]!);
+    out.push({ index, action: e, shas });
   });
   return out;
 }
@@ -80,12 +81,12 @@ export function matchCommit(
   commit: LedgerCommit,
   actions: ReadonlyArray<CommitAction>,
 ): { action: CommitAction; match: "sha" | "time" } | null {
-  const bySha = actions.find((a) => a.sha && commit.sha.startsWith(a.sha));
+  const bySha = actions.find((a) => a.shas.some((sha) => commit.sha.startsWith(sha)));
   if (bySha) return { action: bySha, match: "sha" };
   const at = Date.parse(commit.committedAt);
   let best: CommitAction | null = null;
   for (const a of actions) {
-    if (a.sha) continue; // printed a different SHA: not this commit
+    if (a.shas.length > 0) continue; // printed other SHAs: not this commit
     const started = Date.parse(a.action.at);
     if (started > at + CLOCK_SKEW_MS || at - started > MAX_COMMIT_DELAY_MS) continue;
     if (!best || started > Date.parse(best.action.at)) best = a;

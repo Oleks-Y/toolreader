@@ -44,17 +44,17 @@ const entries: Entry[] = [
     "c2",
     "2026-01-01T10:05:00Z",
     "git commit -m two",
-    "[feat/x 1a2b3c4] two\n 1 file changed",
+    "[feat/x 1a2b3c4] two\n 1 file changed\n[feat/x 5d6e7f8] three\n 1 file changed",
   ),
 ];
 
 describe("ledger", () => {
   it("finds successful git commit actions and their printed SHAs", () => {
     assert.deepStrictEqual(
-      findCommitActions(entries).map((a) => [a.action.id, a.sha]),
+      findCommitActions(entries).map((a) => [a.action.id, a.shas]),
       [
-        ["c1", null],
-        ["c2", "1a2b3c4"],
+        ["c1", []],
+        ["c2", ["1a2b3c4", "5d6e7f8"]],
       ],
     );
   });
@@ -64,6 +64,11 @@ describe("ledger", () => {
     assert.deepStrictEqual(
       matchCommit(commit("1a2b3c4d5e6f", "2026-01-01T10:05:03Z"), actions)?.action.action.id,
       "c2",
+    );
+    assert.deepStrictEqual(
+      matchCommit(commit("5d6e7f8a9b", "2026-01-01T10:05:04Z"), actions),
+      { action: actions[1]!, match: "sha" },
+      "second commit of one command",
     );
     const quiet = matchCommit(commit("ffff000", "2026-01-01T10:02:27Z"), actions);
     assert.deepStrictEqual([quiet?.action.action.id, quiet?.match], ["c1", "time"]);
