@@ -1,0 +1,108 @@
+// The commit ledger: one entry per code commit an agent made, holding the slice of session history
+// that produced it. Entries live on a separate `agent-ledger` branch as `commits/<sha>.json`, so a
+// repo alone can show "what the agent did for each commit". Pure, so server and browser share it.
+import * as Schema from "effect/Schema";
+
+import { Entry, Labels, ThreadSource, type Action } from "./domain.ts";
+
+export const LEDGER_FORMAT_VERSION = 1;
+export const LEDGER_BRANCH = "agent-ledger";
+
+export const LedgerCommit = Schema.Struct({
+  sha: Schema.String,
+  subject: Schema.String,
+  committedAt: Schema.String,
+  /** `git patch-id --stable`: survives rebases and amends that keep the diff. */
+  patchId: Schema.NullOr(Schema.String),
+});
+export type LedgerCommit = typeof LedgerCommit.Type;
+
+export const LedgerEntry = Schema.Struct({
+  formatVersion: Schema.Literal(LEDGER_FORMAT_VERSION),
+  commit: LedgerCommit,
+  thread: Schema.Struct({
+    id: Schema.String,
+    title: Schema.String,
+    source: ThreadSource,
+    provider: Schema.NullOr(Schema.String),
+    origin: Schema.NullOr(Schema.String),
+  }),
+  /** How the commit was tied to the session: its SHA in `git commit` output, or commit time. */
+  match: Schema.Literals(["sha", "time"]),
+  outputs: Schema.Literals(["included", "omitted"]),
+  redactions: Schema.Number,
+  /** History since the agent's previous commit in that thread (or the thread start), up to this commit. */
+  entries: Schema.Array(Entry),
+  labels: Labels,
+});
+export type LedgerEntry = typeof LedgerEntry.Type;
+
+/** One commit of a range, with its ledger entry when the ledger has one. */
+export const LedgerCommitView = Schema.Struct({
+  commit: LedgerCommit,
+  entry: Schema.NullOr(LedgerEntry),
+  /** The entry was found by patch-id because the SHA changed (rebase/amend). */
+  matchedBy: Schema.NullOr(Schema.Literals(["sha", "patch-id"])),
+});
+export type LedgerCommitView = typeof LedgerCommitView.Type;
+
+export type CommitAction = {
+  readonly index: number;
+  readonly action: Action;
+  /** Short or full SHA when the output printed one (`[branch abc1234] subject`). */
+  readonly sha: string | null;
+};
+
+const GIT_COMMIT = /\bgit\b(?:\s+-[cC]\s+\S+)*\s+commit\b/;
+const COMMIT_SUMMARY = /^\[[^\]\s]+(?: \([^)]*\))? ([0-9a-f]{7,40})\]/m;
+
+/** `git commit` actions in time order, with the SHA when the output shows it. */
+export function findCommitActions(entries: ReadonlyArray<Entry>): CommitAction[] {
+  const out: CommitAction[] = [];
+  entries.forEach((e, index) => {
+    if (e.type !== "action" || e.status === "failed" || !GIT_COMMIT.test(e.command ?? e.title))
+      return;
+    out.push({ index, action: e, sha: COMMIT_SUMMARY.exec(e.output ?? "")?.[1] ?? null });
+  });
+  return out;
+}
+
+/** Max delay between a `git commit` action starting and git recording the commit (hooks, checks). */
+const MAX_COMMIT_DELAY_MS = 10 * 60_000;
+const CLOCK_SKEW_MS = 2_000;
+
+/**
+ * The commit action that produced `commit`: a printed SHA wins; otherwise the latest commit action
+ * that started shortly before the commit time.
+ */
+export function matchCommit(
+  commit: LedgerCommit,
+  actions: ReadonlyArray<CommitAction>,
+): { action: CommitAction; match: "sha" | "time" } | null {
+  const bySha = actions.find((a) => a.sha && commit.sha.startsWith(a.sha));
+  if (bySha) return { action: bySha, match: "sha" };
+  const at = Date.parse(commit.committedAt);
+  let best: CommitAction | null = null;
+  for (const a of actions) {
+    if (a.sha) continue; // printed a different SHA: not this commit
+    const started = Date.parse(a.action.at);
+    if (started > at + CLOCK_SKEW_MS || at - started > MAX_COMMIT_DELAY_MS) continue;
+    if (!best || started > Date.parse(best.action.at)) best = a;
+  }
+  return best ? { action: best, match: "time" } : null;
+}
+
+/**
+ * History that produced a commit: everything after the previous commit action in the same thread
+ * (or from the thread start) up to and including this commit action.
+ */
+export function segmentFor(
+  entries: ReadonlyArray<Entry>,
+  commitAction: CommitAction,
+  allCommitActions: ReadonlyArray<CommitAction>,
+): Entry[] {
+  const previous = allCommitActions.filter((a) => a.index < commitAction.index).at(-1);
+  return entries.slice(previous ? previous.index + 1 : 0, commitAction.index + 1);
+}
+
+export const ledgerPath = (sha: string) => `commits/${sha}.json`;
