@@ -38,7 +38,8 @@ export const Action = Schema.Struct({
   id: Schema.String,
   at: Schema.String,
   kind: ActionKind,
-  status: Schema.Literals(["ok", "failed", "running"]),
+  /** `unknown`: it ran, but its exit code was not recorded (code-mode scripts that print only output). */
+  status: Schema.Literals(["ok", "failed", "running", "unknown"]),
   /** Humanized one-liner, e.g. `read src/x.ts:1-40 · search "foo" in src`. */
   title: Schema.String,
   /** Agent-provided intent, e.g. Claude Bash `description`. */

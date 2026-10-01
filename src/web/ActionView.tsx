@@ -24,7 +24,7 @@ import { Swimlane, type Range } from "./Swimlane.tsx";
 import { ThemePicker } from "./theme.tsx";
 import { CommandBlock, FilePatch, Markdown, OutputBlock } from "./code.tsx";
 import { langFromPath } from "./codeLang.ts";
-import { fmtDay, fmtDuration, fmtTime } from "./util.ts";
+import { fmtDay, fmtDuration, fmtTime, UNKNOWN_MARK, UNKNOWN_TEXT } from "./util.ts";
 
 type Prefs = Switches & { labels: boolean };
 const PREFS_KEY = "toolreader.switches";
@@ -400,6 +400,12 @@ export function ActionView({
       />
       <p className="hint dim">
         Drag across the lanes to filter by time · double-click to clear · click a dot to jump to it
+        {actions.some((a) => a.status === "unknown") && (
+          <>
+            {" "}
+            · hollow dot, {UNKNOWN_MARK}: {UNKNOWN_TEXT}
+          </>
+        )}
       </p>
 
       {tree}
@@ -423,6 +429,7 @@ function labelItem(item: Item, labels: Labels): Array<{ id: string; text: string
   if (item.hint) parts.push(`agent's note: ${item.hint}`);
   if (item.files?.length)
     parts.push(`files: ${item.files.map((f) => `${f.path} +${f.added} -${f.removed}`).join(", ")}`);
+  if (item.status === "unknown") parts.push(UNKNOWN_TEXT);
   if (item.status === "failed")
     parts.push(
       `FAILED${item.exitCode !== undefined ? ` exit ${item.exitCode}` : ""}: ${(item.output ?? "").slice(-200)}`,
@@ -584,6 +591,10 @@ function ActionRow({ action: a, ctx, compact }: { action: Action; ctx: Ctx; comp
       <span className="fail">{a.exitCode !== undefined ? `exit ${a.exitCode}` : "failed"}</span>
     ) : a.status === "running" ? (
       <span className="dim">running</span>
+    ) : a.status === "unknown" ? (
+      <span className="exit-unknown" title={UNKNOWN_TEXT}>
+        {UNKNOWN_MARK}
+      </span>
     ) : a.noMatch ? (
       <span className="dim">no match</span>
     ) : null;

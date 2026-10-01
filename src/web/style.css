@@ -278,6 +278,18 @@ pre {
 .dot.failed {
   fill: var(--fail);
 }
+/* Ran, exit code not recorded: hollow, neither ok nor failed. */
+.dot.unknown {
+  fill: var(--bg);
+  stroke: var(--k);
+  stroke-width: 1.2;
+}
+.exit-unknown {
+  color: var(--dim);
+  border: 1px dashed var(--faint);
+  border-radius: 3px;
+  padding: 0 4px;
+}
 .dot.running {
   stroke: var(--fg);
   stroke-width: 1;

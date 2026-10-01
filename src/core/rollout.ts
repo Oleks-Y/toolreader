@@ -463,15 +463,14 @@ export function rolloutItem(c: RolloutCall, ended = c.ended): Record<string, unk
           status: status(failed || exitCode !== 0),
         };
       }
-      // Most scripts print only `r.output`: the commands' exit codes are lost, so this stays a
-      // script, whose own status is all that is known.
+      // Most scripts print only `r.output`: the commands ran, but their exit codes are lost.
+      const scriptStatus = status(failed);
       return {
         ...base,
-        type: "dynamicToolCall",
-        tool: "script:",
-        arguments: cmds.join(" ; "),
-        result,
-        status: status(failed),
+        type: "commandExecution",
+        command: cmds.join("\n"),
+        aggregatedOutput: result,
+        status: scriptStatus === "completed" ? "unknown" : scriptStatus,
       };
     }
     const patch = scriptPatch(script);

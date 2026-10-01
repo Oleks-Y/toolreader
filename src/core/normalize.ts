@@ -501,7 +501,9 @@ function toAction(id: string, at: string, p: ToolPayload, summary: string): Acti
       ? "failed"
       : p.status === "inProgress"
         ? "running"
-        : "ok";
+        : p.status === "unknown"
+          ? "unknown"
+          : "ok";
   return { type: "action", id, at, status, ...rest, title };
 }
 

@@ -283,7 +283,7 @@ describe("core", () => {
       a("4", "edit"),
       a("5", "run", "failed"),
       a("6", "edit"),
-      a("7", "run"),
+      a("7", "run", "unknown"),
       a("8", "git"),
     ];
     const [turn] = buildTree(entries, DEFAULT_SWITCHES);
