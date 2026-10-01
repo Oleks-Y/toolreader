@@ -19,12 +19,15 @@ export type ActivityRow = {
   readonly tone: string;
   readonly summary: string;
   readonly payload: ToolPayload;
+  /** Source order. When set on both rows it breaks timestamp ties (Codex); T3 rows leave it unset. */
+  readonly seq?: number;
 };
 export type MessageRow = {
   readonly id: string;
   readonly at: string;
   readonly role: string;
   readonly text: string;
+  readonly seq?: number;
 };
 
 const TOOL_LIFECYCLE = new Set(["tool.started", "tool.updated", "tool.completed"]);
@@ -220,6 +223,7 @@ function commandAction(p: ToolPayload): Draft {
     command,
     exitCode,
     output: headTail(output),
+    parts: parts.length > 1 ? parts.map(({ kind, title }) => ({ kind, title })) : undefined,
     targets: parts.flatMap((x) => x.targets ?? []),
     noMatch: noMatch || undefined,
     failed: !noMatch && ((exitCode !== undefined && exitCode !== 0) || claudeError),
@@ -411,20 +415,31 @@ export function normalize(
   };
 
   const entries: Entry[] = [];
-  // Messages go first so they win timestamp ties (the sort below is stable).
+  const seqOf = new Map<Entry, number>();
+  const push = (entry: Entry, seq: number | undefined) => {
+    entries.push(entry);
+    if (seq !== undefined) seqOf.set(entry, seq);
+  };
+  // Without `seq`, messages go first so they win timestamp ties (the sort below is stable).
   for (const m of messages) {
     if (!m.text.trim() || !MESSAGE_ROLES.has(m.role)) continue;
-    entries.push({
-      type: "message",
-      id: m.id,
-      at: m.at,
-      role: m.role as Message["role"],
-      text: m.text,
-    });
+    push(
+      {
+        type: "message",
+        id: m.id,
+        at: m.at,
+        role: m.role as Message["role"],
+        text: m.text,
+      },
+      m.seq,
+    );
   }
 
   // A tool call emits started/updated/completed rows; keep the first time and the last payload.
-  const calls = new Map<string, { at: string; payload: ToolPayload; summary: string }>();
+  const calls = new Map<
+    string,
+    { at: string; payload: ToolPayload; summary: string; seq: number | undefined }
+  >();
   // Older Codex rows have no toolCallId: pair started → completed by their detail text instead.
   const openByDetail = new Map<string, string>();
   for (const row of activities) {
@@ -441,26 +456,39 @@ export function normalize(
         at: prev?.at ?? row.at,
         payload: row.kind === "tool.started" && prev ? prev.payload : row.payload,
         summary: row.summary,
+        seq: prev ? prev.seq : row.seq,
       });
     } else if (EVENT_KINDS.has(row.kind)) {
       const detail = str(row.payload.detail) ?? str(row.payload.message) ?? "";
-      entries.push({
-        type: "event",
-        id: row.id,
-        at: row.at,
-        tone: row.tone === "error" ? "error" : "info",
-        text: short(`${row.summary}${detail ? `: ${detail}` : ""}`, 400),
-      });
+      push(
+        {
+          type: "event",
+          id: row.id,
+          at: row.at,
+          tone: row.tone === "error" ? "error" : "info",
+          text: short(`${row.summary}${detail ? `: ${detail}` : ""}`, 400),
+        },
+        row.seq,
+      );
     }
   }
-  for (const [id, { at, payload, summary }] of calls) {
+  for (const [id, { at, payload, summary, seq }] of calls) {
     const a = toAction(id, at, payload, summary);
-    entries.push({
-      ...a,
-      title: tidy(a.title),
-      targets: a.targets?.map(tidy),
-      files: a.files?.map((f) => ({ ...f, path: tidy(f.path) })),
-    });
+    push(
+      {
+        ...a,
+        title: tidy(a.title),
+        parts: a.parts?.map((p) => ({ ...p, title: tidy(p.title) })),
+        targets: a.targets?.map(tidy),
+        files: a.files?.map((f) => ({ ...f, path: tidy(f.path) })),
+      },
+      seq,
+    );
   }
-  return entries.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+  return entries.sort((a, b) => {
+    if (a.at !== b.at) return a.at < b.at ? -1 : 1;
+    const sa = seqOf.get(a);
+    const sb = seqOf.get(b);
+    return sa !== undefined && sb !== undefined ? sa - sb : 0;
+  });
 }

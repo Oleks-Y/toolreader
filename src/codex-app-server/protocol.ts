@@ -161,6 +161,8 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
     // accumulated buffer on every chunk, which is quadratic for multi-MB lines (thread/read).
     const remainder = yield* Ref.make<ReadonlyArray<string>>([]);
     const terminationHandled = yield* Ref.make(false);
+    // toolreader edit: remember why the peer ended, so requests sent afterwards fail instead of waiting forever.
+    const terminatedWith = yield* Ref.make<CodexError.CodexAppServerError | undefined>(undefined);
 
     const logProtocol = (event: CodexAppServerProtocolLogEvent) => {
       if (event.direction === "incoming" && !options.logIncoming) {
@@ -193,6 +195,7 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
         return [
           Effect.gen(function* () {
             const error = yield* classify();
+            yield* Ref.set(terminatedWith, error);
             yield* failAllPending(error);
             yield* Queue.end(outgoing);
             if (options.onTermination) {
@@ -401,6 +404,13 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
         yield* Ref.update(pending, (current) =>
           new Map(current).set(String(requestId), { deferred, method }),
         );
+        // Checked after registering: termination sets `terminatedWith` before failing the pending map,
+        // so either it fails this request or this check sees it.
+        const terminated = yield* Ref.get(terminatedWith);
+        if (terminated) {
+          yield* removePending(String(requestId));
+          return yield* terminated;
+        }
         yield* offerOutgoing({
           id: requestId,
           method,

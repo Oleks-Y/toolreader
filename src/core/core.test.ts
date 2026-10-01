@@ -3,7 +3,7 @@ import { assert, describe, it } from "@effect/vitest";
 import type { Action } from "./domain.ts";
 import { normalize, type ActivityRow } from "./normalize.ts";
 import type { ToolPayload } from "./payload.ts";
-import { humanizeCommand } from "./shell.ts";
+import { classifyRun, humanizeCommand } from "./shell.ts";
 import { buildTree, DEFAULT_SWITCHES } from "./tree.ts";
 
 describe("core", () => {
@@ -20,7 +20,7 @@ describe("core", () => {
       ],
     );
     assert.deepStrictEqual(titles("cd /repo && ./node_modules/.bin/vp run --filter t3 typecheck"), [
-      "run:vp run --filter t3 typecheck",
+      "build:vp run --filter t3 typecheck",
     ]);
     assert.deepStrictEqual(titles("git status --short && git push -u origin HEAD"), [
       "read:git status --short",
@@ -36,6 +36,37 @@ describe("core", () => {
     ]);
     assert.deepStrictEqual(titles("rg --files apps/web | rg Timeline"), ["search:list apps/web"]);
     assert.deepStrictEqual(titles("head -n 40 a.ts 2>/dev/null"), ["read:read a.ts"]);
+  });
+
+  it("classifies commands by intent, whatever the toolchain", () => {
+    const cases: Array<[string, string]> = [
+      ["go test ./... -run X", "test"],
+      ["vp test run src", "test"],
+      ["cargo test --locked", "test"],
+      ["bun test --timeout 60000 a.test.ts", "test"],
+      ["pnpm --filter t3 test", "test"],
+      ["npm run test:integration", "test"],
+      ["uv run pytest -x", "test"],
+      ["python3 -m pytest tests", "test"],
+      ["npx vitest run", "test"],
+      ["node --test core/", "test"],
+      ["vp build", "build"],
+      ["go build ./cmd/server", "build"],
+      ["cargo build --release", "build"],
+      ["vp run --filter t3 typecheck", "build"],
+      ["tsc --noEmit", "build"],
+      ["pnpm install --frozen-lockfile", "setup"],
+      ["vp i", "setup"],
+      ["uv pip install -r requirements.txt", "setup"],
+      ["go mod download", "setup"],
+      ["brew install ripgrep", "setup"],
+      ["pnpm dev", "run"],
+      ["go run ./cmd/server", "run"],
+      ["python3 scripts/report.py", "run"],
+      ["make -C infra deploy-preview ENV=staging", "run"],
+      ["docker compose -p x run --rm tests bun test", "docker"],
+    ];
+    for (const [cmd, kind] of cases) assert.strictEqual(classifyRun(cmd.split(" ")), kind, cmd);
   });
 
   const row = (
@@ -126,6 +157,12 @@ describe("core", () => {
           status: "completed",
           data: { toolName: "mcp__t3-code__link_pull_request", input: { url: "u" } },
         }),
+        row("a8", "2026-01-01T00:00:12Z", {
+          itemType: "command_execution",
+          toolCallId: "c8",
+          status: "completed",
+          data: { item: { command: "ls /does-not-exist", exitCode: 1 } },
+        }),
         row("a7", "2026-01-01T00:00:11Z", {
           itemType: "file_change",
           data: {
@@ -139,8 +176,10 @@ describe("core", () => {
       { root: "/repo" },
     );
     const actions = entries.filter((e): e is Action => e.type === "action");
-    assert.strictEqual(actions.length, 7, "lifecycle rows are merged per tool call");
-    const [install, search, edit, test_, claudeEdit, mcp, cursor] = actions;
+    assert.strictEqual(actions.length, 8, "lifecycle rows are merged per tool call");
+    const [install, search, edit, test_, claudeEdit, mcp, cursor, failedLs] = actions;
+    // exit 1 means "no match" only for rg/grep; a failed ls is a failure.
+    assert.deepStrictEqual([failedLs?.status, failedLs?.noMatch], ["failed", undefined]);
     assert.deepStrictEqual(
       [install?.status, install?.exitCode, install?.at],
       ["failed", 1, "2026-01-01T00:00:00Z"],

@@ -157,7 +157,12 @@ export class Labeler extends Context.Service<
               outPath,
               "-",
             ],
-            { cwd: dir, stdin: { stream: Stream.encodeText(Stream.make(input)) } },
+            {
+              cwd: dir,
+              stdin: { stream: Stream.encodeText(Stream.make(input)) },
+              // The answer comes from --output-last-message; an unread stdout pipe would fill and block codex.
+              stdout: "ignore",
+            },
           ),
         );
         const [stderr, exitCode] = yield* Effect.all(

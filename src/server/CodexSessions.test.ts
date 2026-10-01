@@ -9,12 +9,14 @@ import * as Path from "effect/Path";
 import type * as PlatformError from "effect/PlatformError";
 import * as Schedule from "effect/Schedule";
 
-import { CodexSessions } from "./CodexSessions.ts";
+import { CodexSessions, type CodexSessionsOptions } from "./CodexSessions.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 import { ThreadStore } from "./ThreadStore.ts";
 
 // Stands in for `codex app-server`: newline-delimited JSON-RPC over stdio with canned threads.
-const fakeAppServer = (rolloutPath: string, NOW_S: number) => `#!/usr/bin/env node
+const fakeAppServer = (rolloutPath: string, NOW_S: number, idsPath: string) => `#!/usr/bin/env node
+const fs = require("node:fs");
+const listed = () => { try { return JSON.parse(fs.readFileSync(${JSON.stringify(idsPath)}, "utf8")); } catch { return null; } };
 const rl = require("node:readline").createInterface({ input: process.stdin });
 const meta = (id, extra) => ({ id, preview: "do " + id + "\\nsecond line", cwd: "/work/repo/sub", path: ${JSON.stringify(rolloutPath)}, createdAt: ${NOW_S - 1000}, updatedAt: ${NOW_S - 500}, originator: "codex-tui", ...extra });
 const threads = [
@@ -28,7 +30,11 @@ rl.on("line", (line) => {
   const { id, method, params } = JSON.parse(line);
   if (id === undefined) return;
   if (method === "initialize") return send({ id, result: { userAgent: "fake", codexHome: "/tmp", platformFamily: "unix", platformOs: "macos" } });
-  if (method === "thread/list") return send({ id, result: { data: params.archived ? [] : threads, nextCursor: null } });
+  if (method === "thread/list") {
+    const ids = listed();
+    const data = params.archived ? [] : threads.filter((t) => !ids || ids.includes(t.id));
+    return send({ id, result: { data, nextCursor: null } });
+  }
   if (method === "thread/read") {
     if (params.threadId !== "mine") return send({ id, error: { code: -32600, message: "thread not found" } });
     return send({ id, result: { thread: { ...meta("mine"), turns: [{ id: "turn1", startedAt: ${NOW_S - 900}, items: [
@@ -45,11 +51,22 @@ const ROLLOUT = [
   '{"timestamp":"2026-01-01T00:00:02.000Z","type":"response_item","payload":{"type":"function_call","call_id":"c1"}}',
 ].join("\n");
 
+const FAST: CodexSessionsOptions = {
+  initTimeout: "10 seconds",
+  requestTimeout: "5 seconds",
+  refreshEvery: "50 millis",
+  fullRefreshEvery: 2,
+};
+
 const withSessions = <A, E>(
   codexBin: (
     dir: string,
   ) => Effect.Effect<string, PlatformError.PlatformError, FileSystem.FileSystem | Path.Path>,
-  use: (codex: CodexSessions["Service"]) => Effect.Effect<A, E>,
+  use: (
+    codex: CodexSessions["Service"],
+    dir: string,
+  ) => Effect.Effect<A, E, FileSystem.FileSystem | Path.Path>,
+  options: Partial<CodexSessionsOptions> = {},
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -76,8 +93,10 @@ const withSessions = <A, E>(
         projects: Effect.succeed([{ id: "p1", title: "repo", root: "/work/repo" }]),
       }),
     );
-    return yield* Effect.flatMap(CodexSessions, use).pipe(
-      Effect.provide(CodexSessions.layer.pipe(Layer.provide([config, store]))),
+    return yield* Effect.flatMap(CodexSessions, (codex) => use(codex, dir)).pipe(
+      Effect.provide(
+        CodexSessions.layerWith({ ...FAST, ...options }).pipe(Layer.provide([config, store])),
+      ),
     );
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
 
@@ -90,7 +109,7 @@ const fakeBin = (dir: string) =>
     yield* fs.writeFileString(rollout, ROLLOUT);
     const bin = path.join(dir, "codex.cjs");
     // The real binary takes `app-server` as its first argument; the fake ignores it.
-    yield* fs.writeFileString(bin, fakeAppServer(rollout, nowS));
+    yield* fs.writeFileString(bin, fakeAppServer(rollout, nowS, path.join(dir, "ids.json")));
     yield* fs.chmod(bin, 0o755);
     return bin;
   });
@@ -159,6 +178,44 @@ describe("CodexSessions", () => {
           assert.deepStrictEqual(yield* codex.list, []);
           assert.strictEqual((yield* Effect.flip(codex.get("x", {})))._tag, "ThreadNotFound");
         }),
+    ),
+  );
+
+  it.live("gives up on a codex that never answers initialize, without blocking startup", () =>
+    withSessions(
+      (dir) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const bin = `${dir}/silent-codex.cjs`;
+          yield* fs.writeFileString(bin, "#!/usr/bin/env node\nprocess.stdin.resume();\n");
+          yield* fs.chmod(bin, 0o755);
+          return bin;
+        }),
+      (codex) =>
+        Effect.gen(function* () {
+          // Reaching this point at all means the layer finished building despite the silent peer.
+          assert.deepStrictEqual(yield* codex.list, []);
+        }),
+      { initTimeout: "300 millis" },
+    ),
+  );
+
+  it.live("drops sessions deleted elsewhere on the next full refresh", () =>
+    withSessions(fakeBin, (codex, dir) =>
+      Effect.gen(function* () {
+        assert.isTrue((yield* listLoaded(codex)).some((t) => t.id === "codex:fresh"));
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.writeFileString(`${dir}/ids.json`, '["mine"]');
+        const ids = yield* codex.list.pipe(
+          Effect.map((l) => l.map((t) => t.id)),
+          Effect.filterOrFail(
+            (l) => !l.includes("codex:fresh"),
+            () => new Cause.NoSuchElementError(),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 60 }),
+        );
+        assert.deepStrictEqual(ids, ["codex:mine"]);
+      }),
     ),
   );
 });

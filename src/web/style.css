@@ -1,23 +1,7 @@
 :root {
-  --bg: #0f1115;
-  --panel: #161920;
-  --panel2: #1c2029;
-  --line: #2a2f3a;
-  --fg: #d7dae0;
-  --dim: #8a909c;
-  --faint: #5c6270;
-  --read: #7aa2f7;
-  --search: #7dcfff;
-  --edit: #e0af68;
-  --run: #9ece6a;
-  --git: #ff9e64;
-  --web: #bb9af7;
-  --tool: #a9b1d6;
-  --agent: #f7a8d8;
-  --fail: #f7768e;
-  --ok: #9ece6a;
+  /* Palettes live in themes.css (generated). */
+  --ok: var(--run);
   --mono: ui-monospace, "SF Mono", Menlo, monospace;
-  color-scheme: dark;
 }
 * {
   box-sizing: border-box;
@@ -63,6 +47,7 @@ pre {
   white-space: nowrap;
 }
 
+/* Action kind → theme color. */
 .k-read {
   --k: var(--read);
 }
@@ -70,19 +55,31 @@ pre {
   --k: var(--search);
 }
 .k-edit {
-  --k: var(--edit);
+  --k: var(--write);
+}
+.k-git {
+  --k: var(--git);
+}
+.k-docker {
+  --k: var(--docker);
+}
+.k-setup {
+  --k: var(--setup);
+}
+.k-build {
+  --k: var(--build);
 }
 .k-run {
   --k: var(--run);
 }
-.k-git {
-  --k: var(--git);
+.k-test {
+  --k: var(--test);
 }
 .k-web {
   --k: var(--web);
 }
 .k-tool {
-  --k: var(--tool);
+  --k: var(--mcp);
 }
 .k-agent {
   --k: var(--agent);
@@ -98,7 +95,7 @@ pre {
 }
 .status-dot.running {
   background: var(--ok);
-  box-shadow: 0 0 0 3px #9ece6a33;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent);
 }
 .status-dot.error {
   background: var(--fail);
@@ -309,7 +306,7 @@ pre {
 }
 .brush,
 .range {
-  fill: #7aa2f71f;
+  fill: color-mix(in srgb, var(--read) 12%, transparent);
   stroke: var(--read);
   stroke-width: 1;
 }
@@ -409,10 +406,21 @@ pre {
   font: 12px var(--mono);
   white-space: nowrap;
 }
+/* Style A: command words take their kind's color, everything else is muted. */
 .row.action .title {
   font: 12.5px/1.5 var(--mono);
+  color: var(--dim);
 }
-.row.action.failed .main,
+.cmd-word {
+  color: var(--k);
+  font-weight: 600;
+}
+.part-sep {
+  color: var(--faint);
+}
+.row.action.failed {
+  background: color-mix(in srgb, var(--fail) 8%, transparent);
+}
 .row.action.failed .icon {
   color: var(--fail);
 }
@@ -420,7 +428,7 @@ pre {
   padding-left: 40px;
 }
 .row-wrap.highlight > .row {
-  background: #7aa2f726;
+  background: color-mix(in srgb, var(--read) 15%, transparent);
   box-shadow: inset 2px 0 var(--read);
 }
 .label {
@@ -455,7 +463,10 @@ pre {
   padding: 0 4px;
 }
 .badge.new {
-  color: var(--edit);
+  color: var(--write);
+}
+.k-edit .path {
+  color: var(--k);
 }
 .row.fold .main {
   font-size: 13px;
@@ -479,7 +490,7 @@ pre {
 }
 .row.message.reasoning .text,
 .row.message.reasoning .icon {
-  color: #9a86c9;
+  color: color-mix(in srgb, var(--web) 65%, var(--dim));
 }
 .row.event.error {
   color: var(--fail);
@@ -494,7 +505,7 @@ pre {
   gap: 6px;
 }
 .detail pre {
-  background: #0b0d11;
+  background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 8px 10px;
@@ -509,7 +520,7 @@ pre {
   color: var(--fg);
 }
 .detail pre.out.failed {
-  border-color: #f7768e66;
+  border-color: color-mix(in srgb, var(--fail) 40%, transparent);
 }
 .file-head {
   font-size: 12.5px;
@@ -526,4 +537,15 @@ pre {
 }
 .label-btn {
   white-space: nowrap;
+}
+.theme-picker {
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font:
+    12.5px -apple-system,
+    system-ui,
+    sans-serif;
+  padding: 2px 6px;
 }

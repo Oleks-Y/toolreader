@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ThreadSummary } from "../core/domain.ts";
 import { call, errorMessage } from "./client.ts";
+import { ThemePicker } from "./theme.tsx";
 import { since } from "./util.ts";
 
 /** Which sessions to show; scripted `codex exec` runs are hidden by default. */
@@ -57,6 +58,7 @@ export function Sessions() {
     <main className="sessions">
       <header className="topbar">
         <h1>toolreader</h1>
+        <ThemePicker />
         <input
           autoFocus
           placeholder="Filter threads…"

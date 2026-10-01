@@ -20,6 +20,7 @@ import {
 } from "../core/domain.ts";
 import { call, errorMessage } from "./client.ts";
 import { Swimlane, type Range } from "./Swimlane.tsx";
+import { ThemePicker } from "./theme.tsx";
 import { fmtDay, fmtDuration, fmtTime } from "./util.ts";
 
 type Prefs = Switches & { labels: boolean };
@@ -39,12 +40,44 @@ const ICON: Record<ActionKind, string> = {
   read: "◎",
   search: "⌕",
   edit: "✎",
-  run: "▶",
   git: "⎇",
+  docker: "◆",
+  setup: "⇣",
+  build: "⚒",
+  run: "▶",
+  test: "✔",
   web: "◍",
   tool: "⚙",
   agent: "⧉",
 };
+
+/** Kinds whose second word is a subcommand worth coloring too: `git diff`, `go test`, `docker compose`. */
+const COLOR_SUBCOMMAND = new Set<ActionKind>(["git", "docker", "setup", "build", "run", "test"]);
+
+/** Style A: the command word(s) in the kind's color, the rest muted. */
+function CommandPart({ kind, title }: { kind: ActionKind; title: string }) {
+  // MCP calls read "server · tool {args}": color the server and tool, mute the arguments.
+  const mcp = kind === "tool" ? /^(\S+ · \S+)(.*)$/s.exec(title) : null;
+  if (mcp) {
+    return (
+      <span className={`k-${kind}`}>
+        <span className="cmd-word">{mcp[1]}</span>
+        {mcp[2]}
+      </span>
+    );
+  }
+  const [first = "", second, ...rest] = title.split(" ");
+  const colorSecond =
+    second !== undefined && COLOR_SUBCOMMAND.has(kind) && /^[a-z][\w:-]*$/.test(second);
+  return (
+    <span className={`k-${kind}`}>
+      <span className="cmd-word">{first}</span>
+      {second !== undefined && " "}
+      {colorSecond ? <span className="cmd-word">{second}</span> : second}
+      {rest.length > 0 && ` ${rest.join(" ")}`}
+    </span>
+  );
+}
 const PHASE_LABEL: Record<Phase["name"], string> = {
   explore: "Explore",
   edit: "Edit",
@@ -234,6 +267,8 @@ export function ActionView({ threadId }: { threadId: string }) {
       </header>
 
       <div className="toolbar">
+        <ThemePicker />
+        <span className="sep" />
         {ACTION_KINDS.map((k) => (
           <button
             key={k}
@@ -460,7 +495,13 @@ function ActionRow({ action: a, ctx, compact }: { action: Action; ctx: Ctx; comp
         {files.length > 3 && <span className="dim"> +{files.length - 3} more</span>}
       </>
     ) : (
-      a.title
+      (a.parts ?? [{ kind: a.kind, title: a.title }]).map((p, i) => (
+        // oxlint-disable-next-line react/no-array-index-key -- parts are a fixed, ordered split of one command
+        <span key={i}>
+          {i > 0 && <span className="part-sep"> · </span>}
+          <CommandPart kind={p.kind} title={p.title} />
+        </span>
+      ))
     );
   const right =
     a.status === "failed" ? (
@@ -541,7 +582,10 @@ function FoldRow({ fold, ctx }: { fold: Fold; ctx: Ctx }) {
             ctx={ctx}
             title={
               <>
-                <b>explored</b> {fold.summary}
+                <span className="k-read">
+                  <span className="cmd-word">explored</span>
+                </span>{" "}
+                {fold.summary}
                 {shown.length > 0 && <span className="dim"> · </span>}
                 {shown.map((p, i) => (
                   <span key={p}>

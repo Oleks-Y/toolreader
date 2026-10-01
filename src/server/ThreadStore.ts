@@ -170,6 +170,8 @@ export class ThreadStore extends Context.Service<
       const get = Effect.fn("ThreadStore.get")(function* (id: string, labels: Labels) {
         const [row] = yield* threadRows(id).pipe(Effect.orDie);
         if (!row) return yield* new ThreadNotFound({ threadId: id });
+        // Marker before content: a write landing mid-read then shows up as a newer marker on the next poll.
+        const { head: marker } = yield* head(id);
         const activityRows = yield* sql`
           select activity_id id, created_at at, kind, tone, summary, payload_json payload
           from projection_thread_activities
@@ -189,7 +191,6 @@ export class ThreadStore extends Context.Service<
         );
         const entries = normalize(activities, messages, { root: row.worktree, home });
         const actionCount = entries.filter((e) => e.type === "action").length;
-        const { head: marker } = yield* head(id);
         return {
           thread: {
             ...toSummary(row, actionCount, activities.at(-1)?.at ?? null),

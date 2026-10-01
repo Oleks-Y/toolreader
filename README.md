@@ -14,6 +14,7 @@ vp run typecheck  # tsgo with the Effect language service
 
 - `#/` lists every session grouped by project, with filters for t3, codex, scripted (`codex exec`, hidden by default) and archived. Running sessions have a green dot.
 - `#/t/<threadId>` shows the swimlane (drag to filter by time, click a dot to jump) over a turn → phase → action tree. Switches for kinds, notes, reasoning, failures only, folding and phases are saved in localStorage.
+- Command words are colored by what they do (setup, build, run, test, docker, git, read, …), with six themes in the picker (Tokyo Night, Catppuccin Mocha, Starship, Dracula, Gruvbox Dark, GitHub Light).
 - "✨ Label with Codex" on a turn runs `codex exec` (read-only, ephemeral) with T3's text-generation model and caches labels in `~/.toolreader/labels.json`.
 
 Env: `PORT` (4777), `T3_DB` (database path), `CODEX_BIN` (`codex`), `TOOLREADER_LABELS`.

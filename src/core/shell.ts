@@ -164,17 +164,23 @@ export function splitCommand(command: string): string[][][] {
   return pipelines;
 }
 
+/** `isSearch`: exit code 1 means "no match" (rg/grep), not failure. */
 export type Part = { kind: ActionKind; title: string; targets?: string[]; isSearch?: boolean };
 
+/** A chain takes the kind of its strongest part, e.g. `cd x && pnpm i && pnpm test` is a test. */
 const KIND_RANK: Record<ActionKind, number> = {
   read: 0,
   search: 1,
   tool: 2,
   agent: 3,
   web: 4,
-  edit: 5,
-  run: 6,
-  git: 7,
+  setup: 5,
+  edit: 6,
+  run: 7,
+  build: 8,
+  test: 9,
+  docker: 10,
+  git: 11,
 };
 export const strongestKind = (kinds: ActionKind[]): ActionKind =>
   kinds.reduce<ActionKind>((a, b) => (KIND_RANK[b] > KIND_RANK[a] ? b : a), "read");
@@ -370,7 +376,7 @@ function humanizeStage(words: string[]): Part | null {
       kind: "search",
       title: `list ${dirs.join(", ") || "."}`,
       targets: dirs,
-      isSearch: true,
+      // No isSearch: for ls/find, exit 1 is a real failure, not "no match".
     };
   }
   if (cmd === "git") {
@@ -419,7 +425,156 @@ function humanizeStage(words: string[]): Part | null {
     .map((a) => (a.includes(" ") ? JSON.stringify(a) : a))
     .join(" ")
     .replace(/(?:\.\/)?node_modules\/\.bin\//g, "");
-  return { kind: "run", title: short(shown, 100) };
+  return { kind: classifyRun(argv), title: short(shown, 100) };
+}
+
+type RunKind = "docker" | "setup" | "build" | "test" | "run";
+
+const DOCKER = new Set(["docker", "docker-compose", "podman", "kubectl", "helm", "colima"]);
+const TEST_TOOLS = new Set([
+  "pytest",
+  "jest",
+  "vitest",
+  "mocha",
+  "rspec",
+  "phpunit",
+  "ctest",
+  "playwright",
+  "cypress",
+  "ava",
+  "nextest",
+]);
+const BUILD_TOOLS = new Set([
+  "tsc",
+  "tsgo",
+  "eslint",
+  "oxlint",
+  "biome",
+  "prettier",
+  "ruff",
+  "mypy",
+  "pyright",
+  "esbuild",
+  "webpack",
+  "rollup",
+  "swc",
+  "gcc",
+  "clang",
+  "javac",
+  "rustc",
+  "swiftc",
+  "xcodebuild",
+  "cmake",
+  "ninja",
+]);
+/** Package managers and task runners: the intent is in their subcommand or script name. */
+const RUNNERS = new Set([
+  "npm",
+  "pnpm",
+  "yarn",
+  "bun",
+  "vp",
+  "vpr",
+  "npx",
+  "pnpx",
+  "bunx",
+  "deno",
+  "go",
+  "cargo",
+  "make",
+  "just",
+  "uv",
+  "poetry",
+  "pip",
+  "pip3",
+  "pipx",
+  "brew",
+  "apt",
+  "apt-get",
+  "gradle",
+  "mvn",
+  "dotnet",
+  "swift",
+  "mix",
+  "bundle",
+  "rake",
+  "composer",
+]);
+/** Runner flags whose next word is a value, e.g. `pnpm --filter t3 test`. */
+const RUNNER_VALUE_FLAGS = new Set([
+  "--filter",
+  "-F",
+  "-C",
+  "--dir",
+  "--prefix",
+  "--workspace",
+  "-w",
+  "-p",
+  "--package",
+  "--manifest-path",
+  "--cwd",
+  "--project",
+  "-f",
+  "--file",
+]);
+const PASS_THROUGH = new Set(["run", "exec", "x", "dlx"]);
+
+/** Classifies a script or subcommand name: `test:unit` → test, `typecheck` → build, `install` → setup. */
+function classifyWord(word: string): RunKind {
+  const w = word.toLowerCase().replace(/^.*\//, "");
+  if (/(^|[^a-z])(test|tests|spec|e2e)([^a-z]|$)/.test(w) || /^(t|unittest|nextest)$/.test(w))
+    return "test";
+  if (
+    /^(i|install|add|ci|fetch|download|sync|tidy|get|restore|update|upgrade|link|bootstrap|setup|prepare|mod)$/.test(
+      w,
+    )
+  )
+    return "setup";
+  if (
+    /^(build|compile|typecheck|tc|check|lint|vet|clippy|fmt|format|bundle|pack|dist|generate|codegen)([:.-]|$)/.test(
+      w,
+    )
+  )
+    return "build";
+  return "run";
+}
+
+/** What a non-builtin command does, independent of its toolchain (`go test` and `vp test` are both test). */
+export function classifyRun(argv: ReadonlyArray<string>): RunKind {
+  const exe = (argv[0] ?? "").replace(/^.*\//, "");
+  const args = argv.slice(1);
+  if (DOCKER.has(exe)) return "docker";
+  if (TEST_TOOLS.has(exe)) return "test";
+  if (BUILD_TOOLS.has(exe)) return "build";
+  // `python -m pytest`, `node --test`
+  const m = args.indexOf("-m");
+  if (/^(python[\d.]*|node|deno)$/.test(exe)) {
+    if (m >= 0 && args[m + 1]) return classifyRun(args.slice(m + 1));
+    if (args.includes("--test")) return "test";
+    return "run";
+  }
+  if (!RUNNERS.has(exe)) return classifyWord(exe) === "test" ? "test" : "run";
+  const positional: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a.startsWith("-")) {
+      if (RUNNER_VALUE_FLAGS.has(a)) i++;
+      continue;
+    }
+    if (a.includes("=")) continue; // make VAR=value
+    positional.push(a);
+  }
+  const [task, ...rest] = positional;
+  if (!task) return exe === "make" ? "build" : exe === "yarn" || exe === "bun" ? "setup" : "run";
+  // `npx vitest`, `uv pip install`: the next word is the real command.
+  if (exe === "npx" || exe === "pnpx" || exe === "bunx" || RUNNERS.has(task)) {
+    return classifyRun([task, ...rest]);
+  }
+  if (PASS_THROUGH.has(task) && rest[0]) {
+    const inner = classifyRun(rest);
+    return inner === "run" ? classifyWord(rest[0]) : inner;
+  }
+  return classifyWord(task);
 }
 
 /** Humanizes a (possibly wrapped, chained, piped) shell command into parts. */

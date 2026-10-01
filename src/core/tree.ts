@@ -51,6 +51,9 @@ export type Turn = {
 const isFoldable = (a: Action) =>
   (a.kind === "read" || a.kind === "search") && a.status !== "failed";
 
+/** Kinds that check edits: running one after an edit starts a verify phase. */
+const VERIFY_KINDS = new Set<ActionKind>(["run", "build", "test", "docker"]);
+
 /** Assigns each action a phase: explore → edit → verify → fix → ship, per turn. */
 export function assignPhases(actions: Action[]): Map<string, PhaseName> {
   const out = new Map<string, PhaseName>();
@@ -60,7 +63,7 @@ export function assignPhases(actions: Action[]): Map<string, PhaseName> {
     if (a.kind === "edit") {
       state = state === "verify" || state === "ship" ? "fix" : state === "explore" ? "edit" : state;
       hadEdit = true;
-    } else if (a.kind === "run" && hadEdit) {
+    } else if (VERIFY_KINDS.has(a.kind) && hadEdit) {
       state = "verify";
     } else if (a.kind === "git" && hadEdit) {
       state = "ship";

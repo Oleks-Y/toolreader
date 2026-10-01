@@ -29,7 +29,9 @@ Read-only viewer for what coding agents _did_ in T3 Code threads. Actions come f
 
 - Shell wrappers (`/bin/zsh -lc "…"`) are unwrapped. Chains (`&&`, `;`, `||`) are split and each part is humanized (`sed -n '1,260p' f` → `read f:1-260`). `cd` is dropped.
 - Codex `commandActions` (read / search / listFiles) take priority over parsing. Claude Bash `description` is kept as a secondary label.
-- Kind of a chain = strongest part: git > run > edit > web > search > read.
+- Shell commands are classified by intent, never by toolchain: `setup` (installs/fetches), `build` (compile, typecheck, lint), `run` (dev servers, scripts, anything unrecognized), `test` (any test runner: `go test`, `vp test`, `cargo test`, `pytest`, …), plus `docker`, `git` (git/gh), `read`, `search`, `edit`, `web`, `tool` (MCP and other tools) and `agent`.
+- Kind of a chain = strongest part: git > docker > test > build > run > edit > setup > web > agent > tool > search > read.
+- Phases treat run/build/test/docker after an edit as verification.
 - A failure is a non-zero exit, `is_error`, or status failed/declined. The exception is a search exiting 1, which means "no match".
 - Phases per turn: explore until the first edit → edit → verify (the first run after edits) → fix (an edit after verify) → ship (a git/gh write after edits).
 - Two or more consecutive successful read/search actions fold into one group.

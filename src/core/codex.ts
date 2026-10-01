@@ -124,6 +124,8 @@ export function codexThreadToRows(
   const activities: ActivityRow[] = [];
   const messages: MessageRow[] = [];
   let lastAt = isoFromSeconds(read.thread.createdAt);
+  // Item order from Codex; it breaks ties when items share (or inherit) a timestamp.
+  let seq = 0;
   for (const turn of read.thread.turns ?? []) {
     if (turn.startedAt) lastAt = isoFromSeconds(turn.startedAt);
     for (const raw of turn.items) {
@@ -133,17 +135,19 @@ export function codexThreadToRows(
       // Items missing from the rollout scan inherit the previous item's time, keeping order stable.
       const at = times.get(id) ?? lastAt;
       lastAt = at;
+      seq++;
       const kind = toCanonicalItemType(type);
       if (kind === "user_message") {
         const text = Option.match(decodeUserMessage(raw), {
           onNone: () => "",
           onSome: (m) => (m.content ?? []).map((c) => c.text ?? "").join("\n"),
         });
-        messages.push({ id, at, role: "user", text });
+        messages.push({ id, at, seq, role: "user", text });
       } else if (kind === "assistant_message") {
         messages.push({
           id,
           at,
+          seq,
           role: "assistant",
           text: Option.getOrUndefined(decodeAgentMessage(raw))?.text ?? "",
         });
@@ -152,6 +156,7 @@ export function codexThreadToRows(
         messages.push({
           id,
           at,
+          seq,
           role: "reasoning",
           text: [...(r?.summary ?? []), ...(r?.content ?? [])].join("\n\n"),
         });
@@ -159,6 +164,7 @@ export function codexThreadToRows(
         activities.push({
           id,
           at,
+          seq,
           kind: "context-compaction",
           tone: "info",
           summary: "Context compacted",
@@ -169,6 +175,7 @@ export function codexThreadToRows(
         activities.push({
           id,
           at,
+          seq,
           kind: "tool.completed",
           tone: "tool",
           summary: type,

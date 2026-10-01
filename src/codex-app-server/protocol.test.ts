@@ -427,6 +427,26 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
     }),
   );
 
+  // toolreader edit: requests after termination used to wait forever.
+  it.effect("fails requests sent after the input stream has ended", () =>
+    Effect.gen(function* () {
+      const { stdio, input } = yield* makeInMemoryStdio();
+      const termination = yield* Deferred.make<CodexError.CodexAppServerError>();
+      const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
+        stdio,
+        onTermination: (error) => Deferred.succeed(termination, error).pipe(Effect.asVoid),
+      });
+
+      yield* Queue.end(input);
+      yield* Deferred.await(termination);
+
+      const error = yield* transport
+        .request("thread/list", {})
+        .pipe(Effect.match({ onFailure: (e) => e, onSuccess: () => undefined }));
+      assert.instanceOf(error, CodexError.CodexAppServerInputStreamEndedError);
+    }),
+  );
+
   it.effect("classifies an input stream ending without inventing a cause", () =>
     Effect.gen(function* () {
       const { stdio, input } = yield* makeInMemoryStdio();

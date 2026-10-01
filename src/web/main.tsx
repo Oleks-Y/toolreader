@@ -2,7 +2,11 @@ import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ActionView } from "./ActionView.tsx";
 import { Sessions } from "./Sessions.tsx";
+import { applySavedTheme } from "./theme.tsx";
+import "./themes.css";
 import "./style.css";
+
+applySavedTheme();
 
 function App() {
   const [hash, setHash] = useState(location.hash);

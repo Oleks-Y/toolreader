@@ -1,11 +1,16 @@
 import * as Schema from "effect/Schema";
 
+/** What an action does. Shell commands are classified by intent (setup/build/run/test), not toolchain. */
 export const ACTION_KINDS = [
   "read",
   "search",
   "edit",
-  "run",
   "git",
+  "docker",
+  "setup",
+  "build",
+  "run",
+  "test",
   "web",
   "tool",
   "agent",
@@ -37,6 +42,8 @@ export const Action = Schema.Struct({
   exitCode: Schema.optional(Schema.Number),
   output: Schema.optional(Schema.String),
   files: Schema.optional(Schema.Array(FileChange)),
+  /** Each command of a shell chain with its own kind, for per-command coloring. */
+  parts: Schema.optional(Schema.Array(Schema.Struct({ kind: ActionKind, title: Schema.String }))),
   /** Read/search targets, used to summarize folded groups. */
   targets: Schema.optional(Schema.Array(Schema.String)),
   /** Search with no matches: not a failure. */

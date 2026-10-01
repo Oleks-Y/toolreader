@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 
 import { CodexThreadRead, codexThreadToRows, scanItemTimes, toCanonicalItemType } from "./codex.ts";
 import { normalize } from "./normalize.ts";
+import { buildTree, DEFAULT_SWITCHES } from "./tree.ts";
 
 const decodeRead = Schema.decodeUnknownSync(CodexThreadRead);
 
@@ -104,11 +105,43 @@ describe("codex", () => {
     assert.deepStrictEqual(
       actions.map((a) => [a.id, a.kind, a.status, a.title, a.at]),
       [
-        ["c1", "run", "failed", "pnpm test", "2026-01-01T00:00:05.000Z"],
+        ["c1", "test", "failed", "pnpm test", "2026-01-01T00:00:05.000Z"],
         ["f1", "edit", "ok", "src/a.ts", "2026-01-01T00:00:06.000Z"],
       ],
     );
     // Items without a rollout timestamp inherit the previous one, so order stays stable.
     assert.strictEqual(messages[2]?.at, "2026-01-01T00:00:06.000Z");
+  });
+
+  it("keeps Codex item order when timestamps are missing", () => {
+    const cmd = (id: string) => ({
+      type: "commandExecution",
+      id,
+      status: "completed",
+      command: "ls",
+      exitCode: 0,
+    });
+    const user = (id: string) => ({
+      type: "userMessage",
+      id,
+      content: [{ type: "text", text: id }],
+    });
+    const noTimes = decodeRead({
+      thread: {
+        id: "t",
+        createdAt: 1_790_000_000,
+        updatedAt: 1_790_000_000,
+        turns: [{ id: "x", items: [user("u1"), cmd("c1"), user("u2"), cmd("c2")] }],
+      },
+    });
+    const { activities, messages } = codexThreadToRows(noTimes, new Map());
+    const turns = buildTree(normalize(activities, messages), DEFAULT_SWITCHES);
+    assert.deepStrictEqual(
+      turns.map((t) => [t.prompt?.text, t.actions.map((a) => a.id)]),
+      [
+        ["u1", ["c1"]],
+        ["u2", ["c2"]],
+      ],
+    );
   });
 });

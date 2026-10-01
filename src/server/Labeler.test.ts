@@ -13,6 +13,7 @@ const FAKE_CODEX = `#!/usr/bin/env node
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 if (process.env.FAKE_CODEX_FAIL) { process.stderr.write("boom: not logged in\\n"); process.exit(2); }
+process.stdout.write("x".repeat(2 * 1024 * 1024)); // real codex streams progress to stdout
 const out = args[args.indexOf("--output-last-message") + 1];
 const items = JSON.parse(fs.readFileSync(0, "utf8").trim().split("\\n").at(-1));
 fs.writeFileSync(out, JSON.stringify({ labels: [...items.map((i) => ({ id: i.id, label: " did " + i.id + " " })), { id: "extra", label: "ignored" }] }));
