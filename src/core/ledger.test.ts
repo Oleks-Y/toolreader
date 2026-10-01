@@ -41,6 +41,11 @@ const entries: Entry[] = [
   action("bad", "2026-01-01T10:03:30Z", "git commit -m nope", "nothing to commit", "failed"),
   user("u2", "2026-01-01T10:04:00Z"),
   action(
+    "grep",
+    "2026-01-01T10:04:10Z",
+    "rg 'git commit' src && cat <<EOF\n/** `git commit` */\nEOF",
+  ),
+  action(
     "c2",
     "2026-01-01T10:05:00Z",
     "git commit -m two",
@@ -93,7 +98,7 @@ describe("ledger", () => {
     assert.deepStrictEqual(
       segmentFor(entries, actions[1]!, actions).map((e) => e.id),
       // Starts mid-turn, so the turn's prompt (u1) comes back for context.
-      ["u1", "e2", "bad", "u2", "c2"],
+      ["u1", "e2", "bad", "u2", "grep", "c2"],
     );
   });
 

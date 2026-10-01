@@ -54,7 +54,9 @@ export type CommitAction = {
   readonly shas: ReadonlyArray<string>;
 };
 
-const GIT_COMMIT = /\bgit\b(?:\s+-[cC]\s+\S+)*\s+commit\b/;
+// `git` in command position (start, or after `&&`, `;`, `|`, `(`, a newline, env assignments), so
+// heredocs, greps and messages that merely mention "git commit" don't count.
+const GIT_COMMIT = /(?:^|[;&|(\n])\s*(?:\w+=\S*\s+)*git(?:\s+-[cC]\s+\S+)*\s+commit\b/;
 const COMMIT_SUMMARY = /^\[[^\]\s]+(?: \([^)]*\))? ([0-9a-f]{7,40})\]/gm;
 
 /** `git commit` actions in time order, with the SHAs the output shows. */
