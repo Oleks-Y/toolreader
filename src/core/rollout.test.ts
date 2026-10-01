@@ -150,6 +150,19 @@ describe("rollout", () => {
       parsePatch("*** Update File: a.ts\n*** Move to: b.ts\n@@\n-x\n+y").map((c) => c.path),
       ["b.ts"],
     );
+    // Models leave blank lines: trailing ones are dropped, inner ones are context.
+    const [blank] = actionsOf(
+      [
+        custom(
+          "p3",
+          "apply_patch",
+          "*** Begin Patch\n*** Update File: e.ts\n@@\n a\n\n-b\n+c\n\n*** End Patch",
+        ),
+        customOutput("p3", "Exit code: 0\nOutput:\nSuccess.\n"),
+      ],
+      [],
+    ).actions;
+    assert.strictEqual(blank?.files?.[0]?.diff, "@@ -1,3 +1,3 @@\n a\n \n-b\n+c");
   });
 
   it("shows code-mode scripts once: as their command, or through the items they recorded", () => {

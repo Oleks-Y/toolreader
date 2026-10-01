@@ -108,6 +108,9 @@ function numberHunks(diff: string): string {
     .map((hunk) => {
       const [header = "", ...lines] = hunk.split("\n");
       const body = lines.filter((l) => l !== "*** End of File");
+      // Models leave blank lines in patches: trailing ones are noise, inner ones are blank context.
+      while (body.at(-1) === "") body.pop();
+      for (let i = 0; i < body.length; i++) if (body[i] === "") body[i] = " ";
       const oldCount = body.filter((l) => !l.startsWith("+")).length;
       const newCount = body.filter((l) => !l.startsWith("-")).length;
       const context = header.replace(/^@@\s?/, "");
