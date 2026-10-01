@@ -51,6 +51,7 @@ export function useTheme(): ThemeId {
       return () => listeners.delete(listener);
     },
     () => current,
+    () => current,
   );
 }
 

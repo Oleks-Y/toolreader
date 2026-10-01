@@ -201,6 +201,19 @@ function markdownComponents(highlight: boolean): MarkdownComponents {
       ) : (
         <code title={href}>{children}</code>
       ),
+    // Session text is untrusted: an image would load by itself (a beacon to whoever wrote the
+    // URL), so it stays a link to click, here and in static pages.
+    img: ({ src, alt }) => {
+      const url = typeof src === "string" ? src : "";
+      const label = `🖼 ${alt || url}`;
+      return /^https?:\/\//.test(url) ? (
+        <a href={url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
+          {label}
+        </a>
+      ) : (
+        <code title={url}>{label}</code>
+      );
+    },
   };
 }
 const HIGHLIGHTED = markdownComponents(true);

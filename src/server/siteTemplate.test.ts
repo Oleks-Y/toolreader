@@ -1,3 +1,4 @@
+import * as NodeCrypto from "node:crypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -44,6 +45,13 @@ describe("ledger site template", () => {
         html.slice(0, html.indexOf("<style>")) + html.slice(html.indexOf("</style>"), open);
       assert.notMatch(shell + html.slice(close), /\bsrc=|\bhref=|<link|type="module"/);
       assert.isBelow(shell.indexOf('id="root"'), shell.indexOf(SITE_DATA_MARKER));
+      // Nothing loads even if session text slips a URL past the viewer: only the page's own
+      // script (by hash) runs, and images may only be inline data.
+      const hash = NodeCrypto.createHash("sha256").update(script).digest("base64");
+      assert.include(
+        shell,
+        `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-${hash}'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'" />`,
+      );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });
