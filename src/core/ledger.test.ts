@@ -87,7 +87,24 @@ describe("ledger", () => {
     );
     assert.deepStrictEqual(
       segmentFor(entries, actions[1]!, actions).map((e) => e.id),
-      ["e2", "bad", "u2", "c2"],
+      // Starts mid-turn, so the turn's prompt (u1) comes back for context.
+      ["u1", "e2", "bad", "u2", "c2"],
+    );
+  });
+
+  it("drops leading discussion-only turns from a segment", () => {
+    const talk: Entry[] = [
+      action("c0", "2026-01-01T09:00:00Z", "git commit -q -m zero"),
+      user("q1", "2026-01-01T09:10:00Z"),
+      { type: "message", id: "a1", at: "2026-01-01T09:10:05Z", role: "assistant", text: "design…" },
+      user("q2", "2026-01-01T09:20:00Z"),
+      action("w1", "2026-01-01T09:21:00Z", "sed -i x a.ts"),
+      action("c1", "2026-01-01T09:22:00Z", "git commit -q -m one"),
+    ];
+    const actions = findCommitActions(talk);
+    assert.deepStrictEqual(
+      segmentFor(talk, actions[1]!, actions).map((e) => e.id),
+      ["q2", "w1", "c1"],
     );
   });
 });

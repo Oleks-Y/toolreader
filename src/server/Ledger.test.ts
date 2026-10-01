@@ -229,7 +229,7 @@ describe("Ledger", () => {
             ]),
             [
               ["feat: a", "sha", ["u1", "e1", "c1"]],
-              ["feat: b (reworded)", "patch-id", ["e2", "c2"]],
+              ["feat: b (reworded)", "patch-id", ["u1", "e2", "c2"]],
             ],
           );
           assert.deepStrictEqual(range.commits[1]?.entry?.labels, { c2: "Committed b" });

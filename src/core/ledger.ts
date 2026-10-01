@@ -4,6 +4,7 @@
 import * as Schema from "effect/Schema";
 
 import { Entry, Labels, ThreadSource, type Action } from "./domain.ts";
+import { splitTurns } from "./tree.ts";
 
 export const LEDGER_FORMAT_VERSION = 1;
 export const LEDGER_BRANCH = "agent-ledger";
@@ -94,7 +95,8 @@ export function matchCommit(
 
 /**
  * History that produced a commit: everything after the previous commit action in the same thread
- * (or from the thread start) up to and including this commit action.
+ * (or from the thread start) up to and including this commit action. Leading turns with no actions
+ * (pure discussion) are dropped, and a segment that starts mid-turn gets that turn's prompt back.
  */
 export function segmentFor(
   entries: ReadonlyArray<Entry>,
@@ -102,7 +104,18 @@ export function segmentFor(
   allCommitActions: ReadonlyArray<CommitAction>,
 ): Entry[] {
   const previous = allCommitActions.findLast((a) => a.index < commitAction.index);
-  return entries.slice(previous ? previous.index + 1 : 0, commitAction.index + 1);
+  const from = previous ? previous.index + 1 : 0;
+  const turns = splitTurns(entries.slice(from, commitAction.index + 1));
+  const firstWithActions = turns.findIndex((t) => t.entries.some((e) => e.type === "action"));
+  const kept = turns.slice(Math.max(firstWithActions, 0));
+  const out = kept.flatMap((t) => (t.prompt ? [t.prompt, ...t.entries] : [...t.entries]));
+  if (kept[0] && !kept[0].prompt) {
+    const prompt = entries
+      .slice(0, from)
+      .findLast((e) => e.type === "message" && e.role === "user");
+    if (prompt) out.unshift(prompt);
+  }
+  return out;
 }
 
 export const ledgerPath = (sha: string) => `commits/${sha}.json`;
