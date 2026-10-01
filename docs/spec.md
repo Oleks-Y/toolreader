@@ -7,6 +7,8 @@ Read-only viewer for what coding agents _did_ in T3 Code threads. Actions come f
 - Sources:
   - T3 Code's database `~/.t3/userdata/state.sqlite` (override with `T3_DB`), opened read-only. Covers every provider T3 runs (Codex, Claude, Cursor).
   - Codex sessions that ran outside T3 (CLI, TUI, Desktop, `codex exec`), read through `codex app-server`: `thread/list` for discovery, `thread/read` with `includeTurns` for content. Items carry no timestamps, so each item's time comes from the first rollout line that mentions its id. Sessions T3 runs itself are hidden (matched through T3's resume cursors); subagent threads are not listed. If `codex` can't start, this source is simply empty.
+  - The same Codex sessions straight from rollout files (`$CODEX_HOME/sessions/**/rollout-*.jsonl`), with no app-server: the `thread/read` result is rebuilt from the file's `item_completed` events, so entries are identical. Used by the ledger (e.g. in CI); the viewer still lists Codex sessions through the app-server.
+  - Without a T3 database, the T3 source is empty instead of an error.
   - Claude Code sessions outside T3 are not read yet.
 - Separate repo. Code borrowed from `~/proj/t3code` is copied with a source comment, never linked.
 - Built with Effect: an `HttpApi` contract in `src/core/api.ts` shared by the server and a typed browser client. All T3 schema knowledge lives in `src/server/ThreadStore.ts`.
@@ -54,11 +56,14 @@ Read-only viewer for what coding agents _did_ in T3 Code threads. Actions come f
 ## Commit ledger
 
 - Goal: see what the agent did for each commit, e.g. for a PR's `main..HEAD`.
-- Entries live on a separate `agent-ledger` branch with its own history, never in the code history: `commits/<sha>.json` (`LedgerEntry`, `src/core/ledger.ts`) and `patch-ids.json` (patch-id → sha). Sync is manual (`vp run ledger -- sync`), and pushing the branch shares it.
-- Matching a commit to a session in the repo's worktrees: a SHA printed by `git commit` (`[branch abc1234] subject`) wins; otherwise the latest successful `git commit` action that started up to 10 minutes before the commit time. Commits nobody matches are listed as "no agent history".
+- Entries live on a separate `agent-ledger` branch with its own history, never in the code history: `commits/<sha>.json` (`LedgerEntry`, `src/core/ledger.ts`) and `patch-ids.json` (patch-id → sha). Sync runs by hand (`vp run ledger -- sync`) or from a `pre-push` hook (`ledger hook install`); `--push` shares the branch.
+- Sources (`--source`): `t3`, `codex-app-server`, `codex-rollouts`, or `auto` (T3 if its database exists, plus rollout files from `--codex-home`, default `$CODEX_HOME` or `~/.codex`). A missing source is an error only when asked for by name.
+- Matching a commit to a session in the repo's worktrees: a SHA printed by `git commit` (`[branch abc1234] subject`) wins; otherwise the latest successful `git commit` action that started up to 10 minutes before the commit time. A commit no `git commit` action made (the agent edits, a later step commits: CI, where Codex's sandbox blocks `.git`) goes to the session in the worktree that ended last between the previous commit and this one, matched as "session", with that session's history since the previous commit. SHA and time matches win over it. Commits nobody matches are listed as "no agent history".
 - An entry holds the history since that thread's previous commit action (or its start), up to the commit action. Leading discussion-only turns are dropped; a segment that starts mid-turn keeps the turn's prompt.
 - After a rebase or amend that keeps the diff, `git patch-id --stable` finds the entry again (shown as "found by patch-id").
-- Outputs and redaction work as for proof-of-work artifacts.
+- Outputs and redaction work as for proof-of-work artifacts. Each output is then clipped to `--max-output` bytes (default 8192, head and tail, `0` keeps it): the action records the bytes cut (`clipped`) and the viewer says so. The viewer's outputs are already 1500 + 1500 characters at most, so the default rarely cuts.
+- `--push` fetches `agent-ledger` from origin, writes the new commit on top of the remote tip (merging in local-only entries), pushes, and moves the local branch only once the push lands. A push that loses a race refetches and rebuilds, up to 5 attempts. Never touches HEAD or the working tree.
+- The `pre-push` hook syncs each branch pushed to origin (`remote..local`, or `local --not --remotes=origin` for a new branch) with `--push`, skips pushes of `agent-ledger` itself, and warns instead of blocking the push if the sync fails. `hook install` is idempotent and never overwrites a hook it didn't write; it prints the lines to add instead.
 
 ## Codex labels (on demand)
 

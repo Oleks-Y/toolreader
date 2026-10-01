@@ -16,11 +16,13 @@ that branch. Nothing has to stay up.
 - `pre-push` rather than `post-commit`: it runs once per push, sees the whole pushed range, and pushes `agent-ledger` along with the code.
 - `--push` fetches `agent-ledger`, rebuilds the ledger commit on top of the remote tip and retries on a non-fast-forward. Entries are separate files, so concurrent CI jobs never conflict.
 - CI needs `contents: write` to push the ledger branch.
+- In CI the T3 database is absent and `codex app-server` is not needed: `ledger sync --source codex-rollouts --codex-home "$CODEX_HOME" --push` reads the job's rollout files.
+- Codex's `workspace-write` sandbox blocks writes to `.git`, so `git commit` fails inside `codex exec`. The usual shape is: the agent edits, a later workflow step commits. That commit has no `git commit` action in any session, so it is matched as `session`: the session in the workspace whose last activity falls between the previous commit and this one, with its history since the previous commit. SHA and time matches still win; when several sessions qualify, the latest one is used.
 
 ## Storage
 
 - One JSON file per agent commit. Today that is 6–55 KB raw, and git's zlib and deltas store about a quarter of that.
-- Outputs are clipped per action by default (head and tail, 8 KB total, marked as clipped); `--max-output 0` keeps them whole, and `--no-outputs` drops them.
+- Outputs are clipped per action by default (head and tail, 8 KB total, marked as clipped); `--max-output 0` keeps them as the viewer has them (already at most 1500 + 1500 characters each), and `--no-outputs` drops them.
 - Every free-text field is redacted before writing (`core/proof.ts`). It is a faithful record, not tamper-proof evidence.
 - Retention is git's: delete old `commits/*.json` on the ledger branch, or rebuild the branch.
 

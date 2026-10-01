@@ -1,7 +1,7 @@
 # toolreader
 
 Read-only viewer for what coding agents _did_: T3 Code threads (Codex, Claude, Cursor) plus Codex sessions run outside T3 (CLI, TUI, Desktop, `codex exec`).
-It reads T3's database `~/.t3/userdata/state.sqlite` read-only, reads Codex history through `codex app-server`, and never writes to either.
+It reads T3's database `~/.t3/userdata/state.sqlite` read-only, reads Codex history through `codex app-server` (or straight from rollout files, for the ledger), and never writes to either.
 
 ```bash
 vp i              # install (runs effect-tsgo patch + git hooks)
@@ -32,11 +32,22 @@ Commit ledger: per-commit agent history, kept on a separate `agent-ledger` branc
 vp run ledger -- sync [--repo .] [--range main..HEAD] [--no-outputs]   # add entries for agent commits in the range
 git push origin agent-ledger                                           # share it
 vp run ledger -- show [--repo .] [--range main..HEAD]                  # list commits and their entries
+vp run ledger -- hook install [--repo .]                               # pre-push hook: sync what you push, --push
 ```
+
+`sync` options: `--source auto|t3|codex-app-server|codex-rollouts` (`auto`: T3 if its database exists, plus Codex rollout files), `--codex-home DIR` (default `$CODEX_HOME` or `~/.codex`), `--max-output BYTES` (per output, head and tail; default 8192, `0` keeps it), `--push` (build on origin's `agent-ledger` and push, retrying if another push wins).
+
+Headless, e.g. in CI after `codex exec`, with no T3 and no app-server:
+
+```bash
+node src/server/ledgerCli.ts sync --source codex-rollouts --codex-home "$CODEX_HOME" --range "$BASE..HEAD" --push
+```
+
+A commit a later step made (Codex's sandbox blocks `git commit`) is tied to the session that ended just before it ("matched by session").
 
 `#/ledger?repo=<path>&range=main..HEAD` shows each commit of the range with the actions that produced it. Entries are redacted like proof-of-work exports and found again by patch-id after a rebase or amend.
 
-Env: `PORT` (4777), `T3_DB` (database path), `CODEX_BIN` (`codex`), `TOOLREADER_LABELS`.
+Env: `PORT` (4777), `T3_DB` (database path; missing means no T3 threads), `CODEX_BIN` (`codex`), `CODEX_HOME` (`~/.codex`), `TOOLREADER_LABELS`.
 
 Stack and conventions are copied from t3code: Vite+ (`vp`), Effect 4, `tsgo` + Effect language service, oxlint/oxfmt.
 Agent instructions: [AGENTS.md](AGENTS.md). Design notes: [docs/spec.md](docs/spec.md).
