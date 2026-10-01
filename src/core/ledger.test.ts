@@ -217,7 +217,10 @@ describe("ledger", () => {
       commit,
       thread: { id: "t", title: "Fix it", source: "codex", provider: null, origin: null },
       match: "sha",
-      segment: [action("c1", "2026-01-01T09:59:00Z", "git commit -m fix")],
+      segment: [
+        action("c0", "2026-01-01T09:58:00Z", "pwd", "/home/me/private-client/backend\n"),
+        action("c1", "2026-01-01T09:59:00Z", "git commit -m fix"),
+      ],
       labels: {},
       outputs: true,
       maxOutput: 0,
@@ -240,5 +243,8 @@ describe("ledger", () => {
       "fix: API_TOKEN=[redacted] in ~/proj",
     );
     assert.notInclude(JSON.stringify(view), "/home/me");
+    assert.notInclude(JSON.stringify(view), "private-client", "not even as ~/private-client");
+    const pwd = view.commits[0]!.entry!.entries[0]!;
+    assert.strictEqual(pwd.type === "action" && pwd.output, ".\n");
   });
 });
