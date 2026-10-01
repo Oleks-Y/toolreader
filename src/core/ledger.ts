@@ -247,24 +247,38 @@ export const HOOK_MARKER = "# toolreader ledger hook";
 
 /**
  * The `pre-push` hook: for each branch pushed to origin, syncs the pushed commits with `--push`.
- * A failed sync warns and lets the push go on; pushes of agent-ledger itself are skipped.
+ * It reads every pushed ref first: when the push carries agent-ledger itself, a nested push of it
+ * would make git reject that ref (and an `--atomic` push whole), so it only records locally then.
+ * Ledger trouble only warns; the user's push always goes on.
  */
 export function prePushHook(command: string): string {
   return `#!/bin/sh
 ${HOOK_MARKER}: records agent history for pushed commits on ${LEDGER_BRANCH}.
-# Remove it with \`ledger hook uninstall\`.
+# Remove it with \`ledger hook uninstall\`. It never stops a push.
 [ "$1" = origin ] || exit 0
 repo=$(git rev-parse --show-toplevel) || exit 0
+refs=$(cat)
+push=--push
 while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$remote_ref" = refs/heads/${LEDGER_BRANCH} ] && push=
+done <<EOF
+$refs
+EOF
+[ -n "$push" ] ||
+  echo "toolreader: this push carries ${LEDGER_BRANCH}; new entries stay local until the next push" >&2
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "$local_sha" ] || continue
   case "$remote_ref" in refs/heads/${LEDGER_BRANCH}) continue ;; esac
   case "$local_sha" in *[!0]*) ;; *) continue ;; esac
   case "$remote_sha" in
     *[!0]*) range="$remote_sha..$local_sha" ;;
     *) range="$local_sha --not --remotes=origin" ;;
   esac
-  ${command} sync --repo "$repo" --range "$range" --push </dev/null ||
+  ${command} sync --repo "$repo" --range "$range" $push </dev/null ||
     echo "toolreader: ledger sync failed; pushing anyway" >&2
-done
+done <<EOF
+$refs
+EOF
 exit 0
 `;
 }

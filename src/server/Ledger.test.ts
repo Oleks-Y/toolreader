@@ -40,6 +40,24 @@ const git = (repo: string, args: ReadonlyArray<string>, date?: string) =>
     return out.trim();
   }).pipe(Effect.scoped);
 
+/** Runs git with extra environment and returns its exit code too (for pushes a hook may reject). */
+const gitRun = (repo: string, args: ReadonlyArray<string>, env: Record<string, string> = {}) =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const handle = yield* spawner.spawn(
+      ChildProcess.make("git", ["-C", repo, ...args], { env, extendEnv: true }),
+    );
+    const [out, err, code] = yield* Effect.all(
+      [
+        handle.stdout.pipe(Stream.decodeText(), Stream.mkString),
+        handle.stderr.pipe(Stream.decodeText(), Stream.mkString),
+        handle.exitCode,
+      ],
+      { concurrency: "unbounded" },
+    );
+    return { out: out.trim(), err, code: Number(code) };
+  }).pipe(Effect.scoped);
+
 const tempDir = (prefix: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -699,6 +717,72 @@ describe("Ledger", () => {
         assert.include(refused.message, "checked out");
         assert.strictEqual(yield* git(wt, ["rev-parse", "HEAD"]), l0);
         assert.strictEqual(yield* git(wt, ["status", "--porcelain"]), "");
+      }).pipe(Effect.provide(ledgerLayer({ dbPath: "/nonexistent/state.sqlite", codexHome })));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("the hook lets an atomic push of code and agent-ledger through", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { repo, commitFile } = yield* makeRepo;
+      const codexHome = yield* tempDir("toolreader-codex-home-");
+      const agentCommit = (n: number, minute: number) =>
+        Effect.gen(function* () {
+          const sha = yield* commitFile(
+            `f${n}.ts`,
+            `${n}\n`,
+            `feat: ${n}`,
+            `2026-01-01T10:${minute}:30Z`,
+          );
+          yield* writeRollout(codexHome, `s${n}`, repo, [
+            { at: `2026-01-01T10:${minute - 1}:00.000Z`, item: userMessage(`u${n}`, `Add ${n}`) },
+            {
+              at: `2026-01-01T10:${minute}:00.000Z`,
+              item: command(
+                `c${n}`,
+                `git commit -m 'feat: ${n}'`,
+                `[main ${sha.slice(0, 7)}] feat: ${n}\n`,
+              ),
+            },
+          ]);
+          return sha;
+        });
+      // The hook runs the real CLI, on this test's Codex home and no T3.
+      const env = {
+        CODEX_HOME: codexHome,
+        T3_DB: "/nonexistent/state.sqlite",
+        CODEX_BIN: "/nonexistent/codex",
+        TOOLREADER_LABELS: path.join(codexHome, "labels.json"),
+      };
+      const cli = `'${process.execPath}' '${path.join(import.meta.dirname, "ledgerCli.ts")}'`;
+
+      yield* Effect.gen(function* () {
+        const ledger = yield* Ledger;
+        yield* agentCommit(1, 10);
+        yield* git(repo, ["push", "-q", "origin", "main"]);
+        yield* ledger.sync(repo, "HEAD~1..HEAD", { push: true }); // origin: L0
+        yield* agentCommit(2, 20);
+        yield* ledger.sync(repo, "HEAD~1..HEAD"); // local: L1
+        const l1 = yield* git(repo, ["rev-parse", "agent-ledger"]);
+        const three = yield* agentCommit(3, 30);
+        yield* ledger.hook(repo, "install", cli);
+
+        const push = yield* gitRun(
+          repo,
+          ["push", "--atomic", "origin", "main", "agent-ledger"],
+          env,
+        );
+        assert.strictEqual(push.code, 0, push.err);
+        const remote = yield* git(repo, ["ls-remote", "origin"]);
+        assert.include(remote, `${three}\trefs/heads/main`);
+        assert.include(remote, `${l1}\trefs/heads/agent-ledger`);
+        // The hook still recorded the new commit, locally, for the next push.
+        assert.include(
+          yield* git(repo, ["ls-tree", "-r", "--name-only", "agent-ledger"]),
+          `commits/${three}.json`,
+        );
+        assert.isTrue(yield* fs.exists(path.join(repo, ".git", "hooks", "pre-push")));
       }).pipe(Effect.provide(ledgerLayer({ dbPath: "/nonexistent/state.sqlite", codexHome })));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
