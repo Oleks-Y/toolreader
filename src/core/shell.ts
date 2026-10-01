@@ -60,11 +60,18 @@ export function unwrapShell(value: string): string {
   if (!spec) return value;
   const match = spec.wrapperFlagPattern.exec(split.rest);
   if (!match) return value;
-  const command = trimMatchingOuterQuotes(split.rest.slice(match.index + match[0].length));
+  const command = shellWord(split.rest.slice(match.index + match[0].length));
   return command.length > 0 ? command : value;
 }
 
 // --- End of copied code. ---
+
+/** The script argument of `sh -c`: one shell word (e.g. `'a '"'"'b'"'"''`), unquoted as the shell would. */
+function shellWord(value: string): string {
+  const tokens = tokenize(value.trim());
+  const only = tokens.length === 1 ? tokens[0] : undefined;
+  return only && "word" in only ? only.word : trimMatchingOuterQuotes(value);
+}
 
 /** Drops heredoc bodies so they aren't parsed as commands. */
 function stripHeredocs(command: string): string {
@@ -105,7 +112,8 @@ function tokenize(command: string): Token[] {
     } else if (c === '"') {
       i++;
       while (i < command.length && command[i] !== '"') {
-        if (command[i] === "\\" && i + 1 < command.length) i++;
+        // POSIX: inside double quotes a backslash only escapes $ ` " \ and newline.
+        if (command[i] === "\\" && /["\\$`\n]/.test(command[i + 1] ?? "")) i++;
         word += command[i];
         i++;
       }

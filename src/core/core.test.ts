@@ -38,6 +38,22 @@ describe("core", () => {
     assert.deepStrictEqual(titles("head -n 40 a.ts 2>/dev/null"), ["read:read a.ts"]);
   });
 
+  it("unquotes shell wrappers the way the shell does", () => {
+    // Codex single-quotes the script and escapes inner quotes as '"'"'.
+    assert.deepStrictEqual(titles(`/bin/zsh -lc 'rg -n '"'"'foo bar'"'"' src'`), [
+      'search:search "foo bar" in src',
+    ]);
+    assert.deepStrictEqual(titles(`/bin/zsh -lc 'git commit -m '"'"'fix: x'"'"' && git push'`), [
+      "git:git commit -m fix: x",
+      "git:git push",
+    ]);
+    // Inside double quotes a backslash only escapes $ ` " \ and newline.
+    assert.deepStrictEqual(titles(`rg "foo\\.bar" src`), ['search:search "foo\\.bar" in src']);
+    assert.deepStrictEqual(titles(`bash -lc "rg \\"a\\.b\\" src"`), [
+      'search:search "a\\.b" in src',
+    ]);
+  });
+
   it("classifies commands by intent, whatever the toolchain", () => {
     const cases: Array<[string, string]> = [
       ["go test ./... -run X", "test"],
