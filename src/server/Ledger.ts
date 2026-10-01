@@ -32,6 +32,7 @@ import {
   type LedgerCommitView,
   type LedgerRange,
 } from "../core/ledger.ts";
+import { ledgerSiteHtml } from "../core/ledgerSite.ts";
 import { CodexRollouts, ROLLOUT_DIRS } from "./CodexRollouts.ts";
 import { CODEX_ID_PREFIX, CodexSessions } from "./CodexSessions.ts";
 import { Labeler } from "./Labeler.ts";
@@ -124,6 +125,12 @@ export class Ledger extends Context.Service<
       repo: string,
       range: string | null,
     ) => Effect.Effect<LedgerRange, LedgerFailed>;
+    /** Writes the static page of a range (`ledger site`) to `<out>/index.html`. */
+    readonly site: (
+      repo: string,
+      range: string | null,
+      out: string,
+    ) => Effect.Effect<{ readonly file: string; readonly view: LedgerRange }, LedgerFailed>;
     /** Installs or removes the pre-push hook that runs `<command> sync … --push`; returns what it did. */
     readonly hook: (
       repo: string,
@@ -682,7 +689,29 @@ export class Ledger extends Context.Service<
         ),
       );
 
-      return Ledger.of({ sync, range, hook });
+      const site = Effect.fn("Ledger.site")(
+        function* (repo: string, rangeArg: string | null, out: string) {
+          const view = yield* range(repo, rangeArg);
+          const templateFile = path.join(config.distDir, "site", "index.html");
+          const template = (yield* exists(templateFile))
+            ? yield* fs.readFileString(templateFile)
+            : "";
+          const html = ledgerSiteHtml(template, view);
+          if (html === null)
+            return yield* new LedgerFailed({
+              message: `No site template at ${templateFile}; build it with \`vp run build\`.`,
+            });
+          const file = path.resolve(out, "index.html");
+          yield* fs.makeDirectory(path.dirname(file), { recursive: true });
+          yield* fs.writeFileString(file, html);
+          return { file, view };
+        },
+        Effect.catchTag("PlatformError", (e) =>
+          Effect.fail(new LedgerFailed({ message: e.message })),
+        ),
+      );
+
+      return Ledger.of({ sync, range, site, hook });
     }),
   );
 }

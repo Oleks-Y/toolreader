@@ -3,6 +3,7 @@
 //                         [--codex-home DIR] [--max-output BYTES] [--no-outputs] [--push]
 //                         [--match-sessions | --session ID ...]
 //   toolreader ledger show [--repo PATH] [--range A..B]          list commits and their history
+//   toolreader ledger site [--repo PATH] [--range A..B] [--out DIR]  static page of the range
 //   toolreader ledger hook install|uninstall [--repo PATH]       pre-push hook: sync pushed commits, --push
 // The range defaults to <default branch>..HEAD. Without --push, share it with `git push origin agent-ledger`.
 import * as Console from "effect/Console";
@@ -133,6 +134,31 @@ const show = Command.make(
   }),
 ).pipe(Command.withDescription("List commits in a range with their agent history"));
 
+const site = Command.make(
+  "site",
+  {
+    repo,
+    range,
+    out: Flag.string("out").pipe(
+      Flag.withDescription("Directory to write index.html into"),
+      Flag.withDefault("ledger-site"),
+    ),
+  },
+  Effect.fn(function* ({ repo, range, out }) {
+    const { file, view } = yield* Effect.flatMap(Ledger, (ledger) =>
+      ledger.site(repo, Option.getOrNull(range), out),
+    ).pipe(Effect.provide(offline));
+    const withHistory = view.commits.filter((c) => c.entry).length;
+    yield* Console.log(
+      `${file}\n${view.range}: ${view.commits.length} commits, ${withHistory} with agent history`,
+    );
+  }),
+).pipe(
+  Command.withDescription(
+    "Write a self-contained page of a range's agent history (opens from file:// or any static host)",
+  ),
+);
+
 const hook = Command.make(
   "hook",
   { action: Argument.choice("action", ["install", "uninstall"]), repo },
@@ -156,5 +182,5 @@ const hook = Command.make(
 
 export const ledgerCommand = Command.make("ledger").pipe(
   Command.withDescription("Agent history per commit, kept on the agent-ledger branch"),
-  Command.withSubcommands([sync, show, hook]),
+  Command.withSubcommands([sync, show, site, hook]),
 );

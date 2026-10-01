@@ -12,7 +12,7 @@
   "scripts": {
     "prepare": "effect-tsgo patch && vp config --no-agent",
     "dev": "node --watch src/server/bin.ts serve & vp dev",
-    "build": "vp build && vp pack",
+    "build": "vp build && vp build -c vite.site.config.ts && vp pack",
     "start": "vp run build && node dist/bin.mjs serve",
     "test": "vp test run",
     "lint": "vp lint",

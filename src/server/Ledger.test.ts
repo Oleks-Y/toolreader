@@ -8,7 +8,8 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import type { Action, Entry, ThreadSummary, ThreadView } from "../core/domain.ts";
-import { LedgerEntry } from "../core/ledger.ts";
+import { LedgerEntry, LedgerRange } from "../core/ledger.ts";
+import { SITE_DATA_MARKER } from "../core/ledgerSite.ts";
 import { CodexRollouts } from "./CodexRollouts.ts";
 import { CodexSessions } from "./CodexSessions.ts";
 import { Labeler } from "./Labeler.ts";
@@ -18,6 +19,7 @@ import { ThreadStore } from "./ThreadStore.ts";
 import * as Schema from "effect/Schema";
 
 const decodeEntry = Schema.decodeUnknownSync(Schema.fromJsonString(LedgerEntry));
+const decodeRange = Schema.decodeUnknownSync(Schema.fromJsonString(LedgerRange));
 
 /** Runs git with fixed identity and dates, so commits line up with the fake sessions' actions. */
 const git = (repo: string, args: ReadonlyArray<string>, date?: string) =>
@@ -158,6 +160,7 @@ const ledgerLayer = (options: {
   codexHome: string;
   t3?: ReadonlyArray<ThreadView>;
   labels?: Record<string, string>;
+  distDir?: string;
 }) =>
   Ledger.layer.pipe(
     Layer.provide(CodexRollouts.layer),
@@ -171,7 +174,7 @@ const ledgerLayer = (options: {
           codexBin: "codex",
           codexHome: options.codexHome,
           labelsPath: "",
-          distDir: "",
+          distDir: options.distDir ?? "",
         }),
       ),
       options.t3
@@ -610,6 +613,59 @@ describe("Ledger", () => {
           ),
         );
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("writes a static page with the range inlined, as redacted as the ledger", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { repo, commitFile } = yield* makeRepo;
+      const codexHome = yield* tempDir("toolreader-codex-home-");
+      const distDir = yield* tempDir("toolreader-dist-");
+      const out = path.join(yield* tempDir("toolreader-site-"), "pr", "7");
+      yield* git(repo, ["switch", "-q", "-c", "feat/x"]);
+      const sha = yield* commitFile("a.ts", "a\n", "feat: a", "2026-01-01T10:02:30Z");
+      yield* writeRollout(codexHome, "s1", repo, [
+        {
+          at: "2026-01-01T10:00:00.000Z",
+          item: userMessage("u1", "Use API_TOKEN=supersecret and keep </script> in text"),
+        },
+        {
+          at: "2026-01-01T10:02:00.000Z",
+          item: command("c1", "git commit -m 'feat: a'", `[feat/x ${sha.slice(0, 7)}] feat: a\n`),
+        },
+      ]);
+      yield* Effect.gen(function* () {
+        const ledger = yield* Ledger;
+        const missing = yield* Effect.flip(ledger.site(repo, null, out));
+        assert.include(missing.message, "No site template");
+        yield* fs.makeDirectory(path.join(distDir, "site"));
+        yield* fs.writeFileString(
+          path.join(distDir, "site", "index.html"),
+          `<html><body>${SITE_DATA_MARKER}<script>app()</script></body></html>`,
+        );
+
+        yield* ledger.sync(repo, null);
+        const { file, view } = yield* ledger.site(repo, null, out);
+        assert.strictEqual(file, path.join(out, "index.html"));
+        const html = yield* fs.readFileString(file);
+        assert.notInclude(html, "supersecret");
+        assert.notInclude(html, "</script> in text", "data can't close its script element");
+        // One data element, before the app script that reads it.
+        const match =
+          /^<html><body><script type="application\/json" id="ledger-data">(.*)<\/script><script>app\(\)<\/script><\/body><\/html>$/s.exec(
+            html,
+          );
+        assert.isNotNull(match);
+        const inlined = decodeRange(match![1]!);
+        assert.deepStrictEqual(inlined, view);
+        assert.strictEqual(inlined.range, "main..HEAD");
+        const entry = inlined.commits.find((c) => c.commit.sha === sha)!.entry!;
+        assert.include(entry.thread.title, "API_TOKEN=[redacted] and keep </script> in text");
+      }).pipe(
+        Effect.provide(ledgerLayer({ dbPath: "/nonexistent/state.sqlite", codexHome, distDir })),
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.live(

@@ -35,20 +35,31 @@ function asView(entry: LedgerEntry): ThreadView {
   };
 }
 
-/** Agent history per commit for a repo range, read from the agent-ledger branch. */
-export function LedgerPage({ repo, range }: { repo: string; range: string }) {
+/**
+ * Agent history per commit for a repo range, read from the agent-ledger branch. With `inline`
+ * (the static page of `ledger site`) it shows that range only and never calls the server.
+ */
+export function LedgerPage({
+  repo,
+  range,
+  inline,
+}: {
+  repo: string;
+  range: string;
+  inline?: LedgerRange;
+}) {
   const [repos, setRepos] = useState<ReadonlyArray<{ path: string; title: string }>>([]);
-  const [data, setData] = useState<LedgerRange | null>(null);
+  const [data, setData] = useState<LedgerRange | null>(inline ?? null);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState({ repo, range });
 
   useEffect(() => {
-    document.title = "commit ledger · toolreader";
-    call((api) => api.ledger.repos()).then(setRepos, () => setRepos([]));
+    document.title = inline ? `${inline.range} · agent ledger` : "commit ledger · toolreader";
+    if (!inline) call((api) => api.ledger.repos()).then(setRepos, () => setRepos([]));
   }, []);
   useEffect(() => {
     setDraft({ repo, range });
-    if (!repo) return;
+    if (!repo || inline) return;
     setData(null);
     setError(null);
     call((api) => api.ledger.range({ query: { repo, ...(range ? { range } : {}) } })).then(
@@ -61,45 +72,48 @@ export function LedgerPage({ repo, range }: { repo: string; range: string }) {
   return (
     <main className="viewer">
       <header className="topbar">
-        <a href="#/">← sessions</a>
-        <h1>commit ledger</h1>
+        {!inline && <a href="#/">← sessions</a>}
+        <h1>{inline ? "agent ledger" : "commit ledger"}</h1>
         <ThemePicker />
       </header>
-      <form
-        className="ledger-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          location.hash = ledgerHash(draft.repo, draft.range);
-        }}
-      >
-        <input
-          list="ledger-repos"
-          placeholder="Repository path"
-          value={draft.repo}
-          onChange={(e) => setDraft({ ...draft, repo: e.target.value })}
-        />
-        <datalist id="ledger-repos">
-          {repos.map((r) => (
-            <option key={r.path} value={r.path}>
-              {r.title}
-            </option>
-          ))}
-        </datalist>
-        <input
-          placeholder="Range, e.g. main..HEAD (default: default branch..HEAD)"
-          value={draft.range}
-          onChange={(e) => setDraft({ ...draft, range: e.target.value })}
-        />
-        <button className="chip on" type="submit">
-          show
-        </button>
-      </form>
+      {!inline && (
+        <form
+          className="ledger-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            location.hash = ledgerHash(draft.repo, draft.range);
+          }}
+        >
+          <input
+            list="ledger-repos"
+            placeholder="Repository path"
+            value={draft.repo}
+            onChange={(e) => setDraft({ ...draft, repo: e.target.value })}
+          />
+          <datalist id="ledger-repos">
+            {repos.map((r) => (
+              <option key={r.path} value={r.path}>
+                {r.title}
+              </option>
+            ))}
+          </datalist>
+          <input
+            placeholder="Range, e.g. main..HEAD (default: default branch..HEAD)"
+            value={draft.range}
+            onChange={(e) => setDraft({ ...draft, range: e.target.value })}
+          />
+          <button className="chip on" type="submit">
+            show
+          </button>
+        </form>
+      )}
       {error && <div className="error">{error}</div>}
       {repo && !data && !error && <p className="dim">loading…</p>}
       {data && (
         <p className="dim">
           {data.range} · {data.commits.length} commits · {withHistory} with agent history
           {withHistory < data.commits.length &&
+            !inline &&
             " (run `toolreader ledger sync` to add missing ones)"}
         </p>
       )}
