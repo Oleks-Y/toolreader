@@ -22,11 +22,11 @@ import {
   CodexThreadRead,
   codexThreadToRows,
   isoFromSeconds,
-  scanItemTimes,
   type CodexThreadMeta,
 } from "../core/codex.ts";
 import type { Labels, ThreadHead, ThreadSummary, ThreadView } from "../core/domain.ts";
 import { normalize } from "../core/normalize.ts";
+import { emptyScan, scanRollout } from "../core/rollout.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 import { ThreadStore, type T3Project } from "./ThreadStore.ts";
 
@@ -239,18 +239,16 @@ export class CodexSessions extends Context.Service<
           };
         });
 
-        const itemTimes = (file: string | null | undefined) =>
+        /** Item times, plus the tool calls thread/read drops (see core/rollout.ts). */
+        const scanFile = (file: string | null | undefined) =>
           file
             ? fs.stream(file).pipe(
                 Stream.decodeText(),
                 Stream.splitLines,
-                Stream.runFold(
-                  () => new Map<string, string>(),
-                  (times, line) => scanItemTimes([line], times),
-                ),
-                Effect.orElseSucceed(() => new Map<string, string>()),
+                Stream.runFold(emptyScan, (scan, line) => scanRollout([line], scan)),
+                Effect.orElseSucceed(emptyScan),
               )
-            : Effect.succeed(new Map<string, string>());
+            : Effect.succeed(emptyScan());
 
         const get = Effect.fn("CodexSessions.get")(function* (id: string, labels: Labels) {
           // Marker first: if the session writes while we read, the next poll sees a newer marker
@@ -266,15 +264,15 @@ export class CodexSessions extends Context.Service<
           const { turns: _turns, ...thread } = read.thread;
           const meta: ThreadMeta = { ...thread, archived: threads.get(id)?.archived ?? false };
           threads.set(id, meta);
-          const [times, projects, now, marker] = yield* Effect.all([
-            itemTimes(read.thread.path),
+          const [scan, projects, now, marker] = yield* Effect.all([
+            scanFile(read.thread.path),
             store.projects,
             Clock.currentTimeMillis,
             knownPath
               ? Effect.succeed(before.head)
               : Effect.map(fileHead(read.thread.path), (h) => h.head),
           ]);
-          const { activities, messages } = codexThreadToRows(read, times);
+          const { activities, messages } = codexThreadToRows(read, scan);
           const entries = normalize(activities, messages, {
             root: read.thread.cwd ?? null,
             home: config.home,

@@ -1,8 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
-import { CodexThreadRead, codexThreadToRows, scanItemTimes, toCanonicalItemType } from "./codex.ts";
+import { CodexThreadRead, codexThreadToRows, toCanonicalItemType } from "./codex.ts";
 import { normalize } from "./normalize.ts";
+import { emptyScan, scanRollout } from "./rollout.ts";
 import { buildTree, DEFAULT_SWITCHES } from "./tree.ts";
 
 const decodeRead = Schema.decodeUnknownSync(CodexThreadRead);
@@ -73,7 +74,7 @@ describe("codex", () => {
   });
 
   it("scans the first timestamp each item id appears at", () => {
-    const times = scanItemTimes([
+    const { times } = scanRollout([
       '{"timestamp":"2026-01-01T00:00:01.000Z","type":"response_item","payload":{"type":"function_call","call_id":"c1"}}',
       '{"timestamp":"2026-01-01T00:00:09.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"id":"c1"}}}',
       'not json {"id":"zzz"}',
@@ -89,11 +90,10 @@ describe("codex", () => {
   });
 
   it("turns thread/read items into entries the normalizer understands", () => {
-    const times = new Map([
-      ["c1", "2026-01-01T00:00:05.000Z"],
-      ["f1", "2026-01-01T00:00:06.000Z"],
-    ]);
-    const { activities, messages } = codexThreadToRows(read, times);
+    const scan = emptyScan();
+    scan.times.set("c1", "2026-01-01T00:00:05.000Z");
+    scan.times.set("f1", "2026-01-01T00:00:06.000Z");
+    const { activities, messages } = codexThreadToRows(read, scan);
     assert.deepStrictEqual(
       messages.map((m) => m.role),
       ["user", "reasoning", "assistant"],
@@ -135,7 +135,7 @@ describe("codex", () => {
         ],
       },
     });
-    const { activities, messages } = codexThreadToRows(search, new Map());
+    const { activities, messages } = codexThreadToRows(search);
     const [action] = normalize(activities, messages);
     assert.deepStrictEqual(action?.type === "action" ? [action.status, action.noMatch] : [], [
       "ok",
@@ -164,7 +164,7 @@ describe("codex", () => {
         turns: [{ id: "x", items: [user("u1"), cmd("c1"), user("u2"), cmd("c2")] }],
       },
     });
-    const { activities, messages } = codexThreadToRows(noTimes, new Map());
+    const { activities, messages } = codexThreadToRows(noTimes);
     const turns = buildTree(normalize(activities, messages), DEFAULT_SWITCHES);
     assert.deepStrictEqual(
       turns.map((t) => [t.prompt?.text, t.actions.map((a) => a.id)]),

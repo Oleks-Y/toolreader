@@ -17,7 +17,8 @@ Setup, libraries and conventions are copied from `~/proj/t3code`. When in doubt,
   - `api.ts`: the `HttpApi` contract. Server and client both derive from it; never put server code here.
   - `payload.ts`: Schemas for T3's raw activity payloads, for every provider.
   - `normalize.ts`, `shell.ts`, `tree.ts`: pure transforms, from raw rows to entries to tree.
-  - `codex.ts`: turns Codex `thread/read` items into the same T3-shaped rows, and scans rollout files for item timestamps.
+  - `codex.ts`: turns Codex `thread/read` items into the same T3-shaped rows.
+  - `rollout.ts`: scans rollout files for item timestamps and for the tool calls `thread/read` drops (it rebuilds items only from `item_completed` events, which most rollouts keep for messages alone), as app-server items.
 - `src/server`: Effect services and the HTTP server.
   - `ThreadStore.ts` is the **only** module that knows T3's table layout. If T3 migrates, fix it there.
   - `Labeler.ts` runs `codex exec` and caches labels in `~/.toolreader/labels.json`.
