@@ -541,4 +541,45 @@ describe("Ledger", () => {
         );
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
+
+  it.live(
+    "keeps a secret in the first prompt line out of the whole entry, title and labels too",
+    () =>
+      Effect.gen(function* () {
+        const { repo, commitFile } = yield* makeRepo;
+        const codexHome = yield* tempDir("toolreader-codex-home-");
+        yield* git(repo, ["switch", "-q", "-c", "feat/x"]);
+        const sha = yield* commitFile("a.ts", "a\n", "feat: a", "2026-01-01T10:02:30Z");
+        yield* writeRollout(codexHome, "s1", repo, [
+          {
+            at: "2026-01-01T10:00:00.000Z",
+            item: userMessage("u1", "Use API_TOKEN=supersecret to fix this"),
+          },
+          {
+            at: "2026-01-01T10:02:00.000Z",
+            item: command("c1", "git commit -m 'feat: a'", `[feat/x ${sha.slice(0, 7)}] feat: a\n`),
+          },
+        ]);
+        yield* Effect.gen(function* () {
+          const ledger = yield* Ledger;
+          const result = yield* ledger.sync(repo, null, { outputs: false });
+          assert.deepStrictEqual(
+            result.added.map((a) => a.commit.sha),
+            [sha],
+          );
+          const json = yield* git(repo, ["show", `agent-ledger:commits/${sha}.json`]);
+          assert.notInclude(json, "supersecret");
+          assert.include(decodeEntry(json).thread.title, "API_TOKEN=[redacted]");
+          assert.notInclude(result.added[0]!.thread, "supersecret", "nor in what sync prints");
+        }).pipe(
+          Effect.provide(
+            ledgerLayer({
+              dbPath: "/nonexistent/state.sqlite",
+              codexHome,
+              labels: { c1: "Commit with API_TOKEN=supersecret" },
+            }),
+          ),
+        );
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
 });

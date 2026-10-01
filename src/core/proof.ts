@@ -2,7 +2,7 @@
 // next to the change it produced and reopened in toolreader. Pure, so server and browser share it.
 import * as Schema from "effect/Schema";
 
-import { ThreadView, type Entry } from "./domain.ts";
+import { ThreadView, type Entry, type Labels } from "./domain.ts";
 import { splitTurns } from "./tree.ts";
 
 export const PROOF_FORMAT_VERSION = 1;
@@ -107,17 +107,27 @@ export function redactText(text: string): { text: string; count: number } {
 
 export type ProofOptions = { readonly outputs: boolean; readonly home?: string | undefined };
 
+/** Redacts free text (secrets, and the home directory as `~`), counting what it replaced. */
+export function redactor(home?: string) {
+  let count = 0;
+  const clean = (s: string) => {
+    const r = redactText(home ? s.split(home).join("~") : s);
+    count += r.count;
+    return r.text;
+  };
+  return { clean, count: () => count };
+}
+
+/** Label values are free text too (Codex writes them from the session's own words). */
+export const redactLabels = (labels: Labels, clean: (s: string) => string): Labels =>
+  Object.fromEntries(Object.entries(labels).map(([id, label]) => [id, clean(label)]));
+
 /** Redacts every free-text field (and drops outputs when asked). Also rewrites the home directory to `~`. */
 export function redactEntries(
   entries: ReadonlyArray<Entry>,
   options: ProofOptions,
 ): { entries: Entry[]; redactions: number } {
-  let redactions = 0;
-  const clean = (s: string) => {
-    const r = redactText(options.home ? s.split(options.home).join("~") : s);
-    redactions += r.count;
-    return r.text;
-  };
+  const { clean, count } = redactor(options.home);
   const maybe = (s: string | undefined) => (s === undefined ? undefined : clean(s));
   const result = entries.map((e): Entry => {
     if (e.type === "message" || e.type === "event") return { ...e, text: clean(e.text) };
@@ -132,7 +142,7 @@ export function redactEntries(
       files: e.files?.map((f) => ({ ...f, path: clean(f.path), diff: maybe(f.diff) })),
     };
   });
-  return { entries: result, redactions };
+  return { entries: result, redactions: count() };
 }
 
 /** File name for an artifact: `<title-slug>-<thread-id-prefix>[-t3-5].json`. */

@@ -4,6 +4,7 @@
 import * as Schema from "effect/Schema";
 
 import { Entry, Labels, ThreadSource, type Action } from "./domain.ts";
+import { redactEntries, redactLabels, redactor } from "./proof.ts";
 import { unwrapShell } from "./shell.ts";
 import { splitTurns } from "./tree.ts";
 
@@ -197,6 +198,44 @@ export function clipOutputs(entries: ReadonlyArray<Entry>, maxBytes: number): En
     const output = `${fromUtf8.decode(bytes.subarray(0, head))}\n… [${clipped} bytes clipped] …\n${fromUtf8.decode(bytes.subarray(tail))}`;
     return { ...e, output, clipped };
   });
+}
+
+/**
+ * The entry for `commit`: the segment's entries, the thread's title and the labels redacted like
+ * every other free-text field (the title is the first prompt line), and outputs clipped. Labels
+ * are kept for the segment's entries and fold groups.
+ */
+export function buildEntry(input: {
+  readonly commit: LedgerCommit;
+  readonly thread: LedgerEntry["thread"];
+  readonly match: LedgerEntry["match"];
+  readonly segment: ReadonlyArray<Entry>;
+  readonly labels: Labels;
+  readonly outputs: boolean;
+  readonly maxOutput: number;
+  readonly home?: string | undefined;
+}): LedgerEntry {
+  const redacted = redactEntries(input.segment, { outputs: input.outputs, home: input.home });
+  const entries = clipOutputs(redacted.entries, input.maxOutput);
+  const ids = new Set(entries.map((e) => e.id));
+  const { clean, count } = redactor(input.home);
+  const thread = { ...input.thread, title: clean(input.thread.title) };
+  const labels = redactLabels(
+    Object.fromEntries(
+      Object.entries(input.labels).filter(([id]) => ids.has(id) || id.startsWith("fold:")),
+    ),
+    clean,
+  );
+  return {
+    formatVersion: LEDGER_FORMAT_VERSION,
+    commit: input.commit,
+    thread,
+    match: input.match,
+    outputs: input.outputs ? "included" : "omitted",
+    redactions: redacted.redactions + count(),
+    entries,
+    labels,
+  };
 }
 
 /** First line of the hook `ledger hook install` writes; marks the file as ours. */

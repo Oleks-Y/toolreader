@@ -14,11 +14,10 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { LedgerFailed, type ThreadNotFound } from "../core/api.ts";
 import type { Entry, Labels, ThreadSummary, ThreadView } from "../core/domain.ts";
 import {
-  clipOutputs,
+  buildEntry,
   findCommitActions,
   HOOK_MARKER,
   LEDGER_BRANCH,
-  LEDGER_FORMAT_VERSION,
   LedgerEntry,
   ledgerPath,
   matchCommit,
@@ -32,7 +31,6 @@ import {
   type LedgerCommitView,
   type LedgerRange,
 } from "../core/ledger.ts";
-import { redactEntries } from "../core/proof.ts";
 import { CodexRollouts } from "./CodexRollouts.ts";
 import { CODEX_ID_PREFIX, CodexSessions } from "./CodexSessions.ts";
 import { Labeler } from "./Labeler.ts";
@@ -505,32 +503,22 @@ export class Ledger extends Context.Service<
             unmatched.push(commit);
             continue;
           }
-          const redacted = redactEntries(picked.segment, {
-            outputs: options.outputs,
-            home: config.home,
-          });
-          const entries = clipOutputs(redacted.entries, options.maxOutput);
-          const ids = new Set(entries.map((e) => e.id));
-          const entry: LedgerEntry = {
-            formatVersion: LEDGER_FORMAT_VERSION,
+          const entry = buildEntry({
             commit,
             thread: picked.session.thread,
             match: picked.match,
-            outputs: options.outputs ? "included" : "omitted",
-            redactions: redacted.redactions,
-            entries,
-            labels: Object.fromEntries(
-              Object.entries(picked.session.labels).filter(
-                ([id]) => ids.has(id) || id.startsWith("fold:"),
-              ),
-            ),
-          };
+            segment: picked.segment,
+            labels: picked.session.labels,
+            outputs: options.outputs,
+            maxOutput: options.maxOutput,
+            home: config.home,
+          });
           writes.push({ commit, json: yield* encodeEntry(entry).pipe(Effect.orDie) });
           added.push({
             commit,
-            thread: picked.session.thread.title,
+            thread: entry.thread.title,
             match: picked.match,
-            actions: entries.filter((e) => e.type === "action").length,
+            actions: entry.entries.filter((e) => e.type === "action").length,
           });
         }
 

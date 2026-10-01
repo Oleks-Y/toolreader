@@ -18,6 +18,8 @@ import {
   ProofArtifact,
   proofFileName,
   redactEntries,
+  redactLabels,
+  redactor,
   redactText,
   selectEntries,
   type ProofScope,
@@ -93,6 +95,21 @@ export class Proofs extends Context.Service<
           home: config.home,
         });
         const ids = new Set(entries.map((e) => e.id));
+        // The title is the first prompt line, and labels quote the session: free text like the rest.
+        const meta = redactor(config.home);
+        const thread = {
+          ...view.thread,
+          title: meta.clean(view.thread.title),
+          projectTitle: meta.clean(view.thread.projectTitle),
+          worktree: view.thread.worktree ? meta.clean(view.thread.worktree) : null,
+          actionCount: entries.filter((e) => e.type === "action").length,
+        };
+        const kept = redactLabels(
+          Object.fromEntries(
+            Object.entries(view.labels).filter(([id]) => ids.has(id) || id.startsWith("fold:")),
+          ),
+          meta.clean,
+        );
         const now = yield* Clock.currentTimeMillis;
         const artifact: ProofArtifact = {
           formatVersion: PROOF_FORMAT_VERSION,
@@ -101,20 +118,8 @@ export class Proofs extends Context.Service<
           git: yield* gitInfo(request.repo ?? view.thread.worktree),
           scope: request.scope,
           outputs: request.outputs ? "included" : "omitted",
-          redactions,
-          view: {
-            thread: {
-              ...view.thread,
-              worktree: view.thread.worktree
-                ? redactText(view.thread.worktree.split(config.home).join("~")).text
-                : null,
-              actionCount: entries.filter((e) => e.type === "action").length,
-            },
-            entries,
-            labels: Object.fromEntries(
-              Object.entries(view.labels).filter(([id]) => ids.has(id) || id.startsWith("fold:")),
-            ),
-          },
+          redactions: redactions + meta.count(),
+          view: { thread, entries, labels: kept },
         };
         return artifact;
       });
