@@ -65,6 +65,9 @@ describe("Ledger", () => {
           });
 
         yield* git(repo, ["init", "-q", "-b", "main"]);
+        // The service's own git calls (commit-tree) need an identity; CI has none globally.
+        yield* git(repo, ["config", "user.name", "Agent"]);
+        yield* git(repo, ["config", "user.email", "agent@example.test"]);
         yield* commitFile("README.md", "hi\n", "init", "2026-01-01T09:00:00Z");
         yield* git(repo, ["switch", "-q", "-c", "feat/x"]);
         const first = yield* commitFile(
