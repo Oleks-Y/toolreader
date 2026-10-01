@@ -73,7 +73,7 @@ export function assignPhases(actions: Action[]): Map<string, PhaseName> {
   return out;
 }
 
-function splitTurns(
+export function splitTurns(
   entries: ReadonlyArray<Entry>,
 ): Array<{ prompt: Message | null; entries: Entry[] }> {
   const turns: Array<{ prompt: Message | null; entries: Entry[] }> = [];

@@ -59,6 +59,7 @@ export function Sessions() {
       <header className="topbar">
         <h1>toolreader</h1>
         <ThemePicker />
+        <a href="#/file">open proof file</a>
         <input
           autoFocus
           placeholder="Filter threads…"

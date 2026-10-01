@@ -18,6 +18,7 @@ import {
   type Message,
   type ThreadView,
 } from "../core/domain.ts";
+import { proofFileName, type ProofArtifact, type ProofScope } from "../core/proof.ts";
 import { call, errorMessage } from "./client.ts";
 import { Swimlane, type Range } from "./Swimlane.tsx";
 import { ThemePicker } from "./theme.tsx";
@@ -128,8 +129,33 @@ type Ctx = {
   highlight: string | null;
 };
 
-export function ActionView({ threadId }: { threadId: string }) {
-  const [view, setView] = useState<ThreadView | null>(null);
+/** Download link for a proof-of-work artifact of the whole thread, some turns, or a time range. */
+function proofLink(view: ThreadView, scope: ProofScope) {
+  const query = new URLSearchParams();
+  if (scope.turns) query.set("turns", `${scope.turns.from}-${scope.turns.to}`);
+  if (scope.range) {
+    query.set("from", scope.range.from);
+    query.set("to", scope.range.to);
+  }
+  const qs = query.toString();
+  return {
+    href: `/api/threads/${encodeURIComponent(view.thread.id)}/proof${qs ? `?${qs}` : ""}`,
+    download: proofFileName(view, scope),
+  };
+}
+
+/**
+ * A live thread (`threadId`, fetched and polled) or a proof-of-work file (`artifact`, read-only:
+ * no polling, labeling or export).
+ */
+export function ActionView({
+  threadId,
+  artifact,
+}: {
+  threadId?: string;
+  artifact?: ProofArtifact;
+}) {
+  const [view, setView] = useState<ThreadView | null>(artifact?.view ?? null);
   const [error, setError] = useState<string | null>(null);
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
   const [range, setRange] = useState<Range | null>(null);
@@ -139,9 +165,11 @@ export function ActionView({ threadId }: { threadId: string }) {
 
   const load = useCallback(
     () =>
-      call((api) => api.threads.get({ params: { id: threadId } })).then(setView, (e: unknown) =>
-        setError(errorMessage(e)),
-      ),
+      threadId === undefined
+        ? Promise.resolve()
+        : call((api) => api.threads.get({ params: { id: threadId } })).then(setView, (e: unknown) =>
+            setError(errorMessage(e)),
+          ),
     [threadId],
   );
   useEffect(() => void load(), [load]);
@@ -154,7 +182,7 @@ export function ActionView({ threadId }: { threadId: string }) {
   const running = view?.thread.status === "running";
   const head = view?.thread.head;
   useEffect(() => {
-    if (!running) return;
+    if (!running || threadId === undefined) return;
     const timer = setInterval(async () => {
       const h = await call((api) => api.threads.head({ params: { id: threadId } })).catch(
         () => null,
@@ -206,7 +234,7 @@ export function ActionView({ threadId }: { threadId: string }) {
   };
 
   const labelTurn = async (turn: Turn) => {
-    if (!view) return;
+    if (!view || threadId === undefined) return;
     const items = turn.phases
       .flatMap((p) => p.items)
       .flatMap((item) => labelItem(item, view.labels))
@@ -226,17 +254,18 @@ export function ActionView({ threadId }: { threadId: string }) {
     }
   };
 
+  const back = artifact ? <a href="#/file">← open another file</a> : <a href="#/">← sessions</a>;
   if (error)
     return (
       <main className="viewer">
-        <a href="#/">← sessions</a>
+        {back}
         <div className="error">{error}</div>
       </main>
     );
   if (!view)
     return (
       <main className="viewer">
-        <a href="#/">← sessions</a>
+        {back}
         <p className="dim">loading…</p>
       </main>
     );
@@ -257,7 +286,7 @@ export function ActionView({ threadId }: { threadId: string }) {
   return (
     <main className="viewer">
       <header className="thread-head">
-        <a href="#/">← sessions</a>
+        {back}
         <h1>{t.title}</h1>
         <span className={`status-dot ${t.status}`} title={t.status} />
         <span className="dim">
@@ -266,6 +295,18 @@ export function ActionView({ threadId }: { threadId: string }) {
           <span className="del">−{total.removed}</span>
           {total.failed > 0 && <span className="fail"> · {total.failed} failed</span>}
         </span>
+        {artifact ? (
+          <span className="proof-meta">
+            proof · exported {fmtDay(artifact.exportedAt)} {fmtTime(artifact.exportedAt)}
+            {artifact.git?.branch && ` · ${artifact.git.branch}`}
+            {artifact.git?.head && `@${artifact.git.head.slice(0, 8)}`} · outputs {artifact.outputs}
+            {artifact.redactions > 0 && ` · ${artifact.redactions} redacted`}
+          </span>
+        ) : (
+          <a className="chip" {...proofLink(view, { turns: null, range: null })}>
+            ⇩ export
+          </a>
+        )}
       </header>
 
       <div className="toolbar">
@@ -312,6 +353,11 @@ export function ActionView({ threadId }: { threadId: string }) {
             {fmtTime(range.from)}–{fmtTime(range.to)} ✕
           </button>
         )}
+        {range && !artifact && (
+          <a className="chip on range-chip" {...proofLink(view, { turns: null, range })}>
+            ⇩ export range
+          </a>
+        )}
       </div>
 
       <Swimlane
@@ -334,7 +380,15 @@ export function ActionView({ threadId }: { threadId: string }) {
             prevDay={i > 0 ? fmtDay(turns[i - 1]!.stats.start) : ""}
             ctx={ctx}
             labeling={labeling[turn.id]}
-            onLabel={() => labelTurn(turn)}
+            onLabel={artifact ? undefined : () => labelTurn(turn)}
+            exportLink={
+              artifact
+                ? undefined
+                : proofLink(view, {
+                    turns: { from: turn.index + 1, to: turn.index + 1 },
+                    range: null,
+                  })
+            }
           />
         ))}
         {turns.length === 0 && <p className="dim">No entries.</p>}
@@ -372,12 +426,15 @@ function TurnBlock({
   ctx,
   labeling,
   onLabel,
+  exportLink,
 }: {
   turn: Turn;
   prevDay: string;
   ctx: Ctx;
   labeling?: string | undefined;
-  onLabel: () => void;
+  /** Absent for proof files, which are read-only. */
+  onLabel: (() => void) | undefined;
+  exportLink: { href: string; download: string } | undefined;
 }) {
   const isOpen = ctx.open.isOpen(turn.id, true);
   const s = turn.stats;
@@ -403,16 +460,23 @@ function TurnBlock({
           )}
           {s.failed > 0 && <span className="fail"> · {s.failed} failed</span>}
         </span>
-        <button
-          className="chip label-btn"
-          onClick={(e) => {
-            e.stopPropagation();
-            onLabel();
-          }}
-          disabled={!!labeling?.startsWith("labeling")}
-        >
-          {labeling || "✨ Label with Codex"}
-        </button>
+        {exportLink && (
+          <a className="chip" {...exportLink} onClick={(e) => e.stopPropagation()}>
+            ⇩ export
+          </a>
+        )}
+        {onLabel && (
+          <button
+            className="chip label-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              onLabel();
+            }}
+            disabled={!!labeling?.startsWith("labeling")}
+          >
+            {labeling || "✨ Label with Codex"}
+          </button>
+        )}
       </div>
       {isOpen && turn.phases.map((p) => <PhaseBlock key={p.id} phase={p} ctx={ctx} />)}
     </section>

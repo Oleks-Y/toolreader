@@ -11,6 +11,16 @@ export class ThreadNotFound extends Schema.TaggedErrorClass<ThreadNotFound>()("T
   threadId: Schema.String,
 }) {}
 
+export class InvalidProofScope extends Schema.TaggedErrorClass<InvalidProofScope>()(
+  "InvalidProofScope",
+  { message: Schema.String },
+) {}
+
+export class ProofWriteFailed extends Schema.TaggedErrorClass<ProofWriteFailed>()(
+  "ProofWriteFailed",
+  { message: Schema.String },
+) {}
+
 export class LabelingFailed extends Schema.TaggedErrorClass<LabelingFailed>()("LabelingFailed", {
   message: Schema.String,
 }) {}
@@ -27,6 +37,21 @@ export class ThreadsApi extends HttpApiGroup.make("threads")
       params: { id: Schema.String },
       success: ThreadHead,
       error: ThreadNotFound.pipe(HttpApiSchema.status(404)),
+    }),
+    // Proof-of-work artifact as pretty JSON (a download). Scope: `turns=3-5` and/or `from`/`to` ISO times.
+    HttpApiEndpoint.get("proof", "/threads/:id/proof", {
+      params: { id: Schema.String },
+      query: {
+        turns: Schema.optional(Schema.String),
+        from: Schema.optional(Schema.String),
+        to: Schema.optional(Schema.String),
+        outputs: Schema.optional(Schema.Literals(["include", "omit"])),
+      },
+      success: Schema.String.pipe(HttpApiSchema.asText({ contentType: "application/json" })),
+      error: [
+        ThreadNotFound.pipe(HttpApiSchema.status(404)),
+        InvalidProofScope.pipe(HttpApiSchema.status(400)),
+      ],
     }),
   )
   .prefix("/api") {}

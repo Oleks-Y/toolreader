@@ -2,15 +2,17 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
-import { ToolreaderApi } from "../core/api.ts";
+import { InvalidProofScope, ToolreaderApi } from "../core/api.ts";
 import { CODEX_ID_PREFIX, CodexSessions } from "./CodexSessions.ts";
 import { Labeler } from "./Labeler.ts";
+import { parseTurns, Proofs } from "./Proofs.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 import { ThreadStore } from "./ThreadStore.ts";
 
@@ -24,6 +26,7 @@ const ThreadsHandlers = HttpApiBuilder.group(
     const store = yield* ThreadStore;
     const codex = yield* CodexSessions;
     const labeler = yield* Labeler;
+    const proofs = yield* Proofs;
     const codexId = (id: string) =>
       id.startsWith(CODEX_ID_PREFIX) ? id.slice(CODEX_ID_PREFIX.length) : null;
     return handlers
@@ -45,7 +48,24 @@ const ThreadsHandlers = HttpApiBuilder.group(
       .handle("head", ({ params }) => {
         const id = codexId(params.id);
         return id ? codex.head(id) : store.head(params.id);
-      });
+      })
+      .handle("proof", ({ params, query }) =>
+        Effect.gen(function* () {
+          const turns = query.turns === undefined ? Option.none() : parseTurns(query.turns);
+          if (query.turns !== undefined && Option.isNone(turns)) {
+            return yield* new InvalidProofScope({
+              message: `turns must look like 3 or 3-5, got "${query.turns}"`,
+            });
+          }
+          const range = query.from && query.to ? { from: query.from, to: query.to } : null;
+          const artifact = yield* proofs.build({
+            threadId: params.id,
+            scope: { turns: Option.getOrNull(turns), range },
+            outputs: query.outputs !== "omit",
+          });
+          return yield* proofs.render(artifact);
+        }),
+      );
   }),
 );
 

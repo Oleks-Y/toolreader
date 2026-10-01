@@ -627,3 +627,33 @@ pre.code.plain {
     sans-serif;
   padding: 2px 6px;
 }
+
+/* Proof-of-work files */
+.proof-meta {
+  font-size: 12px;
+  color: var(--dim);
+  border: 1px dashed var(--line);
+  border-radius: 999px;
+  padding: 1px 10px;
+}
+a.chip {
+  text-decoration: none;
+}
+.dropzone {
+  display: grid;
+  gap: 6px;
+  place-items: center;
+  padding: 60px 20px;
+  border: 2px dashed var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  cursor: pointer;
+  text-align: center;
+}
+.dropzone.dragging {
+  border-color: var(--read);
+  background: color-mix(in srgb, var(--read) 8%, var(--panel));
+}
+.dropzone input {
+  display: none;
+}

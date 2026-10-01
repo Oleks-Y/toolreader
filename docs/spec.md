@@ -44,6 +44,13 @@ Read-only viewer for what coding agents _did_ in T3 Code threads. Actions come f
 - File edits render as language-aware diffs (`FileDiff`). Diffs are stored as valid unified hunks; oversized ones are cut by whole hunks (or by lines with corrected header counts). Claude/Cursor edits hide line numbers, because they only know the edited snippet.
 - Agent notes, reasoning and subagent prompts render as markdown; collapsed ones fade after two lines. Local file links show as code.
 
+## Proof-of-work artifacts
+
+- A thread, a turn range (`--turns 3-5`, as numbered in the viewer) or a time range exports as one JSON file: `ProofArtifact` (`src/core/proof.ts`) = `formatVersion`, export time, toolreader version, git branch/HEAD/remote of the repo, scope, outputs included/omitted, redaction count, and the `ThreadView` the viewer renders.
+- The CLI writes it to `<repo>/.agent-work/<branch>/` (repo defaults to the thread's working directory); the viewer's export links download the same file. `#/file` opens one offline, read-only.
+- Outputs are included by default (they double the size: a typical turn is ~19 KB, ~6 KB in git) and can be dropped with `--no-outputs`. Every free-text field is redacted, and the home directory becomes `~`. Redaction errs toward over-redacting.
+- It is a faithful record, not tamper-proof evidence.
+
 ## Codex labels (on demand)
 
 - A "Label with Codex" button on each turn sends that turn's non-trivial actions and fold groups to `codex exec --output-schema`, run read-only and ephemeral.
