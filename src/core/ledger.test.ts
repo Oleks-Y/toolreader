@@ -62,6 +62,15 @@ describe("ledger", () => {
         ["c2", ["1a2b3c4", "5d6e7f8"]],
       ],
     );
+    const wrapped = [
+      action("w", "2026-01-01T10:00:00Z", `/bin/zsh -lc "git commit -m 'feat: x'"`),
+      action("echo", "2026-01-01T10:00:00Z", `/bin/zsh -lc 'echo "git commit"'`),
+    ];
+    assert.deepStrictEqual(
+      findCommitActions(wrapped).map((a) => a.action.id),
+      ["w"],
+      "inside a shell wrapper",
+    );
   });
 
   it("matches by printed SHA first, else by the latest commit action shortly before the commit time", () => {

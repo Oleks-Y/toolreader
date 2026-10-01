@@ -4,6 +4,7 @@
 import * as Schema from "effect/Schema";
 
 import { Entry, Labels, ThreadSource, type Action } from "./domain.ts";
+import { unwrapShell } from "./shell.ts";
 import { splitTurns } from "./tree.ts";
 
 export const LEDGER_FORMAT_VERSION = 1;
@@ -63,7 +64,12 @@ const COMMIT_SUMMARY = /^\[[^\]\s]+(?: \([^)]*\))? ([0-9a-f]{7,40})\]/gm;
 export function findCommitActions(entries: ReadonlyArray<Entry>): CommitAction[] {
   const out: CommitAction[] = [];
   entries.forEach((e, index) => {
-    if (e.type !== "action" || e.status === "failed" || !GIT_COMMIT.test(e.command ?? e.title))
+    // Codex wraps commands in `/bin/zsh -lc "…"`; the script inside is what runs.
+    if (
+      e.type !== "action" ||
+      e.status === "failed" ||
+      !GIT_COMMIT.test(unwrapShell(e.command ?? e.title))
+    )
       return;
     const shas = [...(e.output ?? "").matchAll(COMMIT_SUMMARY)].map((m) => m[1]!);
     out.push({ index, action: e, shas });
