@@ -63,7 +63,9 @@ export type RolloutCall = {
   /** One per output line; `write_stdin` and code-mode `wait` add theirs to the call they continue. */
   readonly outputs: string[];
   lastLine: number;
-  /** Its turn completed or aborted: no output by then means it never finished. */
+  /** Got a final result. Output that names a session or cell still running does not count. */
+  finished: boolean;
+  /** Its turn completed or aborted: not finished by then means it was cut off. */
   ended: boolean;
 };
 
@@ -163,6 +165,7 @@ function addLine(scan: RolloutScan, index: number, at: string, p: typeof Payload
       const cell = /^Script running with cell ID (\S+)/m.exec(text)?.[1];
       if (session) scan.running.set(`session:${session}`, call);
       else if (cell) scan.running.set(`cell:${cell}`, call);
+      call.finished = !session && !cell;
       return;
     }
   }
@@ -204,6 +207,7 @@ function addLine(scan: RolloutScan, index: number, at: string, p: typeof Payload
     args,
     outputs: p.type === "web_search_call" ? [p.status === "failed" ? "failed" : ""] : [],
     lastLine: index,
+    finished: p.type === "web_search_call",
     ended: false,
   };
   scan.calls.push(call);
@@ -377,9 +381,8 @@ function mcpName(name: string, namespace: string | undefined) {
 export function rolloutItem(c: RolloutCall, ended = c.ended): Record<string, unknown> | undefined {
   if (SKIPPED.has(c.name)) return undefined;
   const args = Predicate.isObject(c.args) ? (c.args as Record<string, unknown>) : {};
-  const done = c.outputs.length > 0;
   const status = (failed: boolean) =>
-    failed || (!done && ended) ? "failed" : done ? "completed" : "inProgress";
+    failed || (!c.finished && ended) ? "failed" : c.finished ? "completed" : "inProgress";
   const base = { id: c.id };
 
   const command = (text: string) => {

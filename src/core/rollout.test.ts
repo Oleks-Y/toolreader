@@ -301,4 +301,22 @@ describe("rollout", () => {
     assert.strictEqual(shellJoin(["sh", "-c", "echo $HOME 'x'"]), `sh -c 'echo $HOME '"'x'"`);
     assert.strictEqual(shellJoin(["printf", 'a\\tb "c"']), `printf "a\\\\tb \\"c\\""`);
   });
+  it("keeps a command running until it finishes, and fails it if the turn ends first", () => {
+    const lines = [
+      event({ type: "task_started", turn_id: "turn-1" }),
+      call("c1", "exec_command", { cmd: "pnpm build" }),
+      output("c1", "Process running with session ID 41\nOutput:\nbuilding\n"),
+    ];
+    assert.deepStrictEqual(
+      actionsOf(lines, [], "inProgress").actions.map((a) => [a.status, a.output]),
+      [["running", "building\n"]],
+    );
+    assert.strictEqual(actionsOf(lines, [], "interrupted").actions[0]?.status, "failed");
+    const finished = [
+      ...lines,
+      call("c2", "write_stdin", { session_id: 41, chars: "" }),
+      output("c2", "Process exited with code 0\nOutput:\ndone\n"),
+    ];
+    assert.strictEqual(actionsOf(finished, [], "inProgress").actions[0]?.status, "ok");
+  });
 });
