@@ -57,6 +57,7 @@ describe("core", () => {
   it("classifies commands by intent, whatever the toolchain", () => {
     const cases: Array<[string, string]> = [
       ["go test ./... -run X", "test"],
+      ["bun -e 'const p = 1; console.log(p)'", "run"],
       ["vp test run src", "test"],
       ["cargo test --locked", "test"],
       ["bun test --timeout 60000 a.test.ts", "test"],

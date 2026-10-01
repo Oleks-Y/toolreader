@@ -562,6 +562,8 @@ export function classifyRun(argv: ReadonlyArray<string>): RunKind {
     return "run";
   }
   if (!RUNNERS.has(exe)) return classifyWord(exe) === "test" ? "test" : "run";
+  // `bun -e <code>`: the code is not a script name (and may contain `=`).
+  if (args.some((x) => /^(-e|--eval|-p|--print)$/.test(x))) return "run";
   const positional: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
