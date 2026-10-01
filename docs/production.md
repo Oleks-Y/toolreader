@@ -40,15 +40,17 @@ toolreader ledger sync --source codex-rollouts --codex-home "$CODEX_HOME" \
 ## Who reads it
 
 - **Local:** `toolreader serve` serves live T3 and Codex sessions, plus `#/ledger` for any repo on the machine.
-- **Static:** `toolreader ledger site --range base..head --out dir` writes a self-contained page: the viewer with the range's entries inlined. It opens from `file://`, a CI artifact, GitHub Pages or any static host.
-- **PR review:** the `ledger` action on `pull_request` builds that page for `base..head`, uploads it as an artifact and writes a job summary. With Pages enabled, it can publish to `pr/<number>/` and comment the link on the PR.
+- **Static:** `toolreader ledger site --range base..head --out dir` writes a self-contained page: the viewer with the range's entries inlined, in one `index.html` that loads nothing else. It opens from `file://`, a CI artifact, GitHub Pages or any static host. It reads the local `agent-ledger` branch; the action fetches origin's when the checkout has none.
+- **PR review:** the action with `command: site` on `pull_request` builds that page for `base..head`, and writes `ledger show` to the job summary; the workflow uploads it as an artifact and links it ([`docs/ci/pr-ledger.yml`](ci/pr-ledger.yml)). With the repository variable `LEDGER_PAGES=true`, a second job publishes it to `pr/<number>/` on `gh-pages` and comments the link (same-repo PRs only: fork PRs get a read-only token).
 
 Private repos: Pages sites are public except on GitHub Enterprise Cloud. Keep the artifact for private code.
 
 ## Packaging
 
 - The npm package `toolreader` has one `toolreader` bin: `serve`, `ledger sync|show|site|hook`, `export`. The server is bundled with `vp pack`, as t3code does, because Node does not strip types under `node_modules`.
-- A composite GitHub Action in `action/` installs the package and runs `ledger sync` or `ledger site`.
+- The package is private: nothing is published. `npm pack` builds it (its `prepack` runs `vp run build`) and writes the tarball teams install from. All dependencies are bundled, so installing it pulls nothing else.
+- A composite GitHub Action in `action/` installs the package (a tarball path, or a toolreader checkout it packs first; by default the checkout the action is in) and runs `ledger sync` or `ledger site`. Inputs: `command`, `repo`, `range`, `codex-home`, `max-output`, `push`, `out`, `args` (e.g. `--match-sessions`), `package`, `node-version`. On a runner with no git identity, the ledger commit is made as `github-actions[bot]`.
+- [`docs/ci/agent-ledger.yml`](ci/agent-ledger.yml) is the CI writer above as a workflow: job-local `CODEX_HOME`, `codex exec`, a commit step, then `sync` with `--match-sessions` and `push: true`.
 
 ## Not built
 

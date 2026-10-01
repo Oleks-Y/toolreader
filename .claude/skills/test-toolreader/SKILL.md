@@ -24,7 +24,7 @@ Port 4777 is the developer's default and may already be in use. Use another port
 
 ```bash
 lsof -nP -iTCP:4778 -sTCP:LISTEN   # must print nothing
-vp build && T3_DB=$PWD/.t3/state.sqlite PORT=4778 node src/server/bin.ts
+vp build && T3_DB=$PWD/.t3/state.sqlite PORT=4778 node src/server/bin.ts serve
 ```
 
 Run the server in the background and record its PID **at spawn**. Wait for the `toolreader → http://127.0.0.1:<port>` log line, not a sleep.
