@@ -109,6 +109,18 @@ export class ThreadStore extends Context.Service<
     readonly projects: Effect.Effect<ReadonlyArray<T3Project>>;
   }
 >()("toolreader/server/ThreadStore") {
+  /** No T3 database (e.g. CI): no threads, and no Codex sessions owned by T3. */
+  static readonly empty = Layer.succeed(
+    ThreadStore,
+    ThreadStore.of({
+      list: Effect.succeed([]),
+      get: (id) => Effect.fail(new ThreadNotFound({ threadId: id })),
+      head: (id) => Effect.fail(new ThreadNotFound({ threadId: id })),
+      codexThreadIds: Effect.succeed(new Set()),
+      projects: Effect.succeed([]),
+    }),
+  );
+
   static readonly layer = Layer.effect(
     ThreadStore,
     Effect.gen(function* () {

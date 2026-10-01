@@ -59,6 +59,15 @@ type ThreadMeta = Omit<CodexThreadMeta, "turns"> & { readonly archived: boolean 
 const decodeListPage = Schema.decodeUnknownEffect(CodexThreadListPage);
 const decodeThreadRead = Schema.decodeUnknownEffect(CodexThreadRead);
 
+const missing = (id: string) =>
+  Effect.fail(new ThreadNotFound({ threadId: `${CODEX_ID_PREFIX}${id}` }));
+const disabled = {
+  list: Effect.succeed([]),
+  get: missing,
+  head: missing,
+  ready: Effect.void,
+};
+
 export class CodexSessions extends Context.Service<
   CodexSessions,
   {
@@ -71,6 +80,8 @@ export class CodexSessions extends Context.Service<
   }
 >()("toolreader/server/CodexSessions") {
   static readonly layer = CodexSessions.layerWith(DEFAULTS);
+  /** No `codex app-server`: lists nothing (the ledger's other sources don't need it). */
+  static readonly disabled = Layer.sync(CodexSessions, () => disabled);
 
   static layerWith(options: CodexSessionsOptions) {
     return Layer.effect(
@@ -110,14 +121,7 @@ export class CodexSessions extends Context.Service<
 
         if (Option.isNone(started)) {
           yield* Scope.close(startScope, Exit.void);
-          const missing = (id: string) =>
-            Effect.fail(new ThreadNotFound({ threadId: `${CODEX_ID_PREFIX}${id}` }));
-          return CodexSessions.of({
-            list: Effect.succeed([]),
-            get: missing,
-            head: missing,
-            ready: Effect.void,
-          });
+          return disabled;
         }
         const client = started.value;
         // Raw requests + loose schemas: a strict decode of the whole protocol would fail on every new Codex field.

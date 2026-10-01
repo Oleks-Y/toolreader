@@ -142,6 +142,7 @@ describe("Ledger", () => {
                 home: "/home/me",
                 dbPath: "",
                 codexBin: "codex",
+                codexHome: "/home/me/.codex",
                 labelsPath: "",
                 distDir: "",
               }),

@@ -79,6 +79,7 @@ const withSessions = <A, E>(
         home: "/home/me",
         dbPath: "",
         codexBin: bin,
+        codexHome: "/home/me/.codex",
         labelsPath: "",
         distDir: "",
       }),
