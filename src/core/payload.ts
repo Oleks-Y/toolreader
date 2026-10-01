@@ -43,6 +43,8 @@ export const CodexItem = Schema.Struct({
   ),
   path: opt(Schema.String),
   prompt: opt(Schema.String),
+  /** imageGeneration */
+  revisedPrompt: opt(Schema.String),
   status: opt(Schema.String),
 });
 export type CodexItem = typeof CodexItem.Type;

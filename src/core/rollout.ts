@@ -285,6 +285,15 @@ const scriptCommands = (script: string) =>
   [...script.matchAll(/tools\.exec_command\(\s*\{\s*"?cmd"?\s*:\s*("(?:[^"\\]|\\.)*")/g)].flatMap(
     (m) => Option.toArray(decodeJsonStringLiteral(m[1]!)),
   );
+const scriptImage = (script: string) =>
+  Option.getOrUndefined(
+    Option.flatMap(
+      Option.fromNullishOr(
+        /tools\.view_image\(\s*\{\s*"?path"?\s*:\s*("(?:[^"\\]|\\.)*")/.exec(script)?.[1],
+      ),
+      decodeJsonStringLiteral,
+    ),
+  );
 const scriptPatch = (script: string) =>
   script.includes("tools.apply_patch(")
     ? Option.getOrUndefined(
@@ -405,6 +414,8 @@ export function rolloutItem(c: RolloutCall, ended = c.ended): Record<string, unk
     }
     const patch = scriptPatch(script);
     if (patch) return { ...fileChange(patch), status: status(failed) };
+    const image = scriptImage(script);
+    if (image) return { ...base, type: "imageView", path: image, status: status(failed) };
     return {
       ...base,
       type: "dynamicToolCall",

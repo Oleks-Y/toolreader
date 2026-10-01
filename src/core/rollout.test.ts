@@ -252,6 +252,27 @@ describe("rollout", () => {
     );
   });
 
+  it("names image generation and image views", () => {
+    const lines = [
+      custom("v1", "exec", 'image((await tools.view_image({path:"/repo/shot.png"})).image_url);'),
+      customOutput("v1", [{ type: "input_text", text: "Script completed\nOutput:\n" }]),
+    ];
+    const generated = {
+      type: "imageGeneration",
+      id: "exec-2",
+      status: "completed",
+      revisedPrompt: "Use case: social card\nA warm editorial card",
+    };
+    const { actions } = actionsOf(lines, [generated]);
+    assert.deepStrictEqual(
+      actions.map((a) => [a.kind, a.title]),
+      [
+        ["tool", "generate image: Use case: social card"],
+        ["read", "view image shot.png"],
+      ],
+    );
+  });
+
   it("marks a call cut off by an interrupted turn as failed, not running", () => {
     const lines = [
       event({ type: "task_started", turn_id: "turn-1" }),

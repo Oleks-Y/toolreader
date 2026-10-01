@@ -442,6 +442,15 @@ function otherToolAction(p: ToolPayload): Draft {
       output: out,
       failed,
     };
+  if (item.type === "imageGeneration") {
+    const prompt = str(item.revisedPrompt);
+    return {
+      kind: "tool",
+      title: `generate image${prompt ? `: ${short(prompt.split("\n")[0]!, 90)}` : ""}`,
+      hint: prompt,
+      failed,
+    };
+  }
   if (item.type === "imageView")
     return {
       kind: "read",
