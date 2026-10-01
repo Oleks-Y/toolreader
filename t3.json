@@ -1,0 +1,21 @@
+{
+  "$schema": "https://t3.codes/schema/t3.json",
+  "scripts": [
+    {
+      "name": "Setup Worktree",
+      "command": "vp i",
+      "icon": "configure",
+      "runOnWorktreeCreate": true
+    },
+    {
+      "name": "Start",
+      "command": "vp run start",
+      "icon": "play"
+    },
+    {
+      "name": "Test",
+      "command": "vp test run",
+      "icon": "test"
+    }
+  ]
+}

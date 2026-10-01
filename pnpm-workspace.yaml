@@ -1,0 +1,22 @@
+# Settings mirrored from t3code (single package, no workspace packages).
+allowBuilds:
+  esbuild: true
+  msgpackr-extract: true
+
+packageExtensions:
+  "@effect/vitest@*":
+    dependencies:
+      vite-plus: 0.2.2
+    peerDependenciesMeta:
+      vitest:
+        optional: true
+  vite-plus@*:
+    dependencies:
+      vite: npm:@voidzero-dev/vite-plus-core@0.2.2
+
+overrides:
+  "@effect/platform-node-shared": 4.0.0-beta.103
+  vite: npm:@voidzero-dev/vite-plus-core@0.2.2
+
+patchedDependencies:
+  "@effect/vitest@4.0.0-beta.103": patches/@effect__vitest@4.0.0-beta.103.patch

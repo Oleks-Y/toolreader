@@ -1,4 +1,4 @@
-import type { ActionKind } from "./types.ts";
+import type { ActionKind } from "./domain.ts";
 
 // --- Copied from t3code apps/web/src/session-logic.ts (unwrapKnownShellCommandWrapper & helpers). ---
 
@@ -29,15 +29,24 @@ function splitExecutableAndRest(value: string): { executable: string; rest: stri
   if (trimmed.startsWith('"') || trimmed.startsWith("'")) {
     const closeIndex = trimmed.indexOf(trimmed.charAt(0), 1);
     if (closeIndex <= 0) return null;
-    return { executable: trimmed.slice(0, closeIndex + 1), rest: trimmed.slice(closeIndex + 1).trim() };
+    return {
+      executable: trimmed.slice(0, closeIndex + 1),
+      rest: trimmed.slice(closeIndex + 1).trim(),
+    };
   }
   const firstWhitespace = trimmed.search(/\s/);
   if (firstWhitespace < 0) return { executable: trimmed, rest: "" };
-  return { executable: trimmed.slice(0, firstWhitespace), rest: trimmed.slice(firstWhitespace).trim() };
+  return {
+    executable: trimmed.slice(0, firstWhitespace),
+    rest: trimmed.slice(firstWhitespace).trim(),
+  };
 }
 
 const SHELL_WRAPPER_SPECS = [
-  { executables: ["pwsh", "pwsh.exe", "powershell", "powershell.exe"], wrapperFlagPattern: /(?:^|\s)-command\s+/i },
+  {
+    executables: ["pwsh", "pwsh.exe", "powershell", "powershell.exe"],
+    wrapperFlagPattern: /(?:^|\s)-command\s+/i,
+  },
   { executables: ["cmd", "cmd.exe"], wrapperFlagPattern: /(?:^|\s)\/c\s+/i },
   { executables: ["bash", "sh", "zsh"], wrapperFlagPattern: /(?:^|\s)-(?:l)?c\s+/i },
 ] as const;
@@ -46,7 +55,8 @@ export function unwrapShell(value: string): string {
   const split = splitExecutableAndRest(value);
   if (!split || split.rest.length === 0) return value;
   const shell = executableBasename(split.executable);
-  const spec = shell && SHELL_WRAPPER_SPECS.find((s) => (s.executables as readonly string[]).includes(shell));
+  const spec =
+    shell && SHELL_WRAPPER_SPECS.find((s) => (s.executables as readonly string[]).includes(shell));
   if (!spec) return value;
   const match = spec.wrapperFlagPattern.exec(split.rest);
   if (!match) return value;
@@ -105,11 +115,21 @@ function tokenize(command: string): Token[] {
       inWord = true;
       i++;
     } else if (c === "&" && command[i + 1] === "&") {
-      flush(); tokens.push({ op: "&&" }); i++;
+      flush();
+      tokens.push({ op: "&&" });
+      i++;
     } else if (c === "|" && command[i + 1] === "|") {
-      flush(); tokens.push({ op: "||" }); i++;
-    } else if (c === ";" || c === "\n" || c === "|" || (c === "&" && command[i - 1] !== ">" && command[i + 1] !== ">")) {
-      flush(); tokens.push({ op: c === "\n" ? ";" : c });
+      flush();
+      tokens.push({ op: "||" });
+      i++;
+    } else if (
+      c === ";" ||
+      c === "\n" ||
+      c === "|" ||
+      (c === "&" && command[i - 1] !== ">" && command[i + 1] !== ">")
+    ) {
+      flush();
+      tokens.push({ op: c === "\n" ? ";" : c });
     } else if (c === " " || c === "\t") {
       flush();
     } else {
@@ -146,18 +166,108 @@ export function splitCommand(command: string): string[][][] {
 
 export type Part = { kind: ActionKind; title: string; targets?: string[]; isSearch?: boolean };
 
-const KIND_RANK: Record<ActionKind, number> = { read: 0, search: 1, tool: 2, agent: 3, web: 4, edit: 5, run: 6, git: 7 };
+const KIND_RANK: Record<ActionKind, number> = {
+  read: 0,
+  search: 1,
+  tool: 2,
+  agent: 3,
+  web: 4,
+  edit: 5,
+  run: 6,
+  git: 7,
+};
 export const strongestKind = (kinds: ActionKind[]): ActionKind =>
   kinds.reduce<ActionKind>((a, b) => (KIND_RANK[b] > KIND_RANK[a] ? b : a), "read");
 
-const DROP = new Set(["cd", "pushd", "popd", "export", "set", "unset", "true", ":", "source", ".", "sleep", "echo", "printf"]);
-const READERS = new Set(["cat", "head", "tail", "nl", "wc", "less", "bat", "file", "stat", "jq", "diff", "cmp", "md5", "shasum", "realpath", "readlink", "which", "pwd", "date", "du", "df"]);
+const DROP = new Set([
+  "cd",
+  "pushd",
+  "popd",
+  "export",
+  "set",
+  "unset",
+  "true",
+  ":",
+  "source",
+  ".",
+  "sleep",
+  "echo",
+  "printf",
+]);
+const READERS = new Set([
+  "cat",
+  "head",
+  "tail",
+  "nl",
+  "wc",
+  "less",
+  "bat",
+  "file",
+  "stat",
+  "jq",
+  "diff",
+  "cmp",
+  "md5",
+  "shasum",
+  "realpath",
+  "readlink",
+  "which",
+  "pwd",
+  "date",
+  "du",
+  "df",
+]);
 const SEARCHERS = new Set(["rg", "grep", "egrep", "ag", "ack", "git-grep"]);
 const LISTERS = new Set(["ls", "find", "fd", "tree"]);
-const GIT_READ = new Set(["status", "log", "diff", "show", "rev-parse", "rev-list", "blame", "ls-files", "grep", "fetch", "describe", "shortlog", "reflog", "config", "remote", "merge-base", "cat-file", "ls-remote"]);
-const GH_WRITE = /^(create|merge|comment|edit|close|reopen|ready|review|delete|lock|rerun|cancel|run)$/;
+const GIT_READ = new Set([
+  "status",
+  "log",
+  "diff",
+  "show",
+  "rev-parse",
+  "rev-list",
+  "blame",
+  "ls-files",
+  "grep",
+  "fetch",
+  "describe",
+  "shortlog",
+  "reflog",
+  "config",
+  "remote",
+  "merge-base",
+  "cat-file",
+  "ls-remote",
+]);
+const GH_WRITE =
+  /^(create|merge|comment|edit|close|reopen|ready|review|delete|lock|rerun|cancel|run)$/;
 /** Flags whose next word is a value, not a positional arg. */
-const VALUE_FLAGS = new Set(["-g", "--glob", "-e", "-t", "--type", "-A", "-B", "-C", "-m", "--max-count", "-f", "--context", "--max-depth", "-d", "--include", "--exclude", "-name", "-type", "-maxdepth", "-mindepth", "-path", "-iname", "--jq", "-q"]);
+const VALUE_FLAGS = new Set([
+  "-g",
+  "--glob",
+  "-e",
+  "-t",
+  "--type",
+  "-A",
+  "-B",
+  "-C",
+  "-m",
+  "--max-count",
+  "-f",
+  "--context",
+  "--max-depth",
+  "-d",
+  "--include",
+  "--exclude",
+  "-name",
+  "-type",
+  "-maxdepth",
+  "-mindepth",
+  "-path",
+  "-iname",
+  "--jq",
+  "-q",
+]);
 
 const short = (s: string, n = 60) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
@@ -195,14 +305,16 @@ function humanizeStage(words: string[]): Part | null {
   let i = 0;
   while (i < words.length && /^[A-Za-z_][\w]*=/.test(words[i]!)) i++; // env assignments
   const argv = words.slice(i);
-  if (argv[0] === "env" || argv[0] === "time" || argv[0] === "command" || argv[0] === "exec") argv.shift();
+  if (argv[0] === "env" || argv[0] === "time" || argv[0] === "command" || argv[0] === "exec")
+    argv.shift();
   const exe = argv[0];
   if (!exe) return null;
   const cmd = exe.replace(/^.*\//, "");
   const args = argv.slice(1);
   const written = redirectTarget(argv);
 
-  if (DROP.has(cmd)) return written ? { kind: "edit", title: `write ${written}`, targets: [written] } : null;
+  if (DROP.has(cmd))
+    return written ? { kind: "edit", title: `write ${written}`, targets: [written] } : null;
   if (written && (cmd === "cat" || cmd === "tee" || cmd === "printf")) {
     return { kind: "edit", title: `write ${written}`, targets: [written] };
   }
@@ -216,17 +328,31 @@ function humanizeStage(words: string[]): Part | null {
     const files = pos.slice(1);
     const range = /^(\d+)(?:,(\d+|\$))?p$/.exec(script);
     const file = files.join(", ") || "stdin";
-    return { kind: "read", title: range ? `read ${file}:${range[1]}-${range[2] ?? range[1]}` : `read ${file}`, targets: files };
+    return {
+      kind: "read",
+      title: range ? `read ${file}:${range[1]}-${range[2] ?? range[1]}` : `read ${file}`,
+      targets: files,
+    };
   }
   if (READERS.has(cmd)) {
     const files = positional(args);
-    if (cmd === "jq") return { kind: "read", title: `read ${files.slice(1).join(", ") || "json"}`, targets: files.slice(1) };
+    if (cmd === "jq")
+      return {
+        kind: "read",
+        title: `read ${files.slice(1).join(", ") || "json"}`,
+        targets: files.slice(1),
+      };
     return { kind: "read", title: files.length ? `read ${files.join(", ")}` : cmd, targets: files };
   }
   if (SEARCHERS.has(cmd)) {
     if (args.includes("--files")) {
       const dirs = positional(args);
-      return { kind: "search", title: `list ${dirs.join(", ") || "."}`, targets: dirs, isSearch: true };
+      return {
+        kind: "search",
+        title: `list ${dirs.join(", ") || "."}`,
+        targets: dirs,
+        isSearch: true,
+      };
     }
     const eIdx = args.indexOf("-e");
     const pos = positional(args);
@@ -240,11 +366,17 @@ function humanizeStage(words: string[]): Part | null {
   }
   if (LISTERS.has(cmd)) {
     const dirs = positional(args).filter((a) => !a.startsWith("("));
-    return { kind: "search", title: `list ${dirs.join(", ") || "."}`, targets: dirs, isSearch: true };
+    return {
+      kind: "search",
+      title: `list ${dirs.join(", ") || "."}`,
+      targets: dirs,
+      isSearch: true,
+    };
   }
   if (cmd === "git") {
     let j = 0;
-    while (j < args.length && args[j]!.startsWith("-")) j += args[j] === "-C" || args[j] === "-c" ? 2 : 1;
+    while (j < args.length && args[j]!.startsWith("-"))
+      j += args[j] === "-C" || args[j] === "-c" ? 2 : 1;
     const sub = args[j] ?? "";
     const rest = args.slice(j + 1);
     const title = short(`git ${sub} ${rest.join(" ")}`.trim(), 90);
@@ -260,18 +392,33 @@ function humanizeStage(words: string[]): Part | null {
     const title = short(`gh ${args.join(" ")}`, 90);
     const isWrite =
       GH_WRITE.test(action) ||
-      (area === "api" && args.some((a) => /^(-X|--method)$/.test(a) || /^-[fF]$/.test(a) || /^--(field|raw-field|input)$/.test(a)));
+      (area === "api" &&
+        args.some(
+          (a) =>
+            /^(-X|--method)$/.test(a) || /^-[fF]$/.test(a) || /^--(field|raw-field|input)$/.test(a),
+        ));
     return { kind: isWrite ? "git" : "read", title };
   }
   if (cmd === "curl" || cmd === "wget" || cmd === "http") {
     const url = positional(args).find((a) => /^https?:/.test(a)) ?? "";
     return { kind: "web", title: `${cmd} ${short(url, 70)}` };
   }
-  if (cmd === "rm" || cmd === "mv" || cmd === "cp" || cmd === "mkdir" || cmd === "touch" || cmd === "chmod" || cmd === "ln") {
+  if (
+    cmd === "rm" ||
+    cmd === "mv" ||
+    cmd === "cp" ||
+    cmd === "mkdir" ||
+    cmd === "touch" ||
+    cmd === "chmod" ||
+    cmd === "ln"
+  ) {
     const files = positional(args);
     return { kind: "edit", title: `${cmd} ${short(files.join(" "), 80)}`, targets: files };
   }
-  const shown = argv.map((a) => (a.includes(" ") ? JSON.stringify(a) : a)).join(" ").replace(/(?:\.\/)?node_modules\/\.bin\//g, "");
+  const shown = argv
+    .map((a) => (a.includes(" ") ? JSON.stringify(a) : a))
+    .join(" ")
+    .replace(/(?:\.\/)?node_modules\/\.bin\//g, "");
   return { kind: "run", title: short(shown, 100) };
 }
 
@@ -281,7 +428,10 @@ export function humanizeCommand(raw: string): Part[] {
   for (const stages of splitCommand(unwrapShell(raw.trim()))) {
     const first = stages[0] ? humanizeStage(stages[0]) : null;
     // Later pipeline stages only matter when they write files (tee / redirect).
-    const writer = stages.slice(1).map(humanizeStage).find((p) => p?.kind === "edit");
+    const writer = stages
+      .slice(1)
+      .map(humanizeStage)
+      .find((p) => p?.kind === "edit");
     const part = writer ?? first;
     if (part) parts.push(part);
   }

@@ -1,5 +1,5 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ACTION_KINDS, type Action, type ActionKind } from "../core/types.ts";
+import { ACTION_KINDS, type Action, type ActionKind } from "../core/domain.ts";
 import { fmtDuration, fmtTime } from "./util.ts";
 
 const MAX_GAP_MS = 60_000; // idle gaps longer than this are drawn as 60s
@@ -58,7 +58,8 @@ export function Swimlane({ actions, turnStarts, hiddenKinds, range, onRange, onP
     return i < 0 ? actions.length - 1 : i;
   };
 
-  const toLocalX = (e: React.PointerEvent) => e.clientX - (wrap.current?.getBoundingClientRect().left ?? 0);
+  const toLocalX = (e: React.PointerEvent) =>
+    e.clientX - (wrap.current?.getBoundingClientRect().left ?? 0);
   const finishDrag = () => {
     if (!drag) return;
     const [a, b] = [Math.min(drag.x0, drag.x1), Math.max(drag.x0, drag.x1)];
@@ -68,7 +69,20 @@ export function Swimlane({ actions, turnStarts, hiddenKinds, range, onRange, onP
     if (inside.length) onRange({ from: inside[0]!.at, to: inside.at(-1)!.at });
   };
 
-  const rangeX = range && actions.length ? [x(pos[firstIndexAtOrAfter(range.from)]!), x(pos[Math.max(0, actions.findLastIndex((a) => a.at <= range.to))]!)] : null;
+  const rangeX =
+    range && actions.length
+      ? [
+          x(pos[firstIndexAtOrAfter(range.from)]!),
+          x(
+            pos[
+              Math.max(
+                0,
+                actions.findLastIndex((a) => a.at <= range.to),
+              )
+            ]!,
+          ),
+        ]
+      : null;
 
   return (
     <div className="swimlane" ref={wrap}>
@@ -89,11 +103,16 @@ export function Swimlane({ actions, turnStarts, hiddenKinds, range, onRange, onP
             <text x={4} y={PAD_T + i * LANE_H + 11} className={`lane-label k-${k}`}>
               {k}
             </text>
-            <line x1={PAD_L} x2={width - 10} y1={PAD_T + i * LANE_H + 7} y2={PAD_T + i * LANE_H + 7} />
+            <line
+              x1={PAD_L}
+              x2={width - 10}
+              y1={PAD_T + i * LANE_H + 7}
+              y2={PAD_T + i * LANE_H + 7}
+            />
           </g>
         ))}
-        {gaps.map((g, i) => (
-          <g key={i} className="gap">
+        {gaps.map((g) => (
+          <g key={g.at} className="gap">
             <line x1={x(g.at)} x2={x(g.at)} y1={PAD_T - 4} y2={height - 20} />
             <text x={x(g.at) + 3} y={PAD_T - 4}>
               {fmtDuration(g.ms).split(" ")[0]}
@@ -113,8 +132,24 @@ export function Swimlane({ actions, turnStarts, hiddenKinds, range, onRange, onP
             </g>
           );
         })}
-        {rangeX && <rect className="range" x={rangeX[0]! - 3} width={Math.max(6, rangeX[1]! - rangeX[0]! + 6)} y={PAD_T - 4} height={lanes.length * LANE_H + 6} />}
-        {drag && <rect className="brush" x={Math.min(drag.x0, drag.x1)} width={Math.abs(drag.x1 - drag.x0)} y={PAD_T - 4} height={lanes.length * LANE_H + 6} />}
+        {rangeX && (
+          <rect
+            className="range"
+            x={rangeX[0]! - 3}
+            width={Math.max(6, rangeX[1]! - rangeX[0]! + 6)}
+            y={PAD_T - 4}
+            height={lanes.length * LANE_H + 6}
+          />
+        )}
+        {drag && (
+          <rect
+            className="brush"
+            x={Math.min(drag.x0, drag.x1)}
+            width={Math.abs(drag.x1 - drag.x0)}
+            y={PAD_T - 4}
+            height={lanes.length * LANE_H + 6}
+          />
+        )}
         {actions.map((a, i) => {
           const lane = lanes.indexOf(a.kind);
           return (

@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ThreadSummary } from "../core/types.ts";
-import { api, since } from "./util.ts";
+import type { ThreadSummary } from "../core/domain.ts";
+import { call, errorMessage } from "./client.ts";
+import { since } from "./util.ts";
 
 export function Sessions() {
-  const [threads, setThreads] = useState<ThreadSummary[] | null>(null);
+  const [threads, setThreads] = useState<ReadonlyArray<ThreadSummary> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [archived, setArchived] = useState(false);
 
   useEffect(() => {
     document.title = "toolreader";
-    const load = () => api<ThreadSummary[]>("/api/threads").then(setThreads, (e) => setError(String(e.message)));
+    const load = () =>
+      call((api) => api.threads.list()).then(setThreads, (e: unknown) => setError(errorMessage(e)));
     load();
     const timer = setInterval(load, 5000); // cheap: counts are cached server-side
     return () => clearInterval(timer);
@@ -36,9 +38,19 @@ export function Sessions() {
     <main className="sessions">
       <header className="topbar">
         <h1>toolreader</h1>
-        <input autoFocus placeholder="Filter threads…" value={query} onChange={(e) => setQuery(e.target.value)} />
+        <input
+          autoFocus
+          placeholder="Filter threads…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
         <label className="switch">
-          <input type="checkbox" checked={archived} onChange={(e) => setArchived(e.target.checked)} /> archived
+          <input
+            type="checkbox"
+            checked={archived}
+            onChange={(e) => setArchived(e.target.checked)}
+          />{" "}
+          archived
         </label>
         <span className="dim">
           {threads ? `${threads.length} threads` : "loading…"}
@@ -52,7 +64,11 @@ export function Sessions() {
             {g.title} <span className="dim">{g.threads.length}</span>
           </h2>
           {g.threads.map((t) => (
-            <a key={t.id} className={`thread-row${t.archived ? " archived" : ""}`} href={`#/t/${encodeURIComponent(t.id)}`}>
+            <a
+              key={t.id}
+              className={`thread-row${t.archived ? " archived" : ""}`}
+              href={`#/t/${encodeURIComponent(t.id)}`}
+            >
               <span className={`status-dot ${t.status}`} title={t.status} />
               <span className="thread-title">{t.title}</span>
               <span className="provider">{t.provider ?? "?"}</span>

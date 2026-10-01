@@ -1,11 +1,12 @@
 # toolreader: agent action viewer
 
-Read-only viewer for what coding agents *did* in T3 Code threads. Actions come first; words are optional.
+Read-only viewer for what coding agents _did_ in T3 Code threads. Actions come first; words are optional.
 
 ## Scope
 
 - Source: T3 Code's database `~/.t3/userdata/state.sqlite` (override with `T3_DB`), opened read-only. Covers every provider T3 runs (Codex, Claude, Cursor). Sessions run outside T3 are out of scope.
 - Separate repo. Code borrowed from `~/proj/t3code` is copied with a source comment, never linked.
+- Built with Effect: an `HttpApi` contract in `src/core/api.ts` shared by the server and a typed browser client. All T3 schema knowledge lives in `src/server/ThreadStore.ts`.
 - Local only: the server binds `127.0.0.1`.
 
 ## Views

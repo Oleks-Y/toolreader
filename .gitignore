@@ -1,3 +1,7 @@
 node_modules
 dist
 .conduit
+
+.vite-hooks/_
+
+.t3

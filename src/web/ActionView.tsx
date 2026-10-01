@@ -1,8 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { buildTree, DEFAULT_SWITCHES, type Fold, type Item, type Phase, type Switches, type Turn } from "../core/tree.ts";
-import { ACTION_KINDS, type Action, type ActionKind, type Event, type FileChange, type Message, type ThreadView } from "../core/types.ts";
+import {
+  buildTree,
+  DEFAULT_SWITCHES,
+  type Fold,
+  type Item,
+  type Phase,
+  type Switches,
+  type Turn,
+} from "../core/tree.ts";
+import {
+  ACTION_KINDS,
+  type Action,
+  type ActionKind,
+  type Event,
+  type FileChange,
+  type Labels,
+  type Message,
+  type ThreadView,
+} from "../core/domain.ts";
+import { call, errorMessage } from "./client.ts";
 import { Swimlane, type Range } from "./Swimlane.tsx";
-import { api, fmtDay, fmtDuration, fmtTime } from "./util.ts";
+import { fmtDay, fmtDuration, fmtTime } from "./util.ts";
 
 type Prefs = Switches & { labels: boolean };
 const PREFS_KEY = "toolreader.switches";
@@ -17,24 +35,59 @@ function loadPrefs(): Prefs {
   }
 }
 
-const ICON: Record<ActionKind, string> = { read: "◎", search: "⌕", edit: "✎", run: "▶", git: "⎇", web: "◍", tool: "⚙", agent: "⧉" };
-const PHASE_LABEL: Record<Phase["name"], string> = { explore: "Explore", edit: "Edit", verify: "Verify", fix: "Fix", ship: "Ship", all: "" };
+const ICON: Record<ActionKind, string> = {
+  read: "◎",
+  search: "⌕",
+  edit: "✎",
+  run: "▶",
+  git: "⎇",
+  web: "◍",
+  tool: "⚙",
+  agent: "⧉",
+};
+const PHASE_LABEL: Record<Phase["name"], string> = {
+  explore: "Explore",
+  edit: "Edit",
+  verify: "Verify",
+  fix: "Fix",
+  ship: "Ship",
+  all: "",
+};
 
 /** Open/closed state: ids in `flipped` invert their default. */
 function useOpenState() {
   const [flipped, setFlipped] = useState<Set<string>>(new Set());
-  const isOpen = useCallback((id: string, byDefault: boolean) => byDefault !== flipped.has(id), [flipped]);
-  const toggle = useCallback((id: string) => setFlipped((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; }), []);
-  const force = useCallback((open: Array<[string, boolean]>) => setFlipped((s) => {
-    const n = new Set(s);
-    for (const [id, byDefault] of open) byDefault ? n.delete(id) : n.add(id);
-    return n;
-  }), []);
+  const isOpen = useCallback(
+    (id: string, byDefault: boolean) => byDefault !== flipped.has(id),
+    [flipped],
+  );
+  const toggle = useCallback(
+    (id: string) =>
+      setFlipped((s) => {
+        const n = new Set(s);
+        if (n.has(id)) n.delete(id);
+        else n.add(id);
+        return n;
+      }),
+    [],
+  );
+  const force = useCallback(
+    (open: Array<[string, boolean]>) =>
+      setFlipped((s) => {
+        const n = new Set(s);
+        for (const [id, byDefault] of open) {
+          if (byDefault) n.delete(id);
+          else n.add(id);
+        }
+        return n;
+      }),
+    [],
+  );
   return { isOpen, toggle, force, reset: (ids: string[] = []) => setFlipped(new Set(ids)) };
 }
 
 type Ctx = {
-  labels: Record<string, string>;
+  labels: Labels;
   showLabels: boolean;
   open: ReturnType<typeof useOpenState>;
   highlight: string | null;
@@ -49,7 +102,13 @@ export function ActionView({ threadId }: { threadId: string }) {
   const [labeling, setLabeling] = useState<Record<string, string>>({}); // turnId → status text
   const open = useOpenState();
 
-  const load = useCallback(() => api<ThreadView>(`/api/threads/${encodeURIComponent(threadId)}`).then(setView, (e) => setError(String(e.message))), [threadId]);
+  const load = useCallback(
+    () =>
+      call((api) => api.threads.get({ params: { id: threadId } })).then(setView, (e: unknown) =>
+        setError(errorMessage(e)),
+      ),
+    [threadId],
+  );
   useEffect(() => void load(), [load]);
   useEffect(() => localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)), [prefs]);
   useEffect(() => {
@@ -62,21 +121,35 @@ export function ActionView({ threadId }: { threadId: string }) {
   useEffect(() => {
     if (!running) return;
     const timer = setInterval(async () => {
-      const h = await api<{ head: string } | null>(`/api/threads/${encodeURIComponent(threadId)}/head`).catch(() => null);
+      const h = await call((api) => api.threads.head({ params: { id: threadId } })).catch(
+        () => null,
+      );
       if (h && h.head !== head) load();
     }, 3000);
     return () => clearInterval(timer);
   }, [running, head, threadId, load]);
 
-  const actions = useMemo(() => (view?.entries ?? []).filter((e): e is Action => e.type === "action"), [view]);
-  const turns = useMemo(() => (view ? buildTree(view.entries, prefs, range) : []), [view, prefs, range]);
-  const turnStarts = useMemo(() => turns.map((t) => t.prompt?.at ?? t.stats.start).filter(Boolean), [turns]);
+  const actions = useMemo(
+    () => (view?.entries ?? []).filter((e): e is Action => e.type === "action"),
+    [view],
+  );
+  const turns = useMemo(
+    () => (view ? buildTree(view.entries, prefs, range) : []),
+    [view, prefs, range],
+  );
+  const turnStarts = useMemo(
+    () => turns.map((t) => t.prompt?.at ?? t.stats.start).filter(Boolean),
+    [turns],
+  );
   const kindCounts = useMemo(() => {
     const c = Object.fromEntries(ACTION_KINDS.map((k) => [k, 0])) as Record<ActionKind, number>;
     for (const a of actions) c[a.kind]++;
     return c;
   }, [actions]);
-  const hiddenKinds = useMemo(() => new Set(ACTION_KINDS.filter((k) => !prefs.kinds[k])), [prefs.kinds]);
+  const hiddenKinds = useMemo(
+    () => new Set(ACTION_KINDS.filter((k) => !prefs.kinds[k])),
+    [prefs.kinds],
+  );
 
   const pick = (id: string) => {
     for (const t of turns)
@@ -84,36 +157,65 @@ export function ActionView({ threadId }: { threadId: string }) {
         for (const item of p.items) {
           const inFold = item.type === "fold" && item.actions.some((a) => a.id === id);
           if (item.id !== id && !inFold) continue;
-          open.force([[t.id, true], [p.id, true], ...(inFold ? ([[item.id, false]] as Array<[string, boolean]>) : [])]);
+          open.force([
+            [t.id, true],
+            [p.id, true],
+            ...(inFold ? ([[item.id, false]] as Array<[string, boolean]>) : []),
+          ]);
           setHighlight(id);
-          requestAnimationFrame(() => document.getElementById(`row-${id}`)?.scrollIntoView({ block: "center" }));
+          requestAnimationFrame(() =>
+            document.getElementById(`row-${id}`)?.scrollIntoView({ block: "center" }),
+          );
           return;
         }
   };
 
   const labelTurn = async (turn: Turn) => {
     if (!view) return;
-    const items = turn.phases.flatMap((p) => p.items).flatMap((item) => labelItem(item, view.labels)).slice(0, 150);
+    const items = turn.phases
+      .flatMap((p) => p.items)
+      .flatMap((item) => labelItem(item, view.labels))
+      .slice(0, 150);
     if (!items.length) return setLabeling((s) => ({ ...s, [turn.id]: "nothing new to label" }));
     setLabeling((s) => ({ ...s, [turn.id]: `labeling ${items.length}…` }));
     try {
-      const labels = await api<Record<string, string>>("/api/labels", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ threadId, context: turn.prompt?.text ?? view.thread.title, items }),
-      });
+      const labels = await call((api) =>
+        api.labels.create({
+          payload: { threadId, context: turn.prompt?.text ?? view.thread.title, items },
+        }),
+      );
       setView((v) => (v ? { ...v, labels } : v));
       setLabeling((s) => ({ ...s, [turn.id]: "" }));
     } catch (e) {
-      setLabeling((s) => ({ ...s, [turn.id]: `failed: ${(e as Error).message}` }));
+      setLabeling((s) => ({ ...s, [turn.id]: `failed: ${errorMessage(e)}` }));
     }
   };
 
-  if (error) return <main className="viewer"><a href="#/">← sessions</a><div className="error">{error}</div></main>;
-  if (!view) return <main className="viewer"><a href="#/">← sessions</a><p className="dim">loading…</p></main>;
+  if (error)
+    return (
+      <main className="viewer">
+        <a href="#/">← sessions</a>
+        <div className="error">{error}</div>
+      </main>
+    );
+  if (!view)
+    return (
+      <main className="viewer">
+        <a href="#/">← sessions</a>
+        <p className="dim">loading…</p>
+      </main>
+    );
 
   const t = view.thread;
-  const total = turns.reduce((s, x) => ({ files: s.files + x.stats.files, added: s.added + x.stats.added, removed: s.removed + x.stats.removed, failed: s.failed + x.stats.failed }), { files: 0, added: 0, removed: 0, failed: 0 });
+  const total = turns.reduce(
+    (s, x) => ({
+      files: s.files + x.stats.files,
+      added: s.added + x.stats.added,
+      removed: s.removed + x.stats.removed,
+      failed: s.failed + x.stats.failed,
+    }),
+    { files: 0, added: 0, removed: 0, failed: 0 },
+  );
   const set = (patch: Partial<Prefs>) => setPrefs((p) => ({ ...p, ...patch }));
   const ctx: Ctx = { labels: view.labels, showLabels: prefs.labels, open, highlight };
 
@@ -124,26 +226,49 @@ export function ActionView({ threadId }: { threadId: string }) {
         <h1>{t.title}</h1>
         <span className={`status-dot ${t.status}`} title={t.status} />
         <span className="dim">
-          {t.projectTitle} · {t.provider} · {actions.length} actions · {total.files} files <span className="add">+{total.added}</span> <span className="del">−{total.removed}</span>
+          {t.projectTitle} · {t.provider} · {actions.length} actions · {total.files} files{" "}
+          <span className="add">+{total.added}</span> <span className="del">−{total.removed}</span>
           {total.failed > 0 && <span className="fail"> · {total.failed} failed</span>}
         </span>
       </header>
 
       <div className="toolbar">
         {ACTION_KINDS.map((k) => (
-          <button key={k} className={`chip k-${k}${prefs.kinds[k] ? " on" : ""}`} onClick={() => set({ kinds: { ...prefs.kinds, [k]: !prefs.kinds[k] } })}>
+          <button
+            key={k}
+            className={`chip k-${k}${prefs.kinds[k] ? " on" : ""}`}
+            onClick={() => set({ kinds: { ...prefs.kinds, [k]: !prefs.kinds[k] } })}
+          >
             {ICON[k]} {k} <span className="dim">{kindCounts[k]}</span>
           </button>
         ))}
         <span className="sep" />
-        {([["notes", "notes"], ["reasoning", "reasoning"], ["failuresOnly", "failures only"], ["foldReads", "fold reads"], ["phases", "phases"], ["labels", "codex labels"]] as const).map(([key, label]) => (
+        {(
+          [
+            ["notes", "notes"],
+            ["reasoning", "reasoning"],
+            ["failuresOnly", "failures only"],
+            ["foldReads", "fold reads"],
+            ["phases", "phases"],
+            ["labels", "codex labels"],
+          ] as const
+        ).map(([key, label]) => (
           <label key={key} className="switch">
-            <input type="checkbox" checked={prefs[key]} onChange={(e) => set({ [key]: e.target.checked })} /> {label}
+            <input
+              type="checkbox"
+              checked={prefs[key]}
+              onChange={(e) => set({ [key]: e.target.checked })}
+            />{" "}
+            {label}
           </label>
         ))}
         <span className="sep" />
-        <button className="chip" onClick={() => open.reset()}>expand turns</button>
-        <button className="chip" onClick={() => open.reset(turns.map((x) => x.id))}>collapse turns</button>
+        <button className="chip" onClick={() => open.reset()}>
+          expand turns
+        </button>
+        <button className="chip" onClick={() => open.reset(turns.map((x) => x.id))}>
+          collapse turns
+        </button>
         {range && (
           <button className="chip on range-chip" onClick={() => setRange(null)}>
             {fmtTime(range.from)}–{fmtTime(range.to)} ✕
@@ -151,12 +276,28 @@ export function ActionView({ threadId }: { threadId: string }) {
         )}
       </div>
 
-      <Swimlane actions={actions} turnStarts={turnStarts} hiddenKinds={hiddenKinds} range={range} onRange={setRange} onPick={pick} />
-      <p className="hint dim">Drag across the lanes to filter by time · double-click to clear · click a dot to jump to it</p>
+      <Swimlane
+        actions={actions}
+        turnStarts={turnStarts}
+        hiddenKinds={hiddenKinds}
+        range={range}
+        onRange={setRange}
+        onPick={pick}
+      />
+      <p className="hint dim">
+        Drag across the lanes to filter by time · double-click to clear · click a dot to jump to it
+      </p>
 
       <div className="tree">
         {turns.map((turn, i) => (
-          <TurnBlock key={turn.id} turn={turn} prevDay={i > 0 ? fmtDay(turns[i - 1]!.stats.start) : ""} ctx={ctx} labeling={labeling[turn.id]} onLabel={() => labelTurn(turn)} />
+          <TurnBlock
+            key={turn.id}
+            turn={turn}
+            prevDay={i > 0 ? fmtDay(turns[i - 1]!.stats.start) : ""}
+            ctx={ctx}
+            labeling={labeling[turn.id]}
+            onLabel={() => labelTurn(turn)}
+          />
         ))}
         {turns.length === 0 && <p className="dim">No entries.</p>}
       </div>
@@ -164,20 +305,42 @@ export function ActionView({ threadId }: { threadId: string }) {
   );
 }
 
-function labelItem(item: Item, labels: Record<string, string>): Array<{ id: string; text: string }> {
+function labelItem(item: Item, labels: Labels): Array<{ id: string; text: string }> {
   if (labels[item.id]) return [];
   const clip = (s: string) => (s.length > 600 ? `${s.slice(0, 600)}…` : s);
-  if (item.type === "fold") return [{ id: item.id, text: clip(`explored (${item.summary}): ${item.actions.map((a) => a.title).join("; ")}`) }];
+  if (item.type === "fold")
+    return [
+      {
+        id: item.id,
+        text: clip(`explored (${item.summary}): ${item.actions.map((a) => a.title).join("; ")}`),
+      },
+    ];
   if (item.type !== "action") return [];
   const parts = [item.title];
   if (item.command && item.command !== item.title) parts.push(`command: ${item.command}`);
   if (item.hint) parts.push(`agent's note: ${item.hint}`);
-  if (item.files?.length) parts.push(`files: ${item.files.map((f) => `${f.path} +${f.added} -${f.removed}`).join(", ")}`);
-  if (item.status === "failed") parts.push(`FAILED${item.exitCode !== undefined ? ` exit ${item.exitCode}` : ""}: ${(item.output ?? "").slice(-200)}`);
+  if (item.files?.length)
+    parts.push(`files: ${item.files.map((f) => `${f.path} +${f.added} -${f.removed}`).join(", ")}`);
+  if (item.status === "failed")
+    parts.push(
+      `FAILED${item.exitCode !== undefined ? ` exit ${item.exitCode}` : ""}: ${(item.output ?? "").slice(-200)}`,
+    );
   return [{ id: item.id, text: clip(parts.join(" | ")) }];
 }
 
-function TurnBlock({ turn, prevDay, ctx, labeling, onLabel }: { turn: Turn; prevDay: string; ctx: Ctx; labeling?: string; onLabel: () => void }) {
+function TurnBlock({
+  turn,
+  prevDay,
+  ctx,
+  labeling,
+  onLabel,
+}: {
+  turn: Turn;
+  prevDay: string;
+  ctx: Ctx;
+  labeling?: string | undefined;
+  onLabel: () => void;
+}) {
   const isOpen = ctx.open.isOpen(turn.id, true);
   const s = turn.stats;
   const day = fmtDay(s.start);
@@ -186,14 +349,30 @@ function TurnBlock({ turn, prevDay, ctx, labeling, onLabel }: { turn: Turn; prev
       <div className="turn-head" onClick={() => ctx.open.toggle(turn.id)}>
         <span className="caret">{isOpen ? "▾" : "▸"}</span>
         <span className="turn-index">T{turn.index + 1}</span>
-        <span className="prompt">{turn.prompt ? turn.prompt.text : <i className="dim">(no prompt)</i>}</span>
+        <span className="prompt">
+          {turn.prompt ? turn.prompt.text : <i className="dim">(no prompt)</i>}
+        </span>
         <span className="turn-stats">
           {day !== prevDay && <b>{day} </b>}
-          {fmtTime(s.start)} · {fmtDuration(Date.parse(s.end) - Date.parse(s.start))} · {s.actions} actions
-          {s.files > 0 && <> · {s.files} files <span className="add">+{s.added}</span> <span className="del">−{s.removed}</span></>}
+          {fmtTime(s.start)} · {fmtDuration(Date.parse(s.end) - Date.parse(s.start))} · {s.actions}{" "}
+          actions
+          {s.files > 0 && (
+            <>
+              {" "}
+              · {s.files} files <span className="add">+{s.added}</span>{" "}
+              <span className="del">−{s.removed}</span>
+            </>
+          )}
           {s.failed > 0 && <span className="fail"> · {s.failed} failed</span>}
         </span>
-        <button className="chip label-btn" onClick={(e) => { e.stopPropagation(); onLabel(); }} disabled={!!labeling?.startsWith("labeling")}>
+        <button
+          className="chip label-btn"
+          onClick={(e) => {
+            e.stopPropagation();
+            onLabel();
+          }}
+          disabled={!!labeling?.startsWith("labeling")}
+        >
           {labeling || "✨ Label with Codex"}
         </button>
       </div>
@@ -206,7 +385,10 @@ function PhaseBlock({ phase, ctx }: { phase: Phase; ctx: Ctx }) {
   const isOpen = ctx.open.isOpen(phase.id, true);
   const items = phase.items.map((item) => <ItemRow key={item.id} item={item} ctx={ctx} />);
   if (phase.name === "all") return <div className="phase-body">{items}</div>;
-  const count = phase.items.reduce((n, i) => n + (i.type === "fold" ? i.actions.length : i.type === "action" ? 1 : 0), 0);
+  const count = phase.items.reduce(
+    (n, i) => n + (i.type === "fold" ? i.actions.length : i.type === "action" ? 1 : 0),
+    0,
+  );
   const failed = phase.items.filter((i) => i.type === "action" && i.status === "failed").length;
   return (
     <div className={`phase phase-${phase.name}`}>
@@ -214,7 +396,8 @@ function PhaseBlock({ phase, ctx }: { phase: Phase; ctx: Ctx }) {
         <span className="caret">{isOpen ? "▾" : "▸"}</span>
         <b>{PHASE_LABEL[phase.name]}</b>
         <span>
-          {fmtTime(phase.start)}–{fmtTime(phase.end)} · {fmtDuration(Date.parse(phase.end) - Date.parse(phase.start))} · {count} actions
+          {fmtTime(phase.start)}–{fmtTime(phase.end)} ·{" "}
+          {fmtDuration(Date.parse(phase.end) - Date.parse(phase.start))} · {count} actions
           {failed > 0 && <span className="fail"> · {failed} failed</span>}
         </span>
         <span className="bar" />
@@ -256,7 +439,8 @@ function FileStat({ f }: { f: FileChange }) {
   if (f.isDeleted) return <span className="badge del">deleted</span>;
   return (
     <>
-      {f.added > 0 && <span className="add">+{f.added}</span>} {f.removed > 0 && <span className="del">−{f.removed}</span>}
+      {f.added > 0 && <span className="add">+{f.added}</span>}{" "}
+      {f.removed > 0 && <span className="del">−{f.removed}</span>}
     </>
   );
 }
@@ -287,7 +471,10 @@ function ActionRow({ action: a, ctx, compact }: { action: Action; ctx: Ctx; comp
     ) : null;
   return (
     <div id={`row-${a.id}`} className={`row-wrap${ctx.highlight === a.id ? " highlight" : ""}`}>
-      <div className={`row action k-${a.kind} ${a.status}${compact ? " compact" : ""}`} onClick={() => ctx.open.toggle(a.id)}>
+      <div
+        className={`row action k-${a.kind} ${a.status}${compact ? " compact" : ""}`}
+        onClick={() => ctx.open.toggle(a.id)}
+      >
         <span className="t">{compact ? "" : fmtTime(a.at)}</span>
         <span className={`icon k-${a.kind}`}>{a.status === "failed" ? "✗" : ICON[a.kind]}</span>
         <span className="main">
@@ -324,7 +511,13 @@ function Diff({ diff }: { diff: string }) {
   return (
     <pre className="diff">
       {lines.slice(0, 400).map((l, i) => (
-        <div key={i} className={l.startsWith("@@") ? "h" : l.startsWith("+") ? "a" : l.startsWith("-") ? "d" : ""}>
+        <div
+          // oxlint-disable-next-line react/no-array-index-key -- diff lines are static and never reorder
+          key={i}
+          className={
+            l.startsWith("@@") ? "h" : l.startsWith("+") ? "a" : l.startsWith("-") ? "d" : ""
+          }
+        >
           {l || " "}
         </div>
       ))}
@@ -355,12 +548,16 @@ function FoldRow({ fold, ctx }: { fold: Fold; ctx: Ctx }) {
                     <Path path={p} />
                   </span>
                 ))}
-                {fold.targets.length > shown.length && <span className="dim"> +{fold.targets.length - shown.length}</span>}
+                {fold.targets.length > shown.length && (
+                  <span className="dim"> +{fold.targets.length - shown.length}</span>
+                )}
               </>
             }
           />
         </span>
-        <span className="r dim">{fmtDuration(Date.parse(fold.actions.at(-1)!.at) - Date.parse(fold.at))}</span>
+        <span className="r dim">
+          {fmtDuration(Date.parse(fold.actions.at(-1)!.at) - Date.parse(fold.at))}
+        </span>
       </div>
       {isOpen && (
         <div className="fold-body">
@@ -376,7 +573,10 @@ function FoldRow({ fold, ctx }: { fold: Fold; ctx: Ctx }) {
 function MessageRow({ message: m, ctx }: { message: Message; ctx: Ctx }) {
   const isOpen = ctx.open.isOpen(m.id, false);
   return (
-    <div className={`row message ${m.role}${isOpen ? " open" : ""}`} onClick={() => ctx.open.toggle(m.id)}>
+    <div
+      className={`row message ${m.role}${isOpen ? " open" : ""}`}
+      onClick={() => ctx.open.toggle(m.id)}
+    >
       <span className="t">{fmtTime(m.at)}</span>
       <span className="icon">{m.role === "reasoning" ? "∴" : m.role === "user" ? "❯" : "↳"}</span>
       <span className="main text">{m.text}</span>
