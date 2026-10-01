@@ -36,6 +36,14 @@ Read-only viewer for what coding agents _did_ in T3 Code threads. Actions come f
 - Phases per turn: explore until the first edit → edit → verify (the first run after edits) → fix (an edit after verify) → ship (a git/gh write after edits).
 - Two or more consecutive successful read/search actions fold into one group.
 
+## Expanded bodies
+
+- Highlighting runs only when a row is expanded, and each language loads on first use (Shiki, through `@pierre/diffs`). The Shiki theme follows the viewer theme.
+- Commands are shown without their `/bin/zsh -lc` wrapper. Heredoc bodies get their own language from what consumes them (`python3 - <<PY`, `cat > x.ts <<EOF`).
+- Outputs: JSON is pretty-printed, diffs and ANSI colors are detected, single-file reads use the file's language, anything else stays plain.
+- File edits render as language-aware diffs (`FileDiff`). Diffs are stored as valid unified hunks; oversized ones are cut by whole hunks (or by lines with corrected header counts). Claude/Cursor edits hide line numbers, because they only know the edited snippet.
+- Agent notes, reasoning and subagent prompts render as markdown; collapsed ones fade after two lines. Local file links show as code.
+
 ## Codex labels (on demand)
 
 - A "Label with Codex" button on each turn sends that turn's non-trivial actions and fold groups to `codex exec --output-schema`, run read-only and ephemeral.

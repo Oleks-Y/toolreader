@@ -21,6 +21,8 @@ import {
 import { call, errorMessage } from "./client.ts";
 import { Swimlane, type Range } from "./Swimlane.tsx";
 import { ThemePicker } from "./theme.tsx";
+import { CommandBlock, FilePatch, Markdown, OutputBlock } from "./code.tsx";
+import { langFromPath } from "./codeLang.ts";
 import { fmtDay, fmtDuration, fmtTime } from "./util.ts";
 
 type Prefs = Switches & { labels: boolean };
@@ -531,40 +533,29 @@ function ActionRow({ action: a, ctx, compact }: { action: Action; ctx: Ctx; comp
 }
 
 function ActionDetail({ a }: { a: Action }) {
+  // A single-file read shows that file's contents: highlight them in its language.
+  const readTarget = a.kind === "read" && a.targets?.length === 1 ? a.targets[0] : undefined;
   return (
     <div className="detail">
-      {a.kind === "agent" && a.hint && <pre className="out">{a.hint}</pre>}
-      {a.command && <pre className="cmd">$ {a.command}</pre>}
+      {a.kind === "agent" && a.hint && <Markdown text={a.hint} highlight />}
+      {a.command && <CommandBlock command={a.command} />}
       {(a.files ?? []).map((f) => (
         <div key={f.path} className="file-diff">
           <div className="file-head">
             <Path path={f.path} /> <FileStat f={f} />
+            {f.truncated && <span className="dim"> · large diff, showing the first hunks</span>}
           </div>
-          {f.diff && <Diff diff={f.diff} />}
+          {f.diff && <FilePatch file={{ ...f, diff: f.diff }} />}
         </div>
       ))}
-      {a.output && <pre className={`out${a.status === "failed" ? " failed" : ""}`}>{a.output}</pre>}
+      {a.output && (
+        <OutputBlock
+          text={a.output}
+          hint={readTarget ? langFromPath(readTarget) : undefined}
+          failed={a.status === "failed"}
+        />
+      )}
     </div>
-  );
-}
-
-function Diff({ diff }: { diff: string }) {
-  const lines = diff.split("\n");
-  return (
-    <pre className="diff">
-      {lines.slice(0, 400).map((l, i) => (
-        <div
-          // oxlint-disable-next-line react/no-array-index-key -- diff lines are static and never reorder
-          key={i}
-          className={
-            l.startsWith("@@") ? "h" : l.startsWith("+") ? "a" : l.startsWith("-") ? "d" : ""
-          }
-        >
-          {l || " "}
-        </div>
-      ))}
-      {lines.length > 400 && <div className="h">… {lines.length - 400} more lines</div>}
-    </pre>
   );
 }
 
@@ -624,7 +615,9 @@ function MessageRow({ message: m, ctx }: { message: Message; ctx: Ctx }) {
     >
       <span className="t">{fmtTime(m.at)}</span>
       <span className="icon">{m.role === "reasoning" ? "∴" : m.role === "user" ? "❯" : "↳"}</span>
-      <span className="main text">{m.text}</span>
+      <span className="main text">
+        <Markdown text={m.text} highlight={isOpen} />
+      </span>
       <span className="r" />
     </div>
   );

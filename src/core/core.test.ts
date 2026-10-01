@@ -1,7 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 
 import type { Action } from "./domain.ts";
-import { normalize, type ActivityRow } from "./normalize.ts";
+import { clipDiff, normalize, type ActivityRow } from "./normalize.ts";
 import type { ToolPayload } from "./payload.ts";
 import { classifyRun, humanizeCommand } from "./shell.ts";
 import { buildTree, DEFAULT_SWITCHES } from "./tree.ts";
@@ -67,6 +67,23 @@ describe("core", () => {
       ["docker compose -p x run --rm tests bun test", "docker"],
     ];
     for (const [cmd, kind] of cases) assert.strictEqual(classifyRun(cmd.split(" ")), kind, cmd);
+  });
+
+  it("clips long diffs at hunk boundaries", () => {
+    const hunk = (n: number) => `@@ -${n},1 +${n},1 @@\n-${"a".repeat(5000)}\n+${"b".repeat(5000)}`;
+    const { diff, truncated } = clipDiff([hunk(1), hunk(10), hunk(20)].join("\n"));
+    assert.strictEqual(truncated, true);
+    assert.deepStrictEqual(diff.match(/^@@ /gm)?.length, 1);
+    assert.deepStrictEqual(clipDiff("@@ -1,1 +1,1 @@\n-a\n+b"), {
+      diff: "@@ -1,1 +1,1 @@\n-a\n+b",
+    });
+    // One oversized new-file hunk is cut by lines, with header counts that match what's left.
+    const big = clipDiff(
+      ["@@ -0,0 +1,3000 @@", ...Array.from({ length: 3000 }, (_, i) => `+line ${i}`)].join("\n"),
+    );
+    const lines = big.diff.split("\n");
+    assert.strictEqual(big.truncated, true);
+    assert.strictEqual(lines[0], `@@ -0,0 +1,${lines.length - 1} @@`);
   });
 
   const row = (
@@ -200,6 +217,11 @@ describe("core", () => {
       claudeEdit?.files?.map((f) => [f.path, f.added, f.removed]),
       [["src/c.ts", 2, 1]],
     );
+    // Diffs are valid unified hunks: Codex new files become one "+" hunk, Claude edits get real headers.
+    assert.strictEqual(edit?.files?.[1]?.diff, "@@ -0,0 +1,2 @@\n+line1\n+line2");
+    assert.strictEqual(edit?.files?.[0]?.exactLines, true);
+    assert.strictEqual(claudeEdit?.files?.[0]?.diff, "@@ -2,1 +2,2 @@\n-b\n+c\n+d");
+    assert.strictEqual(claudeEdit?.files?.[0]?.exactLines, undefined);
     assert.strictEqual(mcp?.title, 't3-code · link_pull_request {"url":"u"}');
     assert.deepStrictEqual(
       cursor?.files?.map((f) => [f.path, f.isNew, f.added]),

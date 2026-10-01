@@ -24,7 +24,12 @@ export const FileChange = Schema.Struct({
   removed: Schema.Number,
   isNew: Schema.Boolean,
   isDeleted: Schema.Boolean,
+  /** Unified diff hunks (`@@ -a,b +c,d @@` …), whole hunks only. */
   diff: Schema.optional(Schema.String),
+  /** Hunks were dropped to keep the payload small. */
+  truncated: Schema.optional(Schema.Boolean),
+  /** Line numbers are real file lines (Codex). Claude/Cursor edits only know the edited snippet. */
+  exactLines: Schema.optional(Schema.Boolean),
 });
 export type FileChange = typeof FileChange.Type;
 

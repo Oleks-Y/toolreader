@@ -85,12 +85,58 @@ export function textDiff(
   }
   const removed = a.slice(start, endA);
   const added = b.slice(start, endB);
+  // Standard unified header; an empty side starts at 0, as `diff -u` writes it.
+  const oldStart = removed.length ? start + 1 : start;
+  const newStart = added.length ? start + 1 : start;
   const diff = [
-    `@@ -${start + 1} +${start + 1} @@`,
+    `@@ -${oldStart},${removed.length} +${newStart},${added.length} @@`,
     ...removed.map((l) => `-${l}`),
     ...added.map((l) => `+${l}`),
   ].join("\n");
   return { diff, added: added.length, removed: removed.length };
+}
+
+/** Codex sends whole-file content for added/deleted files; turn it into one hunk. */
+function asHunk(content: string, side: "+" | "-"): string {
+  const lines = content.replace(/\n$/, "").split("\n");
+  const header = side === "+" ? `@@ -0,0 +1,${lines.length} @@` : `@@ -1,${lines.length} +0,0 @@`;
+  return [header, ...lines.map((l) => `${side}${l}`)].join("\n");
+}
+
+const MAX_DIFF_CHARS = 12_000;
+
+/** Cuts one hunk to its first lines that fit, rewriting the header counts so it still parses. */
+function cutHunk(hunk: string, maxChars: number): string {
+  const [header = "", ...lines] = hunk.split("\n");
+  const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(header);
+  if (!m) return hunk.slice(0, maxChars);
+  const kept: string[] = [];
+  let size = header.length;
+  for (const line of lines) {
+    if (kept.length && size + line.length + 1 > maxChars) break;
+    kept.push(line);
+    size += line.length + 1;
+  }
+  const oldCount = kept.filter((l) => !l.startsWith("+")).length;
+  const newCount = kept.filter((l) => !l.startsWith("-")).length;
+  return [`@@ -${m[1]},${oldCount} +${m[2]},${newCount} @@${m[3]}`, ...kept].join("\n");
+}
+
+/** Keeps whole hunks up to the size limit (cutting an oversized first one), so the result still parses. */
+export function clipDiff(diff: string): { diff: string; truncated?: boolean } {
+  if (diff.length <= MAX_DIFF_CHARS) return { diff };
+  const hunks = diff.split(/\n(?=@@ )/);
+  const kept: string[] = [];
+  let size = 0;
+  for (const hunk of hunks) {
+    if (size + hunk.length > MAX_DIFF_CHARS) {
+      if (!kept.length) kept.push(cutHunk(hunk, MAX_DIFF_CHARS));
+      break;
+    }
+    kept.push(hunk);
+    size += hunk.length + 1;
+  }
+  return { diff: kept.join("\n"), truncated: true };
 }
 
 function unifiedDiffStats(diff: string): { added: number; removed: number } {
@@ -109,18 +155,17 @@ function fileChanges(p: ToolPayload): FileChange[] {
   if (d?.item?.changes) {
     return d.item.changes.map((c): FileChange => {
       const type = c.kind?.type;
-      const diff = c.diff ?? "";
+      const raw = c.diff ?? "";
       const isNew = type === "add";
-      const stats =
-        isNew && !/^[+@]/m.test(diff)
-          ? { added: diff.split("\n").length, removed: 0 }
-          : unifiedDiffStats(diff);
+      const isDeleted = type === "delete";
+      const diff = /^@@ /m.test(raw) ? raw : asHunk(raw, isDeleted ? "-" : "+");
       return {
         path: c.path ?? "?",
-        ...stats,
+        ...unifiedDiffStats(diff),
         isNew,
-        isDeleted: type === "delete",
-        diff: headTail(diff, 6000, 2000),
+        isDeleted,
+        ...clipDiff(diff),
+        exactLines: true,
       };
     });
   }
@@ -136,7 +181,7 @@ function fileChanges(p: ToolPayload): FileChange[] {
           removed: t.removed,
           isNew: c.oldText == null,
           isDeleted: d.kind === "delete",
-          diff: headTail(t.diff, 6000, 2000),
+          ...clipDiff(t.diff),
         },
       ];
     });
@@ -172,7 +217,7 @@ function fileChanges(p: ToolPayload): FileChange[] {
       removed,
       isNew: created,
       isDeleted: false,
-      diff: headTail(diffs.join("\n"), 6000, 2000),
+      ...clipDiff(diffs.join("\n")),
     },
   ];
 }
