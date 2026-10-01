@@ -2,7 +2,6 @@
 // loose schemas on purpose: Codex adds item types and fields often, and one unknown field must not hide a thread.
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
-import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 import type { ActivityRow, MessageRow } from "./normalize.ts";
@@ -102,6 +101,14 @@ const SKIPPED = new Set(["plan", "review_entered", "review_exited", "unknown"]);
 
 export const isoFromSeconds = (s: number) => DateTime.formatIso(DateTime.makeUnsafe(s * 1000));
 
+/** What a web action did: its type, and its query or its URL (and pattern). */
+function webKey(item: CodexItem): string {
+  const a = item.action;
+  const type = (a?.type ?? "search").replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
+  const query = item.query || a?.query || a?.queries?.[0] || "";
+  return type === "search" ? `search ${query}` : `${type} ${a?.url ?? ""} ${a?.pattern ?? ""}`;
+}
+
 /**
  * Converts a thread/read result into the T3-shaped rows `normalize` already understands, adding the
  * tool calls only the rollout file kept (see rollout.ts).
@@ -132,9 +139,10 @@ export function codexThreadToRows(
     return item;
   };
 
-  // Thread/read items that became actions, and the web searches among them.
+  // Thread/read items that became actions, and the web actions among them that no rollout call id
+  // names: each can stand for one rollout web_search_call (see below).
   const shown = new Set<string>();
-  const searches = new Set<string>();
+  const webItems: Array<{ key: string; line: number | undefined; used: boolean }> = [];
   const turnIds = new Set<string>();
   const finishedTurns = new Set<string>();
   let lastAt = isoFromSeconds(read.thread.createdAt);
@@ -194,7 +202,8 @@ export function codexThreadToRows(
       } else if (!SKIPPED.has(kind)) {
         const item = toolRow(id, at, seq, type, raw);
         shown.add(id);
-        for (const q of [item.query, item.action?.query, item.action?.url]) if (q) searches.add(q);
+        if (item.type === "webSearch" && !scan.byId.has(id))
+          webItems.push({ key: webKey(item), line: scan.lines.get(id), used: false });
       }
     }
   }
@@ -205,6 +214,8 @@ export function codexThreadToRows(
   );
   // Rolled-back turns stay in the rollout; only trust turn ids when both sides use the same ones.
   const sameTurnIds = [...turnIds].some((t) => scan.turns.has(t));
+  // Web calls in rollout order: an item belongs to the call it sits next to.
+  const webCalls = scan.calls.filter((c) => c.name === "web_search").map((c) => c.line);
   for (const call of scan.calls) {
     if (shown.has(call.id)) continue;
     if (sameTurnIds && call.turnId && !turnIds.has(call.turnId)) continue;
@@ -217,12 +228,26 @@ export function codexThreadToRows(
     const raw = rolloutItem(call, call.ended || ended);
     if (!raw) continue;
     const type = String(raw["type"]);
-    const action = Predicate.isObject(raw["action"]) ? raw["action"] : {};
-    if (
-      type === "webSearch" &&
-      [raw["query"], action["url"]].some((q) => Predicate.isString(q) && searches.has(q))
-    )
-      continue;
+    if (type === "webSearch") {
+      // web_search_call lines carry no id. Its item is the same action completed next to it (just
+      // before or after, by Codex version), between the neighbouring web calls. Each item stands
+      // for one call, so repeated searches for one query all stay.
+      const key = webKey(Option.getOrElse(decodeItem(raw), (): CodexItem => ({})));
+      const j = webCalls.indexOf(call.line);
+      const lo = webCalls[j - 1] ?? -Infinity;
+      const hi = webCalls[j + 1] ?? Infinity;
+      const distance = (w: (typeof webItems)[number]) =>
+        w.line === undefined ? Infinity : Math.abs(w.line - call.line);
+      const match = webItems
+        .filter(
+          (w) => !w.used && w.key === key && (w.line === undefined || (w.line > lo && w.line < hi)),
+        )
+        .sort((a, b) => distance(a) - distance(b))[0];
+      if (match) {
+        match.used = true;
+        continue;
+      }
+    }
     toolRow(call.id, call.at, call.line, type, raw);
   }
   return { activities, messages };

@@ -39,7 +39,14 @@ export const CodexItem = Schema.Struct({
   error: opt(Schema.Unknown),
   query: opt(Schema.String),
   action: opt(
-    Schema.Struct({ type: opt(Schema.String), url: opt(Schema.String), query: opt(Schema.String) }),
+    Schema.Struct({
+      type: opt(Schema.String),
+      url: opt(Schema.String),
+      query: opt(Schema.String),
+      queries: opt(Schema.Array(Schema.String)),
+      /** findInPage */
+      pattern: opt(Schema.String),
+    }),
   ),
   path: opt(Schema.String),
   prompt: opt(Schema.String),

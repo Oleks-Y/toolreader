@@ -301,6 +301,77 @@ describe("rollout", () => {
     assert.strictEqual(shellJoin(["sh", "-c", "echo $HOME 'x'"]), `sh -c 'echo $HOME '"'x'"`);
     assert.strictEqual(shellJoin(["printf", 'a\\tb "c"']), `printf "a\\\\tb \\"c\\""`);
   });
+  it("keeps separate web actions that share a query or URL", () => {
+    second = 0;
+    const search = (query: string) =>
+      item({ type: "web_search_call", status: "completed", action: { type: "search", query } });
+    const lines = [
+      search("effect schema"),
+      completed("turn-1", { type: "WebSearch", id: "ws1" }),
+      item({
+        type: "web_search_call",
+        status: "completed",
+        action: { type: "open_page", url: "https://a.dev" },
+      }),
+      completed("turn-1", { type: "WebSearch", id: "ws2" }),
+      item({
+        type: "web_search_call",
+        status: "completed",
+        action: { type: "find_in_page", url: "https://a.dev", pattern: "Schema" },
+      }),
+      event({ type: "token_count" }),
+      event({ type: "token_count" }),
+      event({ type: "token_count" }),
+      event({ type: "token_count" }),
+      event({ type: "token_count" }),
+      event({ type: "token_count" }),
+      search("effect schema"),
+    ];
+    const known = [
+      {
+        type: "webSearch",
+        id: "ws1",
+        query: "effect schema",
+        action: { type: "search", query: "effect schema" },
+      },
+      {
+        type: "webSearch",
+        id: "ws2",
+        query: "https://a.dev",
+        action: { type: "openPage", url: "https://a.dev" },
+      },
+    ];
+    assert.deepStrictEqual(
+      actionsOf(lines, known).actions.map((a) => [
+        a.id.startsWith("ws") ? a.id : "rollout",
+        a.title,
+      ]),
+      [
+        ["ws1", 'web search "effect schema"'],
+        ["ws2", "fetch https://a.dev"],
+        ["rollout", "fetch https://a.dev"],
+        ["rollout", 'web search "effect schema"'],
+      ],
+    );
+    // Newer Codex completes the item just before its call; each call still pairs with one item.
+    const before = [
+      completed("turn-1", { type: "WebSearch", id: "ws3" }),
+      search("x"),
+      completed("turn-1", { type: "WebSearch", id: "ws4" }),
+      search("x"),
+    ];
+    const x = (id: string) => ({
+      type: "webSearch",
+      id,
+      query: "x",
+      action: { type: "search", query: "x" },
+    });
+    assert.deepStrictEqual(
+      actionsOf(before, [x("ws3"), x("ws4")]).actions.map((a) => a.id),
+      ["ws3", "ws4"],
+    );
+  });
+
   it("keeps a script command's exit code, and shows a script when it is unknown", () => {
     const lines = [
       custom("s1", "exec", 'text(await tools.exec_command({cmd: "pnpm test"}));'),

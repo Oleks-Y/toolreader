@@ -437,7 +437,7 @@ export function rolloutItem(c: RolloutCall, ended = c.ended): Record<string, unk
         ...base,
         type: "webSearch",
         query,
-        action: { type, url: a?.url, query },
+        action: { type, url: a?.url, query, pattern: a?.pattern },
         status: status(c.outputs[0] === "failed"),
       };
     }
