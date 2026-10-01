@@ -199,6 +199,33 @@ export function clipOutputs(entries: ReadonlyArray<Entry>, maxBytes: number): En
   });
 }
 
+/** First line of the hook `ledger hook install` writes; marks the file as ours. */
+export const HOOK_MARKER = "# toolreader ledger hook";
+
+/**
+ * The `pre-push` hook: for each branch pushed to origin, syncs the pushed commits with `--push`.
+ * A failed sync warns and lets the push go on; pushes of agent-ledger itself are skipped.
+ */
+export function prePushHook(command: string): string {
+  return `#!/bin/sh
+${HOOK_MARKER}: records agent history for pushed commits on ${LEDGER_BRANCH}.
+# Remove it with \`ledger hook uninstall\`.
+[ "$1" = origin ] || exit 0
+repo=$(git rev-parse --show-toplevel) || exit 0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in refs/heads/${LEDGER_BRANCH}) continue ;; esac
+  case "$local_sha" in *[!0]*) ;; *) continue ;; esac
+  case "$remote_sha" in
+    *[!0]*) range="$remote_sha..$local_sha" ;;
+    *) range="$local_sha --not --remotes=origin" ;;
+  esac
+  ${command} sync --repo "$repo" --range "$range" --push </dev/null ||
+    echo "toolreader: ledger sync failed; pushing anyway" >&2
+done
+exit 0
+`;
+}
+
 /** A commit range as the viewer shows it: each commit with its agent history, if any. */
 export const LedgerRange = Schema.Struct({
   repo: Schema.String,

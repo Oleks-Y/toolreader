@@ -1,15 +1,16 @@
 // Commit ledger CLI:
 //   vp run ledger -- sync [--repo PATH] [--range A..B] [--source auto|t3|codex-app-server|codex-rollouts]
-//                         [--codex-home DIR] [--max-output BYTES] [--no-outputs]
+//                         [--codex-home DIR] [--max-output BYTES] [--no-outputs] [--push]
 //   vp run ledger -- show [--repo PATH] [--range A..B]          list commits and their history
-// The range defaults to <default branch>..HEAD. Share it with `git push origin agent-ledger`.
+//   vp run ledger -- hook install|uninstall [--repo PATH]       pre-push hook: sync pushed commits, --push
+// The range defaults to <default branch>..HEAD. Without --push, share it with `git push origin agent-ledger`.
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import { Command, Flag } from "effect/unstable/cli";
+import { Argument, Command, Flag } from "effect/unstable/cli";
 
 import packageJson from "../../package.json" with { type: "json" };
 import { LEDGER_BRANCH } from "../core/ledger.ts";
@@ -50,14 +51,20 @@ const sync = Command.make(
     noOutputs: Flag.boolean("no-outputs").pipe(
       Flag.withDescription("Leave command and tool outputs out (they are redacted otherwise)"),
     ),
+    push: Flag.boolean("push").pipe(
+      Flag.withDescription(
+        "Write on top of origin's agent-ledger and push it, retrying if another push wins",
+      ),
+    ),
   },
-  Effect.fn(function* ({ repo, range, source, codexHome, maxOutput, noOutputs }) {
+  Effect.fn(function* ({ repo, range, source, codexHome, maxOutput, noOutputs, push }) {
     const path = yield* Path.Path;
     const result = yield* Effect.flatMap(Ledger, (ledger) =>
       ledger.sync(repo, Option.getOrNull(range), {
         outputs: !noOutputs,
         maxOutput,
         source,
+        push,
       }),
     ).pipe(
       Effect.provide(
@@ -78,7 +85,8 @@ const sync = Command.make(
     for (const c of result.unmatched) {
       yield* Console.log(`  · ${c.sha.slice(0, 8)} ${c.subject}  (no agent history found)`);
     }
-    if (result.added.length > 0)
+    if (result.pushed) yield* Console.log(`Pushed ${LEDGER_BRANCH} ${result.pushed.slice(0, 8)}`);
+    else if (!push && result.added.length > 0)
       yield* Console.log(`Push it with: git push origin ${LEDGER_BRANCH}`);
   }),
 ).pipe(Command.withDescription("Write ledger entries for agent-made commits in a range"));
@@ -101,9 +109,28 @@ const show = Command.make(
   }),
 ).pipe(Command.withDescription("List commits in a range with their agent history"));
 
+const hook = Command.make(
+  "hook",
+  { action: Argument.choice("action", ["install", "uninstall"]), repo },
+  Effect.fn(function* ({ action, repo }) {
+    // The hook runs this same CLI, with absolute paths so it works from any shell.
+    const self = [process.execPath, import.meta.filename].map(
+      (a) => `'${a.replace(/'/g, `'\\''`)}'`,
+    );
+    const message = yield* Effect.flatMap(Ledger, (ledger) =>
+      ledger.hook(repo, action, self.join(" ")),
+    ).pipe(Effect.provide(offline));
+    yield* Console.log(message);
+  }),
+).pipe(
+  Command.withDescription(
+    "Install or remove a pre-push hook that syncs the pushed commits and pushes agent-ledger",
+  ),
+);
+
 Command.make("ledger").pipe(
   Command.withDescription("Agent history per commit, kept on the agent-ledger branch"),
-  Command.withSubcommands([sync, show]),
+  Command.withSubcommands([sync, show, hook]),
   Command.run({ version: packageJson.version }),
   Effect.provide(NodeServices.layer),
   NodeRuntime.runMain,

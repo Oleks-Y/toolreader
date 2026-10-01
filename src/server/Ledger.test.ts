@@ -396,4 +396,149 @@ describe("Ledger", () => {
         }).pipe(Effect.provide(ledgerLayer({ dbPath: "/nonexistent/state.sqlite", codexHome })));
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
+
+  it.live("--push writes on top of origin's ledger and retries when another push lands first", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { repo, origin, commitFile } = yield* makeRepo;
+      const codexHome = yield* tempDir("toolreader-codex-home-");
+      yield* git(repo, ["push", "-q", "origin", "main"]);
+      yield* git(repo, ["switch", "-q", "-c", "feat/x"]);
+      const agentCommit = (n: number, minute: number) =>
+        Effect.gen(function* () {
+          const sha = yield* commitFile(
+            `f${n}.ts`,
+            `${n}\n`,
+            `feat: ${n}`,
+            `2026-01-01T10:${minute}:30Z`,
+          );
+          yield* writeRollout(codexHome, `s${n}`, repo, [
+            { at: `2026-01-01T10:${minute - 1}:00.000Z`, item: userMessage(`u${n}`, `Add ${n}`) },
+            {
+              at: `2026-01-01T10:${minute}:00.000Z`,
+              item: command(
+                `c${n}`,
+                `git commit -m 'feat: ${n}'`,
+                `[feat/x ${sha.slice(0, 7)}] feat: ${n}\n`,
+              ),
+            },
+          ]);
+          return sha;
+        });
+      const remoteLedger = () =>
+        git(repo, ["ls-remote", "origin", "refs/heads/agent-ledger"]).pipe(
+          Effect.map((l) => l.split(/\s/)[0] ?? ""),
+        );
+      const remoteFiles = () => git(origin, ["ls-tree", "-r", "--name-only", "agent-ledger"]);
+
+      yield* Effect.gen(function* () {
+        const ledger = yield* Ledger;
+        const one = yield* agentCommit(1, 10);
+        const first = yield* ledger.sync(repo, null, { push: true });
+        assert.deepStrictEqual(
+          first.added.map((a) => a.commit.sha),
+          [one],
+        );
+        assert.strictEqual(first.pushed, yield* remoteLedger());
+        assert.strictEqual(yield* git(repo, ["rev-parse", "agent-ledger"]), first.pushed);
+        assert.strictEqual(yield* git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]), "feat/x");
+        assert.strictEqual(yield* git(repo, ["status", "--porcelain"]), "");
+
+        // Another job's ledger commit, on top of the first one, waiting in origin.
+        const other = yield* tempDir("toolreader-ledger-other-");
+        yield* git(other, ["clone", "-q", "--branch", "agent-ledger", origin, "."]);
+        yield* fs.makeDirectory(path.join(other, "commits"), { recursive: true });
+        yield* fs.writeFileString(path.join(other, "commits", "f".repeat(40) + ".json"), "{}\n");
+        yield* git(other, ["add", "-A"]);
+        yield* git(other, ["commit", "-q", "-m", "ledger: other job"]);
+        const theirs = yield* git(other, ["rev-parse", "HEAD"]);
+        yield* git(other, ["push", "-q", "origin", "HEAD:refs/heads/scratch"]);
+        // It lands while our push is in flight: origin moves agent-ledger to it once, mid-push.
+        const hook = path.join(origin, "hooks", "pre-receive");
+        yield* fs.writeFileString(
+          hook,
+          `#!/bin/sh\n[ -f raced ] && exit 0\ntouch raced\nenv -u GIT_QUARANTINE_PATH git update-ref refs/heads/agent-ledger ${theirs}\n`,
+        );
+        yield* fs.chmod(hook, 0o755);
+
+        const two = yield* agentCommit(2, 20);
+        const second = yield* ledger.sync(repo, null, { push: true });
+        assert.deepStrictEqual(
+          second.added.map((a) => a.commit.sha),
+          [two],
+        );
+        assert.isTrue(yield* fs.exists(path.join(origin, "raced")), "the race happened");
+        const tip = yield* remoteLedger();
+        assert.strictEqual(second.pushed, tip);
+        assert.strictEqual(yield* git(repo, ["rev-parse", "agent-ledger"]), tip);
+        assert.strictEqual(
+          yield* git(repo, ["rev-parse", `${tip}^`]),
+          theirs,
+          "rebuilt on their tip",
+        );
+        assert.deepStrictEqual(
+          (yield* remoteFiles()).split("\n").sort(),
+          [
+            `commits/${"f".repeat(40)}.json`,
+            `commits/${one}.json`,
+            `commits/${two}.json`,
+            "patch-ids.json",
+          ].sort(),
+        );
+        assert.strictEqual(yield* git(repo, ["status", "--porcelain"]), "");
+
+        // Nothing new: nothing pushed.
+        const third = yield* ledger.sync(repo, null, { push: true });
+        assert.deepStrictEqual([third.added.length, third.pushed], [0, null]);
+      }).pipe(Effect.provide(ledgerLayer({ dbPath: "/nonexistent/state.sqlite", codexHome })));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live(
+    "installs a pre-push hook idempotently, never over someone else's, and it syncs what is pushed",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { repo, commitFile } = yield* makeRepo;
+        const dir = yield* tempDir("toolreader-hook-");
+        // Stands in for the toolreader CLI: records its arguments.
+        const log = path.join(dir, "calls.log");
+        const fake = path.join(dir, "toolreader.sh");
+        yield* fs.writeFileString(fake, `#!/bin/sh\necho "$@" >> '${log}'\n`);
+        yield* fs.chmod(fake, 0o755);
+        const hookFile = path.join(repo, ".git", "hooks", "pre-push");
+
+        yield* Effect.gen(function* () {
+          const ledger = yield* Ledger;
+          assert.match(yield* ledger.hook(repo, "install", `'${fake}'`), /^Installed /);
+          assert.match(yield* ledger.hook(repo, "install", `'${fake}'`), /^Already installed/);
+          assert.strictEqual(((yield* fs.stat(hookFile)).mode & 0o111) !== 0, true);
+
+          const main = yield* git(repo, ["rev-parse", "HEAD"]);
+          yield* git(repo, ["push", "-q", "origin", "main"]);
+          const next = yield* commitFile("a.ts", "a\n", "feat: a", "2026-01-01T10:00:00Z");
+          yield* git(repo, ["push", "-q", "origin", "main"]);
+          yield* git(repo, ["push", "-q", "origin", "main:refs/heads/agent-ledger"]);
+          assert.deepStrictEqual((yield* fs.readFileString(log)).trim().split("\n"), [
+            `sync --repo ${repo} --range ${main} --not --remotes=origin --push`,
+            `sync --repo ${repo} --range ${main}..${next} --push`,
+          ]);
+
+          assert.strictEqual(yield* ledger.hook(repo, "uninstall", ""), `Removed ${hookFile}.`);
+          yield* fs.writeFileString(hookFile, "#!/bin/sh\nexit 0\n");
+          const refused = yield* Effect.flip(ledger.hook(repo, "install", `'${fake}'`));
+          assert.include(refused.message, "not toolreader's");
+          assert.include(refused.message, "--push");
+          assert.strictEqual(yield* fs.readFileString(hookFile), "#!/bin/sh\nexit 0\n");
+          yield* Effect.flip(ledger.hook(repo, "uninstall", ""));
+          assert.isTrue(yield* fs.exists(hookFile));
+        }).pipe(
+          Effect.provide(
+            ledgerLayer({ dbPath: "/nonexistent/state.sqlite", codexHome: "/nonexistent" }),
+          ),
+        );
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
 });

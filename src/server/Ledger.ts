@@ -1,6 +1,6 @@
 // The commit ledger (see src/core/ledger.ts): `sync` writes entries for agent-made commits onto the
-// `agent-ledger` branch with git plumbing (never touching HEAD or the working tree); `range` reads
-// them back.
+// `agent-ledger` branch with git plumbing (never touching HEAD or the working tree), optionally on
+// top of origin's copy and pushed; `range` reads them back; `hook` installs the pre-push hook.
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -16,12 +16,14 @@ import type { Entry, Labels, ThreadSummary, ThreadView } from "../core/domain.ts
 import {
   clipOutputs,
   findCommitActions,
+  HOOK_MARKER,
   LEDGER_BRANCH,
   LEDGER_FORMAT_VERSION,
   LedgerEntry,
   ledgerPath,
   matchCommit,
   matchSession,
+  prePushHook,
   remoteWebUrl,
   segmentFor,
   sessionSegment,
@@ -38,6 +40,12 @@ import { ServerConfig } from "./ServerConfig.ts";
 import { ThreadStore } from "./ThreadStore.ts";
 
 const LEDGER_REF = `refs/heads/${LEDGER_BRANCH}`;
+const REMOTE = "origin";
+const REMOTE_REF = `refs/remotes/${REMOTE}/${LEDGER_BRANCH}`;
+/** Pushes that lose a race refetch and retry this many times in total. */
+const PUSH_ATTEMPTS = 5;
+/** git's words for a push that lost a race: behind the remote, or the remote ref moved mid-push. */
+const LOST_RACE = /\[rejected\]|non-fast-forward|fetch first|incorrect old value|cannot lock ref/;
 const PatchIds = Schema.Record(Schema.String, Schema.String);
 const decodeEntry = Schema.decodeUnknownEffect(Schema.fromJsonString(LedgerEntry));
 const encodeEntry = Schema.encodeEffect(Schema.fromJsonString(LedgerEntry));
@@ -56,11 +64,14 @@ export type SyncOptions = {
   /** Bytes kept per output, head and tail; 0 keeps them whole. */
   readonly maxOutput: number;
   readonly source: LedgerSource;
+  /** Write on top of origin's agent-ledger and push it, retrying when another push wins. */
+  readonly push: boolean;
 };
 export const SYNC_DEFAULTS: SyncOptions = {
   outputs: true,
   maxOutput: 8192,
   source: "auto",
+  push: false,
 };
 
 export type SyncResult = {
@@ -74,6 +85,8 @@ export type SyncResult = {
   }>;
   readonly unmatched: ReadonlyArray<LedgerCommit>;
   readonly existing: number;
+  /** The ledger commit now on origin, when `push` sent one. */
+  readonly pushed: string | null;
 };
 
 type Session = {
@@ -97,6 +110,12 @@ export class Ledger extends Context.Service<
       repo: string,
       range: string | null,
     ) => Effect.Effect<LedgerRange, LedgerFailed>;
+    /** Installs or removes the pre-push hook that runs `<command> sync … --push`; returns what it did. */
+    readonly hook: (
+      repo: string,
+      action: "install" | "uninstall",
+      command: string,
+    ) => Effect.Effect<string, LedgerFailed>;
   }
 >()("toolreader/server/Ledger") {
   static readonly layer = Layer.effect(
@@ -352,6 +371,67 @@ export class Ledger extends Context.Service<
         ),
       );
 
+      /** origin's agent-ledger tip after fetching it into refs/remotes, or null if it has none. */
+      const fetchRemote = Effect.fn("Ledger.fetchRemote")(function* (repo: string) {
+        const advertised = yield* git(repo, ["ls-remote", REMOTE, LEDGER_REF]);
+        if (!advertised.trim()) return null;
+        yield* git(repo, ["fetch", "--quiet", "--no-tags", REMOTE, `+${LEDGER_REF}:${REMOTE_REF}`]);
+        return yield* resolve(repo, REMOTE_REF);
+      });
+
+      /** Commits among `refs` that none of the others contain, in the given order. */
+      const independent = Effect.fn("Ledger.independent")(function* (
+        repo: string,
+        refs: ReadonlyArray<string | null>,
+      ) {
+        const unique = [...new Set(refs.filter((r): r is string => !!r))];
+        if (unique.length < 2) return unique;
+        const keep = new Set(
+          (yield* git(repo, ["merge-base", "--independent", ...unique])).split("\n"),
+        );
+        return unique.filter((r) => keep.has(r));
+      });
+
+      /**
+       * Writes `writes` on top of origin's agent-ledger (and any local-only history), pushes,
+       * and only then moves the local branch. A push that loses a race refetches and rebuilds.
+       */
+      const publish = Effect.fn("Ledger.publish")(function* (
+        repo: string,
+        writes: ReadonlyArray<Write>,
+        message: string,
+      ) {
+        for (let attempt = 1; ; attempt++) {
+          const remote = yield* fetchRemote(repo);
+          const local = yield* resolve(repo, LEDGER_REF);
+          const bases = yield* independent(repo, [remote, local]);
+          const onRemote = yield* filesIn(repo, remote);
+          // Another job may have recorded the same commit meanwhile; its entry stays.
+          const fresh = writes.filter((w) => !onRemote.has(ledgerPath(w.commit.sha)));
+          const head =
+            fresh.length === 0 && bases.length === 1
+              ? bases[0]!
+              : yield* writeTree(repo, bases, fresh, message);
+          let pushed: string | null = null;
+          if (head !== remote) {
+            const result = yield* git(repo, [
+              "push",
+              "--quiet",
+              "--no-verify",
+              REMOTE,
+              `${head}:${LEDGER_REF}`,
+            ]).pipe(Effect.result);
+            if (result._tag === "Failure") {
+              if (attempt < PUSH_ATTEMPTS && LOST_RACE.test(result.failure.message)) continue;
+              return yield* result.failure;
+            }
+            pushed = head;
+          }
+          if (head !== local) yield* git(repo, ["update-ref", LEDGER_REF, head, local ?? ""]);
+          return pushed;
+        }
+      });
+
       const sync = Effect.fn("Ledger.sync")(function* (
         repoArg: string,
         rangeArg: string | null,
@@ -361,7 +441,11 @@ export class Ledger extends Context.Service<
         const repo = (yield* git(repoArg, ["rev-parse", "--show-toplevel"])).trim();
         const range = rangeArg ?? (yield* defaultRange(repo));
         const { commits, previousAt } = yield* commitsIn(repo, range);
-        const existing = yield* filesIn(repo, yield* resolve(repo, LEDGER_REF));
+        const remote = options.push ? yield* fetchRemote(repo) : null;
+        const existing = new Set([
+          ...(yield* filesIn(repo, yield* resolve(repo, LEDGER_REF))),
+          ...(yield* filesIn(repo, remote)),
+        ]);
         const todo = commits.filter((c) => !existing.has(ledgerPath(c.sha)));
         const { sources, found } = yield* sessionsFor(repo, options.source);
 
@@ -451,7 +535,10 @@ export class Ledger extends Context.Service<
         }
 
         const message = `ledger: ${writes.length} commit${writes.length === 1 ? "" : "s"} from ${range}`;
-        if (writes.length > 0) {
+        let pushed: string | null = null;
+        if (options.push) {
+          pushed = yield* publish(repo, writes, message);
+        } else if (writes.length > 0) {
           const local = yield* resolve(repo, LEDGER_REF);
           const head = yield* writeTree(repo, local ? [local] : [], writes, message);
           yield* git(repo, ["update-ref", LEDGER_REF, head, local ?? ""]);
@@ -462,6 +549,7 @@ export class Ledger extends Context.Service<
           added,
           unmatched,
           existing: commits.length - todo.length,
+          pushed,
         };
       });
 
@@ -491,7 +579,44 @@ export class Ledger extends Context.Service<
         return { repo, range, remoteUrl: remoteWebUrl(Option.getOrNull(remote)), commits: views };
       });
 
-      return Ledger.of({ sync, range });
+      const hook = Effect.fn("Ledger.hook")(
+        function* (repo: string, action: "install" | "uninstall", command: string) {
+          const file = path.resolve(
+            repo,
+            (yield* git(repo, ["rev-parse", "--git-path", "hooks/pre-push"])).trim(),
+          );
+          const current = (yield* exists(file)) ? yield* fs.readFileString(file) : null;
+          const ours = current?.includes(HOOK_MARKER) ?? false;
+          const script = prePushHook(command);
+          if (action === "uninstall") {
+            if (current === null) return `No pre-push hook at ${file}.`;
+            if (!ours)
+              return yield* new LedgerFailed({
+                message: `${file} is not toolreader's hook; leaving it alone.`,
+              });
+            yield* fs.remove(file);
+            return `Removed ${file}.`;
+          }
+          if (current !== null && !ours)
+            return yield* new LedgerFailed({
+              message: [
+                `${file} already exists and is not toolreader's; leaving it alone.`,
+                "To chain the ledger, add this to it (it reads the same stdin):",
+                script.slice(script.indexOf('[ "$1"'), script.lastIndexOf("exit 0")).trimEnd(),
+              ].join("\n"),
+            });
+          if (current === script) return `Already installed: ${file}.`;
+          yield* fs.makeDirectory(path.dirname(file), { recursive: true });
+          yield* fs.writeFileString(file, script);
+          yield* fs.chmod(file, 0o755);
+          return `${current === null ? "Installed" : "Updated"} ${file}.`;
+        },
+        Effect.catchTag("PlatformError", (e) =>
+          Effect.fail(new LedgerFailed({ message: e.message })),
+        ),
+      );
+
+      return Ledger.of({ sync, range, hook });
     }),
   );
 }
