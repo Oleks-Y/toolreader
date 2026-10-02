@@ -19,19 +19,30 @@ loaded.
 ## The demo data
 
 `demo/ledger.json` is the public range of a small repo (wordfreq, a Node.js CLI) whose four commits
-`codex exec` made. `demo/make-data.sh` regenerates it; run it only when the ledger format changes.
-It clones the demo repo and copies its rollouts into a temp dir, rewrites the copies (the repo path
-becomes `/work/wordfreq`, the home directory `/home/dev`, and a skill file read, a personal npm
-config warning and a username in `ls` output are removed), then syncs and builds the page in a
-Docker container where the repo really is at `/work/wordfreq`. It never writes to the demo repo or
-to `~/.codex`.
+`codex exec` made. `demo/make-data.sh DEMO_REPO` regenerates it; run it only when the ledger format
+changes. It clones the repo, and `demo/curate.py` copies the rollouts that ran in it into a temp
+dir and rewrites the copies:
 
-Before committing new data, read every string in it:
+- the repo's path becomes `/work/wordfreq`, and the local user name becomes `dev`;
+- tool calls that touch a path outside the repo are dropped;
+- `npm warn` lines and sentences in agent messages that mention skills are removed.
 
-```bash
-grep -n -i -E 'users/|/home/|\.codex|\.agents|skill|npmrc|account|token|secret|password|model|@' site/demo/ledger.json
-jq -r '.. | strings' site/demo/ledger.json | less
-```
+Then the script syncs and builds the page in a Docker container where the repo really is at
+`/work/wordfreq`. It never writes to the demo repo or to `~/.codex`.
+
+The curation removes only what it knows. The privacy gate (`scripts/privacyGate.ts`, rules in
+`scripts/privacy.ts`) decides what may be published. It runs before `make-data.sh` replaces
+`ledger.json` and before `pnpm run site:build` builds anything. It fails on:
+
+- absolute or `~/` paths outside `/work/wordfreq`, except the shell and `env` binaries;
+- emails other than the two demo identities;
+- URLs not on example.com or example.org;
+- this machine's own values, read at run time: `$HOME`, `$USER`, git `user.email` and `user.name`,
+  the hostname, and the names under `~/.agents/skills`, `~/.codex/skills`, `~/.claude/skills` and
+  `~/proj` that aren't ordinary English words.
+
+It prints the path of each string it rejects. To check data by hand, run
+`node scripts/privacyGate.ts site/demo/ledger.json`.
 
 ## Deploying
 
