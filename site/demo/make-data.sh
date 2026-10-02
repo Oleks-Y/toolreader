@@ -77,12 +77,15 @@ docker run --rm --network none \
     node /tr/dist/bin.mjs ledger sync --source codex-rollouts --codex-home /codex --range main
     node /tr/dist/bin.mjs ledger site --range main --out /out/site'
 
-# The page's inlined range (already through `publicRange`) is the demo's data.
-python3 - "$TMP/site/index.html" "$OUT" <<'PY'
+# The page's inlined range (already through `publicRange`) is the demo's data. It replaces
+# ledger.json only if it passes the privacy gate, which lists what it rejects.
+python3 - "$TMP/site/index.html" "$TMP/ledger.json" <<'PY'
 import json, re, sys
 html = open(sys.argv[1], encoding="utf-8").read()
 data = re.search(r'<script type="application/json" id="ledger-data">(.*?)</script>', html, re.S)
 json.dump(json.loads(data.group(1)), open(sys.argv[2], "w", encoding="utf-8"), indent=2, ensure_ascii=False)
 PY
+node "$ROOT/scripts/privacyGate.ts" "$TMP/ledger.json"
+cp "$TMP/ledger.json" "$OUT"
 echo "$OUT"
 [ -z "${KEEP:-}" ] || echo "kept $TMP"

@@ -3,6 +3,7 @@
 // (`<!--ci:agent-ledger.yml-->`), so the page shows the files as they are. The demo is the ledger
 // page template (dist/site/index.html, built by `vp build -c vite.site.config.ts` first) filled
 // with site/demo/ledger.json, as `toolreader ledger site` fills it, so it runs the current viewer.
+// The data must pass the privacy gate (scripts/privacyGate.ts) first, or nothing is built.
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
@@ -12,6 +13,7 @@ import * as Schema from "effect/Schema";
 
 import { LedgerRange } from "../src/core/ledger.ts";
 import { ledgerSiteHtml } from "../src/core/ledgerSite.ts";
+import { privacyGate } from "./privacyGate.ts";
 
 class SiteBuildFailed extends Schema.TaggedErrorClass<SiteBuildFailed>()("SiteBuildFailed", {
   message: Schema.String,
@@ -29,6 +31,10 @@ const build = Effect.gen(function* () {
   const site = path.join(root, "site");
   const out = path.join(site, "dist");
 
+  const data = path.join(site, "demo", "ledger.json");
+  const range = yield* decodeRange(yield* fs.readFileString(data));
+  yield* privacyGate(data, range);
+
   yield* fs.remove(out, { recursive: true, force: true });
   yield* fs.makeDirectory(path.join(out, "demo"), { recursive: true });
   yield* fs.copyFile(path.join(site, "style.css"), path.join(out, "style.css"));
@@ -42,9 +48,6 @@ const build = Effect.gen(function* () {
   yield* fs.writeFileString(path.join(out, "index.html"), index);
 
   const template = yield* fs.readFileString(path.join(root, "dist", "site", "index.html"));
-  const range = yield* decodeRange(
-    yield* fs.readFileString(path.join(site, "demo", "ledger.json")),
-  );
   const demo = ledgerSiteHtml(template, range);
   if (!demo)
     return yield* new SiteBuildFailed({ message: "dist/site/index.html has no data marker" });
