@@ -21,7 +21,8 @@
     "typecheck": "tsgo --noEmit -p tsconfig.json && tsgo --noEmit -p src/web/tsconfig.json",
     "export": "node src/server/bin.ts export",
     "ledger": "node src/server/bin.ts ledger",
-    "prepack": "vp run build"
+    "prepack": "vp run build",
+    "site:build": "vp build -c vite.site.config.ts && node scripts/site.ts"
   },
   "devDependencies": {
     "@effect/platform-node": "4.0.0-beta.103",
