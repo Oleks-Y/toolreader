@@ -1,6 +1,6 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ACTION_KINDS, type Action, type ActionKind } from "../core/domain.ts";
-import { fmtDuration, fmtTime } from "./util.ts";
+import { fmtDuration, fmtTime, UNKNOWN_TEXT } from "./util.ts";
 
 const MAX_GAP_MS = 60_000; // idle gaps longer than this are drawn as 60s
 const LANE_H = 16;
@@ -161,7 +161,9 @@ export function Swimlane({ actions, turnStarts, hiddenKinds, range, onRange, onP
               className={`dot k-${a.kind} ${a.status}${hiddenKinds.has(a.kind) ? " off" : ""}`}
               onClick={() => onPick(a.id)}
             >
-              <title>{`${fmtTime(a.at)}  ${a.status === "failed" ? "✗ " : ""}${a.title}`}</title>
+              <title>
+                {`${fmtTime(a.at)}  ${a.status === "failed" ? "✗ " : ""}${a.title}${a.status === "unknown" ? ` (${UNKNOWN_TEXT})` : ""}`}
+              </title>
             </circle>
           );
         })}

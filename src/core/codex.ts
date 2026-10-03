@@ -2,11 +2,11 @@
 // loose schemas on purpose: Codex adds item types and fields often, and one unknown field must not hide a thread.
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
-import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 import type { ActivityRow, MessageRow } from "./normalize.ts";
 import { CodexItem } from "./payload.ts";
+import { emptyScan, rolloutItem, type RolloutScan } from "./rollout.ts";
 
 const opt = <S extends Schema.Top>(schema: S) => Schema.optional(Schema.NullOr(schema));
 
@@ -35,6 +35,8 @@ export const CodexThreadListPage = Schema.Struct({
 export const CodexTurn = Schema.Struct({
   id: Schema.String,
   startedAt: opt(Schema.Number),
+  /** completed | interrupted | failed | inProgress */
+  status: opt(Schema.String),
   items: Schema.Array(Schema.Unknown),
 });
 
@@ -97,45 +99,72 @@ export function toCanonicalItemType(raw: string): string {
 /** Item types that are bookkeeping, not actions. */
 const SKIPPED = new Set(["plan", "review_entered", "review_exited", "unknown"]);
 
-/**
- * Item id → ISO timestamp of the first rollout line that mentions it. thread/read items carry no
- * times, but every rollout line does; ids match across Codex versions (checked from 0.42 to 0.159).
- */
-export function scanItemTimes(
-  lines: Iterable<string>,
-  into = new Map<string, string>(),
-): Map<string, string> {
-  for (const line of lines) {
-    if (!line.startsWith('{"timestamp":"')) continue;
-    const at = line.slice(14, line.indexOf('"', 14));
-    for (const m of line.matchAll(/"(?:id|call_id|item_id)":"([^"]+)"/g))
-      if (!into.has(m[1]!)) into.set(m[1]!, at);
-  }
-  return into;
-}
-
 export const isoFromSeconds = (s: number) => DateTime.formatIso(DateTime.makeUnsafe(s * 1000));
 
-/** Converts a thread/read result into the T3-shaped rows `normalize` already understands. */
+/** What a web action did: its type, and its query or its URL (and pattern). */
+function webKey(item: CodexItem): string {
+  const a = item.action;
+  const type = (a?.type ?? "search").replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
+  const query = item.query || a?.query || a?.queries?.[0] || "";
+  return type === "search" ? `search ${query}` : `${type} ${a?.url ?? ""} ${a?.pattern ?? ""}`;
+}
+
+/**
+ * Converts a thread/read result into the T3-shaped rows `normalize` already understands, adding the
+ * tool calls only the rollout file kept (see rollout.ts).
+ */
 export function codexThreadToRows(
   read: CodexThreadRead,
-  times: ReadonlyMap<string, string>,
+  scan: RolloutScan = emptyScan(),
 ): { activities: ActivityRow[]; messages: MessageRow[] } {
   const activities: ActivityRow[] = [];
   const messages: MessageRow[] = [];
+  const toolRow = (id: string, at: string, seq: number, type: string, raw: unknown) => {
+    const item = Option.getOrElse(decodeItem(raw), (): CodexItem => ({}));
+    activities.push({
+      id,
+      at,
+      seq,
+      kind: "tool.completed",
+      tone: "tool",
+      summary: type,
+      payload: {
+        itemType: toCanonicalItemType(type),
+        toolCallId: id,
+        status: item.status ?? "completed",
+        title: type,
+        data: { item },
+      },
+    });
+    return item;
+  };
+
+  // Thread/read items that became actions, and the web actions among them that no rollout call id
+  // names: each can stand for one rollout web_search_call (see below).
+  const shown = new Set<string>();
+  const webItems: Array<{ key: string; line: number | undefined; used: boolean }> = [];
+  const turnIds = new Set<string>();
+  const finishedTurns = new Set<string>();
   let lastAt = isoFromSeconds(read.thread.createdAt);
-  // Item order from Codex; it breaks ties when items share (or inherit) a timestamp.
-  let seq = 0;
+  // Rollout line order breaks timestamp ties, for thread/read items and rollout calls alike. Items
+  // with no line of their own sort just after the previous one, in thread/read order.
+  let lastLine = -1;
+  let unplaced = 0;
   for (const turn of read.thread.turns ?? []) {
+    turnIds.add(turn.id);
+    if (turn.status && turn.status !== "inProgress") finishedTurns.add(turn.id);
     if (turn.startedAt) lastAt = isoFromSeconds(turn.startedAt);
     for (const raw of turn.items) {
       const envelope = decodeEnvelope(raw);
       if (Option.isNone(envelope)) continue;
-      const { id, type, status } = envelope.value;
-      // Items missing from the rollout scan inherit the previous item's time, keeping order stable.
-      const at = times.get(id) ?? lastAt;
+      const { id, type } = envelope.value;
+      // Items missing from the rollout scan inherit the previous item's place, keeping order stable.
+      const at = scan.times.get(id) ?? lastAt;
+      const line = scan.lines.get(id);
+      unplaced = line === undefined ? unplaced + 1 : 0;
+      lastLine = line ?? lastLine;
+      const seq = lastLine + unplaced / 1e6;
       lastAt = at;
-      seq++;
       const kind = toCanonicalItemType(type);
       if (kind === "user_message") {
         const text = Option.match(decodeUserMessage(raw), {
@@ -171,24 +200,55 @@ export function codexThreadToRows(
           payload: {},
         });
       } else if (!SKIPPED.has(kind)) {
-        const item = Option.getOrElse(decodeItem(raw), () => ({}));
-        activities.push({
-          id,
-          at,
-          seq,
-          kind: "tool.completed",
-          tone: "tool",
-          summary: type,
-          payload: {
-            itemType: kind,
-            toolCallId: id,
-            status: Predicate.isString(status) ? status : "completed",
-            title: type,
-            data: { item },
-          },
-        });
+        const item = toolRow(id, at, seq, type, raw);
+        shown.add(id);
+        if (item.type === "webSearch" && !scan.byId.has(id))
+          webItems.push({ key: webKey(item), line: scan.lines.get(id), used: false });
       }
     }
+  }
+
+  // Items with no call of their own: what code-mode scripts ran (`exec-…` ids).
+  const nestedLines = [...shown].flatMap((id) =>
+    scan.byId.has(id) ? [] : Option.toArray(Option.fromNullishOr(scan.lines.get(id))),
+  );
+  // Rolled-back turns stay in the rollout; only trust turn ids when both sides use the same ones.
+  const sameTurnIds = [...turnIds].some((t) => scan.turns.has(t));
+  // Web calls in rollout order: an item belongs to the call it sits next to.
+  const webCalls = scan.calls.filter((c) => c.name === "web_search").map((c) => c.line);
+  for (const call of scan.calls) {
+    if (shown.has(call.id)) continue;
+    if (sameTurnIds && call.turnId && !turnIds.has(call.turnId)) continue;
+    if (call.name === "exec" && nestedLines.some((l) => l > call.line && l <= call.lastLine))
+      continue;
+    // A call with no output in a finished turn was cut off (e.g. Codex was killed mid-command).
+    const ended = call.turnId
+      ? finishedTurns.has(call.turnId)
+      : finishedTurns.size === turnIds.size;
+    const raw = rolloutItem(call, call.ended || ended);
+    if (!raw) continue;
+    const type = String(raw["type"]);
+    if (type === "webSearch") {
+      // web_search_call lines carry no id. Its item is the same action completed next to it (just
+      // before or after, by Codex version), between the neighbouring web calls. Each item stands
+      // for one call, so repeated searches for one query all stay.
+      const key = webKey(Option.getOrElse(decodeItem(raw), (): CodexItem => ({})));
+      const j = webCalls.indexOf(call.line);
+      const lo = webCalls[j - 1] ?? -Infinity;
+      const hi = webCalls[j + 1] ?? Infinity;
+      const distance = (w: (typeof webItems)[number]) =>
+        w.line === undefined ? Infinity : Math.abs(w.line - call.line);
+      const match = webItems
+        .filter(
+          (w) => !w.used && w.key === key && (w.line === undefined || (w.line > lo && w.line < hi)),
+        )
+        .sort((a, b) => distance(a) - distance(b))[0];
+      if (match) {
+        match.used = true;
+        continue;
+      }
+    }
+    toolRow(call.id, call.at, call.line, type, raw);
   }
   return { activities, messages };
 }

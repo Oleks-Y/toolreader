@@ -20,3 +20,7 @@ export function fmtDuration(ms: number): string {
 
 export const since = (iso: string) =>
   fmtDuration(Date.now() - Date.parse(iso)).split(" ")[0] + " ago";
+
+/** Code-mode scripts that print only a command's output: it ran, its exit code is unknown. */
+export const UNKNOWN_TEXT = "exit code not recorded";
+export const UNKNOWN_MARK = "exit ?";

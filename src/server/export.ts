@@ -1,19 +1,17 @@
 // Proof-of-work export for agents and scripts:
-//   vp run export -- <threadId> [--turns 3-5] [--from ISO --to ISO] [--no-outputs] [--repo PATH] [--stdout]
+//   toolreader export <threadId> [--turns 3-5] [--from ISO --to ISO] [--no-outputs] [--repo PATH] [--stdout]
 // Writes <repo>/.agent-work/<branch>/<name>.json (repo defaults to the thread's working directory).
-import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { Argument, Command, Flag } from "effect/unstable/cli";
 
-import packageJson from "../../package.json" with { type: "json" };
 import { InvalidProofScope } from "../core/api.ts";
 import { AppLive } from "./app.ts";
 import { parseTurns, Proofs } from "./Proofs.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 
-const exportCommand = Command.make(
+export const exportCommand = Command.make(
   "export",
   {
     threadId: Argument.string("thread-id").pipe(
@@ -69,15 +67,9 @@ const exportCommand = Command.make(
     yield* Console.log(
       `${file}\n${artifact.view.entries.length} entries · outputs ${artifact.outputs} · ${artifact.redactions} redactions`,
     );
-  }),
+  }, Effect.provide(AppLive)),
 ).pipe(
   Command.withDescription(
     "Export a thread (or some of its turns) as a proof-of-work JSON artifact",
   ),
-);
-
-exportCommand.pipe(
-  Command.run({ version: packageJson.version }),
-  Effect.provide(AppLive),
-  NodeRuntime.runMain,
 );

@@ -38,9 +38,44 @@ describe("core", () => {
     assert.deepStrictEqual(titles("head -n 40 a.ts 2>/dev/null"), ["read:read a.ts"]);
   });
 
+  it("unquotes shell wrappers the way the shell does", () => {
+    // Codex single-quotes the script and escapes inner quotes as '"'"'.
+    assert.deepStrictEqual(titles(`/bin/zsh -lc 'rg -n '"'"'foo bar'"'"' src'`), [
+      'search:search "foo bar" in src',
+    ]);
+    assert.deepStrictEqual(titles(`/bin/zsh -lc 'git commit -m '"'"'fix: x'"'"' && git push'`), [
+      "git:git commit -m fix: x",
+      "git:git push",
+    ]);
+    // Inside double quotes a backslash only escapes $ ` " \ and newline.
+    assert.deepStrictEqual(titles(`rg "foo\\.bar" src`), ['search:search "foo\\.bar" in src']);
+    assert.deepStrictEqual(titles(`bash -lc "rg \\"a\\.b\\" src"`), [
+      'search:search "a\\.b" in src',
+    ]);
+  });
+
+  it("keeps command substitutions inside their word", () => {
+    assert.deepStrictEqual(
+      titles(`TOKEN=$(head -n 1 ~/.token) && curl -H "x: $TOKEN" https://a.dev`),
+      ["web:curl https://a.dev"],
+    );
+    assert.deepStrictEqual(titles("echo `date +%s` > stamp.txt"), ["edit:write stamp.txt"]);
+    // An escaped quote inside the substitution does not close it.
+    assert.deepStrictEqual(titles(`TOKEN=$(printf "a\\"b") && git push`), ["git:git push"]);
+    assert.deepStrictEqual(titles(`echo "$(printf ")")" > f.txt && git push`), [
+      "edit:write f.txt",
+      "git:git push",
+    ]);
+    assert.deepStrictEqual(titles("command -v psql || brew install libpq"), [
+      "read:which psql",
+      "setup:brew install libpq",
+    ]);
+  });
+
   it("classifies commands by intent, whatever the toolchain", () => {
     const cases: Array<[string, string]> = [
       ["go test ./... -run X", "test"],
+      ["bun -e 'const p = 1; console.log(p)'", "run"],
       ["vp test run src", "test"],
       ["cargo test --locked", "test"],
       ["bun test --timeout 60000 a.test.ts", "test"],
@@ -248,7 +283,7 @@ describe("core", () => {
       a("4", "edit"),
       a("5", "run", "failed"),
       a("6", "edit"),
-      a("7", "run"),
+      a("7", "run", "unknown"),
       a("8", "git"),
     ];
     const [turn] = buildTree(entries, DEFAULT_SWITCHES);

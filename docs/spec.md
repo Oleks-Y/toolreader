@@ -7,6 +7,8 @@ Read-only viewer for what coding agents _did_ in T3 Code threads. Actions come f
 - Sources:
   - T3 Code's database `~/.t3/userdata/state.sqlite` (override with `T3_DB`), opened read-only. Covers every provider T3 runs (Codex, Claude, Cursor).
   - Codex sessions that ran outside T3 (CLI, TUI, Desktop, `codex exec`), read through `codex app-server`: `thread/list` for discovery, `thread/read` with `includeTurns` for content. Items carry no timestamps, so each item's time comes from the first rollout line that mentions its id. Sessions T3 runs itself are hidden (matched through T3's resume cursors); subagent threads are not listed. If `codex` can't start, this source is simply empty.
+  - The same Codex sessions straight from rollout files (`$CODEX_HOME/sessions/**/rollout-*.jsonl`), with no app-server: the `thread/read` result is rebuilt from the file's `item_completed` events, so entries are identical. Used by the ledger (e.g. in CI); the viewer still lists Codex sessions through the app-server.
+  - Without a T3 database, the T3 source is empty instead of an error.
   - Claude Code sessions outside T3 are not read yet.
 - Separate repo. Code borrowed from `~/proj/t3code` is copied with a source comment, never linked.
 - Built with Effect: an `HttpApi` contract in `src/core/api.ts` shared by the server and a typed browser client. All T3 schema knowledge lives in `src/server/ThreadStore.ts`.
@@ -50,6 +52,25 @@ Read-only viewer for what coding agents _did_ in T3 Code threads. Actions come f
 - The CLI writes it to `<repo>/.agent-work/<branch>/` (repo defaults to the thread's working directory); the viewer's export links download the same file. `#/file` opens one offline, read-only.
 - Outputs are included by default (they double the size: a typical turn is ~19 KB, ~6 KB in git) and can be dropped with `--no-outputs`. Every free-text field is redacted, and the home directory becomes `~`. Redaction errs toward over-redacting.
 - It is a faithful record, not tamper-proof evidence.
+
+## Commit ledger
+
+- Goal: see what the agent did for each commit, e.g. for a PR's `main..HEAD`.
+- Entries live on a separate `agent-ledger` branch with its own history, never in the code history: `commits/<sha>.json` (`LedgerEntry`, `src/core/ledger.ts`) and `patch-ids.json` (patch-id → sha). Sync runs by hand (`toolreader ledger sync`) or from a `pre-push` hook (`ledger hook install`); `--push` shares the branch.
+- Sources (`--source`): `t3`, `codex-app-server`, `codex-rollouts`, or `auto` (T3 if its database exists, plus rollout files from `--codex-home`, default `$CODEX_HOME` or `~/.codex`). A missing source is an error only when asked for by name.
+- Matching a commit to a session in the repo's worktrees: a SHA printed by `git commit` (`[branch abc1234] subject`) wins; otherwise the latest successful `git commit` action that started up to 10 minutes before the commit time. A commit no `git commit` action made (the agent edits, a later step commits: CI, where Codex's sandbox blocks `.git`) gets no entry by default. `--session <id>` (repeatable) ties it to the named session; `--match-sessions` ties it to the one session in this worktree (not another worktree of the repo) that edited files and ended between the previous commit and this one. Either way it is matched as "session", with that session's history since the previous commit. When several sessions qualify, none is attached and the commit is reported as ambiguous. SHA and time matches win over both. Commits nobody matches are listed as "no agent history".
+- An entry holds the history since that thread's previous commit action (or its start), up to the commit action. Leading discussion-only turns are dropped; a segment that starts mid-turn keeps the turn's prompt.
+- After a rebase or amend that keeps the diff, `git patch-id --stable` finds the entry again (shown as "found by patch-id").
+- Outputs and redaction work as for proof-of-work artifacts; the thread title (the first prompt line) and labels are redacted too, like every other free-text field. Each output is then clipped to `--max-output` bytes (default 8192, head and tail, `0` keeps it): the action records the bytes cut (`clipped`) and the viewer says so. The viewer's outputs are already 1500 + 1500 characters at most, so the default rarely cuts.
+- `--push` fetches `agent-ledger` from origin, writes the new commit on top of the remote tip (merging in local-only entries), pushes, and moves the local branch only once the push lands. A push that loses a race refetches and rebuilds, up to 5 attempts. Never touches HEAD or the working tree.
+- Sync refuses to run while a worktree has `agent-ledger` checked out: moving the ref would move that worktree's HEAD and leave its files behind.
+- The `pre-push` hook reads every pushed ref first, then syncs each branch pushed to origin (`remote..local`, or `local --not --remotes=origin` for a new branch) with `--push`. When the push carries `agent-ledger` itself, it syncs locally only (a nested push would make git reject that ref, and an `--atomic` push whole). Ledger trouble only warns; it never stops the push. `hook install` is idempotent and replaces or removes only a hook byte-identical to the one it writes; anything else (another hook, or ours edited) is left alone, with the lines to add printed instead.
+- `ledger site --range A..B --out DIR` writes `DIR/index.html`: the ledger page (`LedgerPage` with `inline`) on that range, read from the local `agent-ledger` branch. What it shows goes through `publicRange`: every free-text field redacted again (commit subjects come straight from git), the repo named by the remote's owner/name or its directory, and its path written as `.` wherever session text mentions it; `ledger show` and `sync` print the same. Markdown images in session text render as links, here and in the live viewer, and the page's CSP (`default-src 'none'`, the script by hash, `img-src data:`) blocks any load that slips through. One file with the viewer inlined as a classic script and the range as JSON (`<` escaped), because Chrome blocks module scripts and chunk loads from `file://`. Read-only (no repo form, labeling or export); the theme picker works. It is about 11 MB, nearly all Shiki grammars; trimming them is possible but risks `FileDiff` asking for a language that is gone.
+
+## Packaging
+
+- One `toolreader` bin (`src/server/bin.ts`): `serve`, `ledger sync|show|site|hook`, `export`. `vp pack` bundles it with every dependency to `dist/bin.mjs`, as t3code does, because Node does not strip types under `node_modules`; the package ships only `dist/` and installs no dependencies. It stays private: install it from `npm pack`'s tarball.
+- The composite action (`action/`) installs that tarball, or packs a toolreader checkout, and runs `ledger sync` or `ledger site`; `docs/ci/` has the example workflows.
 
 ## Codex labels (on demand)
 

@@ -36,4 +36,4 @@ jobs:
         run: vp test run
 
       - name: Build
-        run: vp build
+        run: vp run build

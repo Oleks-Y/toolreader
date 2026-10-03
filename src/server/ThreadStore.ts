@@ -94,6 +94,7 @@ function toSummary(r: ThreadRow, actionCount: number, lastActivity: string | nul
     archived: r.archivedAt !== null,
     updatedAt: lastActivity && lastActivity > r.updatedAt ? lastActivity : r.updatedAt,
     actionCount,
+    worktree: r.worktree,
   };
 }
 
@@ -108,6 +109,18 @@ export class ThreadStore extends Context.Service<
     readonly projects: Effect.Effect<ReadonlyArray<T3Project>>;
   }
 >()("toolreader/server/ThreadStore") {
+  /** No T3 database (e.g. CI): no threads, and no Codex sessions owned by T3. */
+  static readonly empty = Layer.succeed(
+    ThreadStore,
+    ThreadStore.of({
+      list: Effect.succeed([]),
+      get: (id) => Effect.fail(new ThreadNotFound({ threadId: id })),
+      head: (id) => Effect.fail(new ThreadNotFound({ threadId: id })),
+      codexThreadIds: Effect.succeed(new Set()),
+      projects: Effect.succeed([]),
+    }),
+  );
+
   static readonly layer = Layer.effect(
     ThreadStore,
     Effect.gen(function* () {
@@ -194,7 +207,6 @@ export class ThreadStore extends Context.Service<
         return {
           thread: {
             ...toSummary(row, actionCount, activities.at(-1)?.at ?? null),
-            worktree: row.worktree,
             head: marker,
           },
           entries,

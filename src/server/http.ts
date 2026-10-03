@@ -12,6 +12,7 @@ import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 import { InvalidProofScope, ToolreaderApi } from "../core/api.ts";
 import { CODEX_ID_PREFIX, CodexSessions } from "./CodexSessions.ts";
 import { Labeler } from "./Labeler.ts";
+import { Ledger } from "./Ledger.ts";
 import { parseTurns, Proofs } from "./Proofs.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 import { ThreadStore } from "./ThreadStore.ts";
@@ -80,7 +81,7 @@ const LabelsHandlers = HttpApiBuilder.group(
   }),
 );
 
-/** Serves the built web app from dist/, falling back to index.html. */
+/** Serves the built web app from dist/client, falling back to index.html. */
 const StaticRoute = HttpRouter.add(
   "GET",
   "*",
@@ -90,7 +91,7 @@ const StaticRoute = HttpRouter.add(
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const pathname = new URL(request.url, "http://localhost").pathname;
-    const root = path.resolve(distDir);
+    const root = path.resolve(distDir, "client");
     const file = path.resolve(root, `.${decodeURIComponent(pathname)}`);
     if (file !== root && !file.startsWith(`${root}${path.sep}`))
       return HttpServerResponse.text("Invalid path", { status: 400 });
@@ -103,14 +104,28 @@ const StaticRoute = HttpRouter.add(
     if (yield* fs.exists(index).pipe(Effect.orElseSucceed(() => false)))
       return yield* HttpServerResponse.file(index);
     return HttpServerResponse.text(
-      "Not built. Run `pnpm start`, or `pnpm dev` and open the Vite URL.",
+      "Not built. Run `vp run start`, or `vp run dev` and open the Vite URL.",
       { status: 503 },
     );
   }).pipe(Effect.orDie),
 );
 
+const LedgerHandlers = HttpApiBuilder.group(
+  ToolreaderApi,
+  "ledger",
+  Effect.fn(function* (handlers) {
+    const ledger = yield* Ledger;
+    const store = yield* ThreadStore;
+    return handlers
+      .handle("repos", () =>
+        store.projects.pipe(Effect.map((ps) => ps.map((p) => ({ path: p.root, title: p.title })))),
+      )
+      .handle("range", ({ query }) => ledger.range(query.repo, query.range ?? null));
+  }),
+);
+
 const ApiRoutes = HttpApiBuilder.layer(ToolreaderApi).pipe(
-  Layer.provide([ThreadsHandlers, LabelsHandlers]),
+  Layer.provide([ThreadsHandlers, LabelsHandlers, LedgerHandlers]),
 );
 
 export const HttpServerLive = Layer.unwrap(

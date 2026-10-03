@@ -38,7 +38,8 @@ export const Action = Schema.Struct({
   id: Schema.String,
   at: Schema.String,
   kind: ActionKind,
-  status: Schema.Literals(["ok", "failed", "running"]),
+  /** `unknown`: it ran, but its exit code was not recorded (code-mode scripts that print only output). */
+  status: Schema.Literals(["ok", "failed", "running", "unknown"]),
   /** Humanized one-liner, e.g. `read src/x.ts:1-40 · search "foo" in src`. */
   title: Schema.String,
   /** Agent-provided intent, e.g. Claude Bash `description`. */
@@ -46,6 +47,8 @@ export const Action = Schema.Struct({
   command: Schema.optional(Schema.String),
   exitCode: Schema.optional(Schema.Number),
   output: Schema.optional(Schema.String),
+  /** Bytes cut from the middle of `output` (ledger `--max-output`). */
+  clipped: Schema.optional(Schema.Number),
   files: Schema.optional(Schema.Array(FileChange)),
   /** Each command of a shell chain with its own kind, for per-command coloring. */
   parts: Schema.optional(Schema.Array(Schema.Struct({ kind: ActionKind, title: Schema.String }))),
@@ -98,6 +101,8 @@ export const ThreadSummary = Schema.Struct({
   updatedAt: Schema.String,
   /** Null when unknown without reading the whole session (Codex). */
   actionCount: Schema.NullOr(Schema.Number),
+  /** Directory the agent worked in (T3 worktree or project root, Codex cwd). */
+  worktree: Schema.NullOr(Schema.String),
 });
 export type ThreadSummary = typeof ThreadSummary.Type;
 
@@ -110,7 +115,6 @@ export type ThreadHead = typeof ThreadHead.Type;
 export const ThreadView = Schema.Struct({
   thread: Schema.Struct({
     ...ThreadSummary.fields,
-    worktree: Schema.NullOr(Schema.String),
     head: Schema.String,
   }),
   entries: Schema.Array(Entry),

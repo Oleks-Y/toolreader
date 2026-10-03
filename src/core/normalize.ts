@@ -96,8 +96,38 @@ export function textDiff(
   return { diff, added: added.length, removed: removed.length };
 }
 
+/**
+ * apply_patch hunks start with a bare `@@` (or `@@ context`) and carry no line numbers. Gives them
+ * consecutive made-up ones so the diff parses; the caller hides line numbers.
+ */
+function numberHunks(diff: string): string {
+  let oldLine = 1;
+  let newLine = 1;
+  return diff
+    .split(/\n(?=@@)/)
+    .map((hunk) => {
+      const [header = "", ...lines] = hunk.split("\n");
+      const body = lines.filter((l) => l !== "*** End of File");
+      // Models leave blank lines in patches: trailing ones are noise, inner ones are blank context.
+      while (body.at(-1) === "") body.pop();
+      for (let i = 0; i < body.length; i++) if (body[i] === "") body[i] = " ";
+      const oldCount = body.filter((l) => !l.startsWith("+")).length;
+      const newCount = body.filter((l) => !l.startsWith("-")).length;
+      const context = header.replace(/^@@\s?/, "");
+      const out = [
+        `@@ -${oldLine},${oldCount} +${newLine},${newCount} @@${context ? ` ${context}` : ""}`,
+        ...body,
+      ];
+      oldLine += oldCount;
+      newLine += newCount;
+      return out.join("\n");
+    })
+    .join("\n");
+}
+
 /** Codex sends whole-file content for added/deleted files; turn it into one hunk. */
 function asHunk(content: string, side: "+" | "-"): string {
+  if (!content) return "";
   const lines = content.replace(/\n$/, "").split("\n");
   const header = side === "+" ? `@@ -0,0 +1,${lines.length} @@` : `@@ -1,${lines.length} +0,0 @@`;
   return [header, ...lines.map((l) => `${side}${l}`)].join("\n");
@@ -158,14 +188,16 @@ function fileChanges(p: ToolPayload): FileChange[] {
       const raw = c.diff ?? "";
       const isNew = type === "add";
       const isDeleted = type === "delete";
-      const diff = /^@@ /m.test(raw) ? raw : asHunk(raw, isDeleted ? "-" : "+");
+      const numbered = /^@@ -\d/m.test(raw);
+      const bare = !numbered && type === "update" && /^@@/m.test(raw);
+      const diff = numbered ? raw : bare ? numberHunks(raw) : asHunk(raw, isDeleted ? "-" : "+");
       return {
         path: c.path ?? "?",
         ...unifiedDiffStats(diff),
         isNew,
         isDeleted,
         ...clipDiff(diff),
-        exactLines: true,
+        exactLines: !bare,
       };
     });
   }
@@ -284,7 +316,7 @@ function editAction(p: ToolPayload): Draft {
       files.length === 1 ? files[0]!.path : `${files.length} files: ${short(names.join(", "), 90)}`,
     files,
     targets: files.map((f) => f.path),
-    output: headTail(resultText(p.data?.result), 400, 200),
+    output: headTail(resultText(p.data?.result) ?? resultText(p.data?.item?.result), 400, 200),
     failed: isClaudeError(p.data?.result),
   };
 }
@@ -295,9 +327,19 @@ function otherToolAction(p: ToolPayload): Draft {
   const input = d?.input ?? {};
   const toolName = str(d?.toolName);
   const raw = Option.getOrUndefined(decodeCursorRawOutput(d?.rawOutput));
-  const out = headTail(resultText(d?.result) ?? json(item.result) ?? json(d?.rawOutput), 800, 400);
+  // Codex MCP results are `{ content: [{ text }] }` like Claude's; recovered rollout calls carry text.
+  const out = headTail(
+    resultText(d?.result) ??
+      resultText(item.result) ??
+      str(item.result) ??
+      json(item.result) ??
+      json(d?.rawOutput),
+    800,
+    400,
+  );
   const failed = isClaudeError(d?.result) || Boolean(item.error) || Boolean(raw?.error);
-  const args = (o: unknown) => short((json(o) ?? "").replace(/^\{\}$/, ""), 100);
+  const args = (o: unknown) =>
+    short((str(o) ?? json(o) ?? "").replace(/^\{\}$/, "").replace(/\s+/g, " "), 100);
   const s = (v: unknown) => str(v) ?? "";
 
   // Claude built-in tools
@@ -390,9 +432,25 @@ function otherToolAction(p: ToolPayload): Draft {
     return {
       kind: "web",
       title:
-        a?.type === "openPage"
-          ? `fetch ${s(a.url)}`
+        a?.type === "openPage" || a?.type === "findInPage"
+          ? `fetch ${s(a.url) || "(URL not recorded)"}`
           : `web search "${short(s(item.query ?? a?.query), 80)}"`,
+      failed,
+    };
+  }
+  if (item.type === "dynamicToolCall")
+    return {
+      kind: "tool",
+      title: `${s(item.tool)} ${args(item.arguments)}`.trim(),
+      output: out,
+      failed,
+    };
+  if (item.type === "imageGeneration") {
+    const prompt = str(item.revisedPrompt);
+    return {
+      kind: "tool",
+      title: `generate image${prompt ? `: ${short(prompt.split("\n")[0]!, 90)}` : ""}`,
+      hint: prompt,
       failed,
     };
   }
@@ -437,12 +495,15 @@ function toAction(id: string, at: string, p: ToolPayload, summary: string): Acti
   const { failed, ...rest } = draft;
   const title =
     rest.title || str(p.title) || str(summary) || (p.itemType ?? "tool").replace(/_/g, " ");
+  // Codex marks `rg` exit 1 as failed; a search that found nothing is not a failure.
   const status =
-    p.status === "failed" || p.status === "declined" || failed
+    ((p.status === "failed" || p.status === "declined") && !rest.noMatch) || failed
       ? "failed"
       : p.status === "inProgress"
         ? "running"
-        : "ok";
+        : p.status === "unknown"
+          ? "unknown"
+          : "ok";
   return { type: "action", id, at, status, ...rest, title };
 }
 

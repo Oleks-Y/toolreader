@@ -1,6 +1,7 @@
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ActionView } from "./ActionView.tsx";
+import { LedgerPage, parseLedgerHash } from "./LedgerPage.tsx";
 import { ProofFile } from "./ProofFile.tsx";
 import { Sessions } from "./Sessions.tsx";
 import { applySavedTheme } from "./theme.tsx";
@@ -17,6 +18,10 @@ function App() {
     return () => removeEventListener("hashchange", onHash);
   }, []);
   if (hash === "#/file") return <ProofFile />;
+  if (hash.startsWith("#/ledger")) {
+    const { repo, range } = parseLedgerHash(hash);
+    return <LedgerPage repo={repo} range={range} />;
+  }
   const thread = /^#\/t\/(.+)$/.exec(hash)?.[1];
   return thread ? <ActionView key={thread} threadId={decodeURIComponent(thread)} /> : <Sessions />;
 }

@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; img-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="referrer" content="no-referrer" />
+    <title>toolreader: what coding agents did, per commit</title>
+    <meta
+      name="description"
+      content="toolreader ties coding-agent sessions to the commits they made and keeps that history in your repo, on an agent-ledger branch."
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <header>
+      <nav aria-label="Sections">
+        <span class="name">toolreader</span>
+        <a href="#how">How it works</a>
+        <a href="#install">Install</a>
+        <a href="#ci">CI</a>
+        <a href="#next">Next</a>
+        <a href="demo/">Demo</a>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section class="intro">
+        <h1>See what coding agents did, commit by commit, from your own repo.</h1>
+        <p>
+          toolreader reads agent sessions on your machine or CI runner and ties each one to the
+          commits it made. You get the prompts, commands, outputs and file edits behind a commit.
+          The history lives in git, on an <code>agent-ledger</code> branch next to your code. There
+          is no service and no account.
+        </p>
+        <p>
+          <a class="button" href="demo/">Open the demo</a>
+          <span class="dim">
+            Four commits a <code>codex exec</code> run made in a small Node.js CLI. The demo needs
+            JavaScript; the rest of this page doesn't.
+          </span>
+        </p>
+      </section>
+
+      <section aria-labelledby="shots">
+        <h2 id="shots">The viewer</h2>
+        <div class="shots">
+          <figure>
+            <img
+              src="img/ledger.webp"
+              width="1280"
+              height="800"
+              alt="The commit ledger page: five commits of the demo repo, four with the session that made them and their action counts, one with no agent history."
+            />
+            <figcaption>
+              The ledger page for a range: each commit with the session that made it and how it was
+              matched.
+            </figcaption>
+          </figure>
+          <figure>
+            <img
+              src="img/swimlane.webp"
+              width="1280"
+              height="800"
+              alt="The demo session in the full viewer: a swimlane of actions over time, one lane per kind, above a tree of the prompt, the agent's messages and its commands grouped into explore, edit, verify and ship phases."
+            />
+            <figcaption>
+              The whole session in the full viewer (<code>toolreader serve</code>, or a
+              proof-of-work file): a swimlane of actions over time above the turn → phase → action
+              tree. Drag across the lanes to filter by time.
+            </figcaption>
+          </figure>
+          <figure>
+            <img
+              src="img/themes.webp"
+              width="1280"
+              height="800"
+              alt="The same session in the GitHub Light theme, with command words colored by what they do: test, git, write, run."
+            />
+            <figcaption>
+              Commands are colored by what they do (setup, build, run, test, git, read, write…). Six
+              themes, light and dark.
+            </figcaption>
+          </figure>
+          <figure>
+            <img
+              src="img/failed.webp"
+              width="1280"
+              height="800"
+              alt="The Catppuccin Mocha theme. A failed command is marked with a red cross and exit 1, and is opened to show the full command line and its output."
+            />
+            <figcaption>
+              Failed commands are marked and keep their output. Commands whose exit code wasn't
+              recorded get a hollow dot instead of a guess.
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <section aria-labelledby="how">
+        <h2 id="how">How it works</h2>
+        <ol class="steps">
+          <li>
+            An agent works in your repo and commits. toolreader reads Codex sessions (CLI, TUI,
+            Desktop, <code>codex exec</code>) from their rollout files, and T3 Code threads (Codex,
+            Claude, Cursor) from T3's database, read-only.
+          </li>
+          <li>
+            <code>toolreader ledger sync</code> matches each commit to the session that made it: by
+            the SHA <code>git commit</code> printed, by time, or by a session you name. It writes
+            one JSON entry per commit to the <code>agent-ledger</code> branch with git plumbing.
+            Your branch, index and working tree stay as they were.
+          </li>
+          <li>
+            A <code>pre-push</code> hook or a CI step runs the sync and pushes
+            <code>agent-ledger</code> along with your code. Entries are separate files, so parallel
+            CI jobs don't conflict. After a rebase or amend, entries are found again by patch-id.
+          </li>
+          <li>
+            <code>toolreader ledger site</code> builds one HTML file for a range, such as a pull
+            request's base..head. It loads nothing from the network and opens from
+            <code>file://</code>, a CI artifact or any static host.
+            <code>toolreader serve</code> runs the same viewer locally, with live sessions.
+          </li>
+        </ol>
+
+        <h3>What gets stored and published</h3>
+        <ul>
+          <li>
+            Before an entry is written, toolreader redacts API keys, tokens,
+            <code>Authorization</code> headers, private keys, <code>*_PASSWORD=</code> and
+            <code>*_TOKEN=</code> values and credentials in URLs. Outputs are clipped to 8 KB per
+            action by default, or dropped with <code>--no-outputs</code>.
+          </li>
+          <li>
+            Published pages redact again, name the repo by its remote's owner/name and write its
+            local path as <code>.</code> wherever session text mentions it.
+          </li>
+          <li>
+            Pattern redaction doesn't catch customer names, internal URLs or source code. Read a
+            page before you publish it. GitHub Pages sites are public except on GitHub Enterprise
+            Cloud, so for private code keep the page as a CI artifact.
+          </li>
+          <li>The ledger is a record of what the sessions show. It isn't tamper-proof.</li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="install">
+        <h2 id="install">Install</h2>
+        <p>
+          toolreader isn't published to npm. Build the package from a toolreader checkout and
+          install the tarball. It bundles all its dependencies. You need Node.js 24.
+        </p>
+        <pre><code>cd toolreader
+pnpm install
+npm pack                     # writes toolreader-0.1.0.tgz
+
+cd ../your-repo
+npm install --save-dev ../toolreader/toolreader-0.1.0.tgz
+npx toolreader --help</code></pre>
+
+        <h3>Quick start</h3>
+        <pre><code># Sync on every push: the hook records what you push and pushes agent-ledger too.
+npx toolreader ledger hook install
+
+# Or by hand, for a range.
+npx toolreader ledger sync --range main..HEAD
+git push origin agent-ledger
+
+# List commits with their sessions, or build the page.
+npx toolreader ledger show --range main..HEAD
+npx toolreader ledger site --range main..HEAD --out ledger-site
+open ledger-site/index.html
+
+# The local viewer, with every session on this machine.
+npx toolreader serve         # http://127.0.0.1:4777</code></pre>
+        <p class="dim">
+          <code>ledger site</code> reads the local <code>agent-ledger</code> branch. In a fresh
+          clone, fetch it first: <code>git fetch origin agent-ledger:agent-ledger</code>.
+        </p>
+      </section>
+
+      <section aria-labelledby="ci">
+        <h2 id="ci">CI</h2>
+        <p>
+          A composite GitHub Action in the toolreader repo (<code>action/</code>) installs the
+          package and runs <code>ledger sync</code> or <code>ledger site</code>. Two example
+          workflows; copy them to <code>.github/workflows/</code> and point <code>uses:</code> at
+          wherever you keep toolreader.
+        </p>
+
+        <h3>An agent job that records its session</h3>
+        <p>
+          Codex's <code>workspace-write</code> sandbox blocks writes to <code>.git</code>, so the
+          agent edits and a later step commits. With a job-local <code>CODEX_HOME</code>,
+          <code>--match-sessions</code> ties that commit to the one session that edited the
+          workspace. The job needs <code>contents: write</code> to push <code>agent-ledger</code>.
+        </p>
+        <details>
+          <summary><code>agent-ledger.yml</code></summary>
+          <pre><code><!--ci:agent-ledger.yml--></code></pre>
+        </details>
+
+        <h3>A page for every pull request</h3>
+        <p>
+          Builds the page for base..head, uploads it as an artifact and links it from the job
+          summary. Publishing to GitHub Pages under <code>pr/&lt;number&gt;/</code> is opt-in, with
+          the repository variable <code>LEDGER_PAGES=true</code>.
+        </p>
+        <details>
+          <summary><code>pr-ledger.yml</code></summary>
+          <pre><code><!--ci:pr-ledger.yml--></code></pre>
+        </details>
+      </section>
+
+      <section aria-labelledby="next">
+        <h2 id="next">Next: a self-hosted service</h2>
+        <p>
+          The ledger branch works for one repo at a time. The next step is a service a team runs
+          itself: one container image with Postgres and S3-compatible storage. The toolreader CLI on
+          each machine and CI runner would upload agent sessions and verification proofs, such as a
+          test report or a screen recording of the change working. The service would link them to
+          repos, commits and pull requests and show them in the same viewer.
+        </p>
+        <p>
+          Self-hosted, coming next. It is a plan; none of it is built yet. The repo tool stays as it
+          is and keeps working offline.
+        </p>
+      </section>
+    </main>
+
+    <footer>
+      <p class="dim">
+        toolreader. This page sets no cookies, runs no scripts and loads nothing from other sites.
+      </p>
+    </footer>
+  </body>
+</html>

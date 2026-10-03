@@ -4,5 +4,12 @@
     "types": ["node"],
     "lib": ["ESNext", "esnext.disposable"]
   },
-  "include": ["src/core", "src/server", "src/codex-app-server", "oxlint-plugin", "vite.config.ts"]
+  "include": [
+    "src/core",
+    "src/server",
+    "src/codex-app-server",
+    "oxlint-plugin",
+    "scripts",
+    "vite.config.ts"
+  ]
 }

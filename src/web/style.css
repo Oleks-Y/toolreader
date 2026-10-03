@@ -278,6 +278,18 @@ pre {
 .dot.failed {
   fill: var(--fail);
 }
+/* Ran, exit code not recorded: hollow, neither ok nor failed. */
+.dot.unknown {
+  fill: var(--bg);
+  stroke: var(--k);
+  stroke-width: 1.2;
+}
+.exit-unknown {
+  color: var(--dim);
+  border: 1px dashed var(--faint);
+  border-radius: 3px;
+  padding: 0 4px;
+}
 .dot.running {
   stroke: var(--fg);
   stroke-width: 1;
@@ -656,4 +668,38 @@ a.chip {
 }
 .dropzone input {
   display: none;
+}
+
+/* Commit ledger */
+.ledger-form {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0;
+}
+.ledger-form input {
+  flex: 1;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--fg);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font: 13px var(--mono);
+}
+/* Session titles are long first prompt lines: they give way to the commit subject. */
+.ledger-commit .turn-head {
+  grid-template-columns: 14px auto minmax(16em, 1fr) minmax(0, auto);
+}
+.ledger-commit .turn-stats {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ledger-commit .sha {
+  font: 600 12.5px var(--mono);
+  color: var(--git);
+}
+.ledger-commit.empty {
+  opacity: 0.6;
+}
+.ledger-commit.empty .turn-head {
+  cursor: default;
 }

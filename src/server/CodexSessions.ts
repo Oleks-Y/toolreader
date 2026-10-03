@@ -2,6 +2,7 @@
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -21,11 +22,11 @@ import {
   CodexThreadRead,
   codexThreadToRows,
   isoFromSeconds,
-  scanItemTimes,
   type CodexThreadMeta,
 } from "../core/codex.ts";
 import type { Labels, ThreadHead, ThreadSummary, ThreadView } from "../core/domain.ts";
 import { normalize } from "../core/normalize.ts";
+import { emptyScan, scanRollout } from "../core/rollout.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 import { ThreadStore, type T3Project } from "./ThreadStore.ts";
 
@@ -58,16 +59,29 @@ type ThreadMeta = Omit<CodexThreadMeta, "turns"> & { readonly archived: boolean 
 const decodeListPage = Schema.decodeUnknownEffect(CodexThreadListPage);
 const decodeThreadRead = Schema.decodeUnknownEffect(CodexThreadRead);
 
+const missing = (id: string) =>
+  Effect.fail(new ThreadNotFound({ threadId: `${CODEX_ID_PREFIX}${id}` }));
+const disabled = {
+  list: Effect.succeed([]),
+  get: missing,
+  head: missing,
+  ready: Effect.void,
+};
+
 export class CodexSessions extends Context.Service<
   CodexSessions,
   {
     readonly list: Effect.Effect<ReadonlyArray<ThreadSummary>>;
+    /** Completes once the first full listing has landed (or failed), so callers can rely on `list`. */
+    readonly ready: Effect.Effect<void>;
     /** `id` is the bare Codex thread id (without the `codex:` prefix). */
     readonly get: (id: string, labels: Labels) => Effect.Effect<ThreadView, ThreadNotFound>;
     readonly head: (id: string) => Effect.Effect<ThreadHead, ThreadNotFound>;
   }
 >()("toolreader/server/CodexSessions") {
   static readonly layer = CodexSessions.layerWith(DEFAULTS);
+  /** No `codex app-server`: lists nothing (the ledger's other sources don't need it). */
+  static readonly disabled = Layer.sync(CodexSessions, () => disabled);
 
   static layerWith(options: CodexSessionsOptions) {
     return Layer.effect(
@@ -107,9 +121,7 @@ export class CodexSessions extends Context.Service<
 
         if (Option.isNone(started)) {
           yield* Scope.close(startScope, Exit.void);
-          const missing = (id: string) =>
-            Effect.fail(new ThreadNotFound({ threadId: `${CODEX_ID_PREFIX}${id}` }));
-          return CodexSessions.of({ list: Effect.succeed([]), get: missing, head: missing });
+          return disabled;
         }
         const client = started.value;
         // Raw requests + loose schemas: a strict decode of the whole protocol would fail on every new Codex field.
@@ -153,7 +165,9 @@ export class CodexSessions extends Context.Service<
         }).pipe(Effect.catchCause((cause) => Effect.logWarning("Codex thread/list failed", cause)));
 
         // The first (full) load pages through everything and takes a few seconds, so it runs in the background.
+        const firstLoad = yield* Deferred.make<void>();
         yield* refresh.pipe(
+          Effect.andThen(Deferred.succeed(firstLoad, undefined)),
           Effect.andThen(refresh.pipe(Effect.repeat(Schedule.spaced(options.refreshEvery)))),
           Effect.forkScoped,
         );
@@ -183,6 +197,7 @@ export class CodexSessions extends Context.Service<
           archived: t.archived,
           updatedAt: isoFromSeconds(t.updatedAt),
           actionCount: null,
+          worktree: t.cwd ?? null,
         });
 
         const list = Effect.gen(function* () {
@@ -228,18 +243,16 @@ export class CodexSessions extends Context.Service<
           };
         });
 
-        const itemTimes = (file: string | null | undefined) =>
+        /** Item times, plus the tool calls thread/read drops (see core/rollout.ts). */
+        const scanFile = (file: string | null | undefined) =>
           file
             ? fs.stream(file).pipe(
                 Stream.decodeText(),
                 Stream.splitLines,
-                Stream.runFold(
-                  () => new Map<string, string>(),
-                  (times, line) => scanItemTimes([line], times),
-                ),
-                Effect.orElseSucceed(() => new Map<string, string>()),
+                Stream.runFold(emptyScan, (scan, line) => scanRollout([line], scan)),
+                Effect.orElseSucceed(emptyScan),
               )
-            : Effect.succeed(new Map<string, string>());
+            : Effect.succeed(emptyScan());
 
         const get = Effect.fn("CodexSessions.get")(function* (id: string, labels: Labels) {
           // Marker first: if the session writes while we read, the next poll sees a newer marker
@@ -255,15 +268,15 @@ export class CodexSessions extends Context.Service<
           const { turns: _turns, ...thread } = read.thread;
           const meta: ThreadMeta = { ...thread, archived: threads.get(id)?.archived ?? false };
           threads.set(id, meta);
-          const [times, projects, now, marker] = yield* Effect.all([
-            itemTimes(read.thread.path),
+          const [scan, projects, now, marker] = yield* Effect.all([
+            scanFile(read.thread.path),
             store.projects,
             Clock.currentTimeMillis,
             knownPath
               ? Effect.succeed(before.head)
               : Effect.map(fileHead(read.thread.path), (h) => h.head),
           ]);
-          const { activities, messages } = codexThreadToRows(read, times);
+          const { activities, messages } = codexThreadToRows(read, scan);
           const entries = normalize(activities, messages, {
             root: read.thread.cwd ?? null,
             home: config.home,
@@ -272,7 +285,6 @@ export class CodexSessions extends Context.Service<
             thread: {
               ...summarize(meta, projects, now),
               actionCount: entries.filter((e) => e.type === "action").length,
-              worktree: read.thread.cwd ?? null,
               head: marker,
             },
             entries,
@@ -280,7 +292,7 @@ export class CodexSessions extends Context.Service<
           };
         });
 
-        return CodexSessions.of({ list, get, head });
+        return CodexSessions.of({ list, get, head, ready: Deferred.await(firstLoad) });
       }),
     );
   }

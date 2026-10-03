@@ -1,0 +1,74 @@
+# Example: on every pull request, build the agent-history page of base..head, upload it as an
+# artifact and link it from the job summary. Copy to .github/workflows/ and point `uses:` at
+# wherever you keep toolreader.
+#
+# Optional: set the repository variable LEDGER_PAGES=true to also publish the page to GitHub
+# Pages under pr/<number>/ (from the gh-pages branch) and comment the link on the PR. Pages sites
+# are public except on GitHub Enterprise Cloud: keep it off for private code.
+name: Agent ledger
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  site:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0 # the range, and agent-ledger
+
+      - uses: your-org/toolreader/action@main
+        with:
+          command: site
+          range: ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
+          out: ledger-site
+
+      - uses: actions/upload-artifact@v4
+        id: upload
+        with:
+          name: ledger-site-${{ github.event.pull_request.number }}
+          path: ledger-site
+          retention-days: 30
+
+      - name: Link the page
+        env:
+          URL: ${{ steps.upload.outputs.artifact-url }}
+        run: |
+          echo "Page: [ledger-site-${{ github.event.pull_request.number }}]($URL) (download, unzip, open index.html)" >> "$GITHUB_STEP_SUMMARY"
+
+  pages:
+    # Same-repo PRs only: fork PRs get a read-only token.
+    if: vars.LEDGER_PAGES == 'true' && github.event.pull_request.head.repo.full_name == github.repository
+    needs: site
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # push gh-pages
+      pull-requests: write # comment the link
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: ledger-site-${{ github.event.pull_request.number }}
+          path: ledger-site
+
+      - uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ledger-site
+          destination_dir: pr/${{ github.event.pull_request.number }}
+          keep_files: true
+
+      - name: Comment the link
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/pr/${{ github.event.pull_request.number }}/
+        run: |
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --edit-last --create-if-none \
+            --body "Agent history for this PR: $URL"

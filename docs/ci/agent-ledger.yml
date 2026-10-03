@@ -1,0 +1,62 @@
+# Example: a Codex agent works in CI, a later step commits, and the ledger records the session.
+# Copy to .github/workflows/ and point `uses:` at wherever you keep toolreader.
+name: Agent task
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: What the agent should do
+        required: true
+
+permissions:
+  contents: write # push the work branch and agent-ledger
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BRANCH: agent/run-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Run Codex
+        id: codex
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PROMPT: ${{ inputs.prompt }}
+        run: |
+          # Job-local Codex home: --match-sessions then sees only this job's sessions.
+          export CODEX_HOME="$RUNNER_TEMP/codex"
+          echo "CODEX_HOME=$CODEX_HOME" >> "$GITHUB_ENV"
+          echo "base=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          npm install --global @openai/codex
+          printenv OPENAI_API_KEY | codex login --with-api-key
+          codex exec -s workspace-write "$PROMPT"
+
+      # The workspace-write sandbox blocks .git, so the agent can't commit; this step does.
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git add -A
+          git commit -m "agent: ${{ github.run_id }}"
+          git push origin "$BRANCH"
+
+      # No `git commit` action in the session made that commit, so --match-sessions ties it to the
+      # one session in this job's CODEX_HOME that edited files here.
+      - uses: your-org/toolreader/action@main
+        with:
+          command: sync
+          range: ${{ steps.codex.outputs.base }}..HEAD
+          codex-home: ${{ env.CODEX_HOME }}
+          args: --match-sessions
+          push: true

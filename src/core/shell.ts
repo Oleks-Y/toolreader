@@ -60,11 +60,18 @@ export function unwrapShell(value: string): string {
   if (!spec) return value;
   const match = spec.wrapperFlagPattern.exec(split.rest);
   if (!match) return value;
-  const command = trimMatchingOuterQuotes(split.rest.slice(match.index + match[0].length));
+  const command = shellWord(split.rest.slice(match.index + match[0].length));
   return command.length > 0 ? command : value;
 }
 
 // --- End of copied code. ---
+
+/** The script argument of `sh -c`: one shell word (e.g. `'a '"'"'b'"'"''`), unquoted as the shell would. */
+function shellWord(value: string): string {
+  const tokens = tokenize(value.trim());
+  const only = tokens.length === 1 ? tokens[0] : undefined;
+  return only && "word" in only ? only.word : trimMatchingOuterQuotes(value);
+}
 
 /** Drops heredoc bodies so they aren't parsed as commands. */
 function stripHeredocs(command: string): string {
@@ -97,7 +104,13 @@ function tokenize(command: string): Token[] {
   };
   for (let i = 0; i < command.length; i++) {
     const c = command[i]!;
-    if (c === "'") {
+    if ((c === "$" && command[i + 1] === "(") || c === "`") {
+      // A command substitution is part of its word, whatever it contains.
+      const end = substitutionEnd(command, i);
+      word += command.slice(i, end);
+      inWord = true;
+      i = end - 1;
+    } else if (c === "'") {
       const end = command.indexOf("'", i + 1);
       word += command.slice(i + 1, end < 0 ? undefined : end);
       inWord = true;
@@ -105,7 +118,15 @@ function tokenize(command: string): Token[] {
     } else if (c === '"') {
       i++;
       while (i < command.length && command[i] !== '"') {
-        if (command[i] === "\\" && i + 1 < command.length) i++;
+        if ((command[i] === "$" && command[i + 1] === "(") || command[i] === "`") {
+          // A substitution may hold its own quotes: `"$(printf ")")"`.
+          const end = substitutionEnd(command, i);
+          word += command.slice(i, end);
+          i = end;
+          continue;
+        }
+        // POSIX: inside double quotes a backslash only escapes $ ` " \ and newline.
+        if (command[i] === "\\" && /["\\$`\n]/.test(command[i + 1] ?? "")) i++;
         word += command[i];
         i++;
       }
@@ -139,6 +160,43 @@ function tokenize(command: string): Token[] {
   }
   flush();
   return tokens;
+}
+
+/** Index just past the `$(…)` or `` `…` `` starting at `start`, skipping quoted parens. */
+function substitutionEnd(command: string, start: number): number {
+  if (command[start] === "`") {
+    for (let i = start + 1; i < command.length; i++) {
+      if (command[i] === "\\") i++;
+      else if (command[i] === "`") return i + 1;
+    }
+    return command.length;
+  }
+  let depth = 0;
+  for (let i = start + 1; i < command.length; i++) {
+    const c = command[i]!;
+    if (c === "\\") i++;
+    else if (c === "'") {
+      const close = command.indexOf("'", i + 1);
+      if (close < 0) return command.length;
+      i = close;
+    } else if (c === '"') i = doubleQuoteEnd(command, i) - 1;
+    else if (c === "`") i = substitutionEnd(command, i) - 1;
+    else if (c === "(") depth++;
+    else if (c === ")" && --depth === 0) return i + 1;
+  }
+  return command.length;
+}
+
+/** Index just past the double-quoted string opening at `start`: skips escapes and substitutions. */
+function doubleQuoteEnd(command: string, start: number): number {
+  for (let i = start + 1; i < command.length; i++) {
+    const c = command[i]!;
+    if (c === "\\") i++;
+    else if ((c === "$" && command[i + 1] === "(") || c === "`")
+      i = substitutionEnd(command, i) - 1;
+    else if (c === '"') return i + 1;
+  }
+  return command.length;
 }
 
 /** Splits a command into pipelines (by && || ; &), each a list of stages (by |), each a word list. */
@@ -311,6 +369,8 @@ function humanizeStage(words: string[]): Part | null {
   let i = 0;
   while (i < words.length && /^[A-Za-z_][\w]*=/.test(words[i]!)) i++; // env assignments
   const argv = words.slice(i);
+  if (argv[0] === "command" && /^-[vV]$/.test(argv[1] ?? ""))
+    return { kind: "read", title: `which ${argv.slice(2).join(" ")}` };
   if (argv[0] === "env" || argv[0] === "time" || argv[0] === "command" || argv[0] === "exec")
     argv.shift();
   const exe = argv[0];
@@ -554,6 +614,8 @@ export function classifyRun(argv: ReadonlyArray<string>): RunKind {
     return "run";
   }
   if (!RUNNERS.has(exe)) return classifyWord(exe) === "test" ? "test" : "run";
+  // `bun -e <code>`: the code is not a script name (and may contain `=`).
+  if (args.some((x) => /^(-e|--eval|-p|--print)$/.test(x))) return "run";
   const positional: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;

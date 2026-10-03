@@ -1,0 +1,479 @@
+{
+  "repo": "wordfreq",
+  "range": "main",
+  "remoteUrl": null,
+  "commits": [
+    {
+      "commit": {
+        "sha": "5c11830d7f4260b5f331fdb5c43f6a5953ee9306",
+        "subject": "chore: empty repo",
+        "committedAt": "2026-10-01T14:57:41+02:00",
+        "patchId": null
+      },
+      "entry": null,
+      "matchedBy": null
+    },
+    {
+      "commit": {
+        "sha": "75b17e855e598998b16af0f6aad0e82a1ebdd7f2",
+        "subject": "chore: scaffold wordfreq CLI",
+        "committedAt": "2026-10-01T15:23:22+02:00",
+        "patchId": "ff6edad94e0d5ac0d11074f27c2d02bc50b292a3"
+      },
+      "entry": {
+        "formatVersion": 1,
+        "commit": {
+          "sha": "75b17e855e598998b16af0f6aad0e82a1ebdd7f2",
+          "subject": "chore: scaffold wordfreq CLI",
+          "committedAt": "2026-10-01T15:23:22+02:00",
+          "patchId": "ff6edad94e0d5ac0d11074f27c2d02bc50b292a3"
+        },
+        "thread": {
+          "id": "codex:01a0f7a1-d93a-77b1-b192-7c9ad47b7439",
+          "title": "Build a small dependency-free Node.js 24 CLI called wordfreq in this repo: it prints the N most frequent words across the given text files (flags: -n <count>, -",
+          "source": "codex",
+          "provider": "codex",
+          "origin": "codex_exec"
+        },
+        "match": "sha",
+        "outputs": "included",
+        "redactions": 0,
+        "entries": [
+          {
+            "type": "message",
+            "id": "01a0f7a1-e6c2-7be3-bdca-d58b3f2c57b7",
+            "at": "2026-10-01T13:22:57.858Z",
+            "role": "user",
+            "text": "Build a small dependency-free Node.js 24 CLI called wordfreq in this repo: it prints the N most frequent words across the given text files (flags: -n <count>, --ignore-case, --min-length <k>). Work in small steps and commit after each with a conventional commit message, using plain git commit so its output is printed: 1) scaffold package.json, bin/wordfreq.js and a README; 2) implement counting with node:test tests in test/; 3) run the tests, fix whatever fails, and add an edge-case test for punctuation and unicode words; 4) add a --json output flag with a test. Run the tests before each commit. Stay inside this directory. Keep it simple."
+          },
+          {
+            "type": "message",
+            "id": "msg_097adfc8b41762df016abe5eb5353c87d2a6e622bd9c47b414",
+            "at": "2026-10-01T13:23:02.642Z",
+            "role": "assistant",
+            "text": "I’ll build this in four small steps, run the tests before each commit, and use plain `git commit`.\n"
+          },
+          {
+            "type": "action",
+            "id": "exec-df96a5dd-da2c-48b6-a2a7-0136d14f5964",
+            "at": "2026-10-01T13:23:05.180Z",
+            "kind": "search",
+            "status": "failed",
+            "title": "pwd · list . · git status --short",
+            "command": "/bin/zsh -lc 'pwd && rg --files -g AGENTS.md -g package.json -g README.md -g .gitignore && git status --short'",
+            "exitCode": 1,
+            "output": ".\n",
+            "parts": [
+              {
+                "kind": "read",
+                "title": "pwd"
+              },
+              {
+                "kind": "search",
+                "title": "list ."
+              },
+              {
+                "kind": "read",
+                "title": "git status --short"
+              }
+            ],
+            "targets": []
+          },
+          {
+            "type": "action",
+            "id": "exec-7867d570-75c2-4cb5-9927-e082834f8723",
+            "at": "2026-10-01T13:23:21.914Z",
+            "kind": "run",
+            "status": "ok",
+            "title": "git status --short · list . · node --version",
+            "command": "/bin/zsh -lc 'git status --short; ls -la; node --version'",
+            "exitCode": 0,
+            "output": "total 0\ndrwxr-xr-x@   3 dev   staff    96 Oct  1 15:22 .\ndrwxr-xr-x@ 161 dev   staff  5152 Oct  1 14:57 ..\ndrwxr-xr-x@  12 dev   staff   384 Oct  1 15:23 .git\nv24.19.0\n",
+            "parts": [
+              {
+                "kind": "read",
+                "title": "git status --short"
+              },
+              {
+                "kind": "search",
+                "title": "list ."
+              },
+              {
+                "kind": "run",
+                "title": "node --version"
+              }
+            ],
+            "targets": []
+          },
+          {
+            "type": "action",
+            "id": "exec-43b0c0aa-a249-4d80-a49d-bc218664c987",
+            "at": "2026-10-01T13:23:21.917Z",
+            "kind": "edit",
+            "status": "ok",
+            "title": "3 files: README.md, wordfreq.js, package.json",
+            "files": [
+              {
+                "path": "README.md",
+                "added": 15,
+                "removed": 0,
+                "isNew": true,
+                "isDeleted": false,
+                "diff": "@@ -0,0 +1,15 @@\n+# wordfreq\n+\n+A dependency-free Node.js 24 CLI that prints the most frequent words across text files.\n+\n+```sh\n+node bin/wordfreq.js -n 10 --ignore-case --min-length 3 first.txt second.txt\n+```\n+\n+Options:\n+\n+- `-n <count>`: maximum number of words to print. Default: 10.\n+- `--ignore-case`: convert words to lowercase before counting.\n+- `--min-length <k>`: minimum word length. Default: 1.\n+\n+Run tests with `npm test`.",
+                "exactLines": true
+              },
+              {
+                "path": "bin/wordfreq.js",
+                "added": 3,
+                "removed": 0,
+                "isNew": true,
+                "isDeleted": false,
+                "diff": "@@ -0,0 +1,3 @@\n+#!/usr/bin/env node\n+\n+console.log('Usage: wordfreq [-n <count>] [--ignore-case] [--min-length <k>] <file...>');",
+                "exactLines": true
+              },
+              {
+                "path": "package.json",
+                "added": 9,
+                "removed": 0,
+                "isNew": true,
+                "isDeleted": false,
+                "diff": "@@ -0,0 +1,9 @@\n+{\n+  \"name\": \"wordfreq\",\n+  \"version\": \"1.0.0\",\n+  \"private\": true,\n+  \"type\": \"module\",\n+  \"bin\": { \"wordfreq\": \"bin/wordfreq.js\" },\n+  \"scripts\": { \"test\": \"node --test\" },\n+  \"engines\": { \"node\": \">=24\" }\n+}",
+                "exactLines": true
+              }
+            ],
+            "targets": ["README.md", "bin/wordfreq.js", "package.json"]
+          },
+          {
+            "type": "action",
+            "id": "exec-aef26cb6-97bf-4c48-8595-412091a1fb7c",
+            "at": "2026-10-01T13:23:22.110Z",
+            "kind": "git",
+            "status": "ok",
+            "title": "chmod +x bin/wordfreq.js · npm test · git add package.json bin/wordfreq.js README.md · git commit -m chore: scaffold wordfreq CLI",
+            "command": "/bin/zsh -lc 'chmod +x bin/wordfreq.js\nnpm test\n git add package.json bin/wordfreq.js README.md\n git commit -m \"chore: scaffold wordfreq CLI\"'",
+            "exitCode": 0,
+            "output": "\n> wordfreq@1.0.0 test\n> node --test\n\nℹ tests 0\nℹ suites 0\nℹ pass 0\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 5.039584\n[main 75b17e8] chore: scaffold wordfreq CLI\n 3 files changed, 27 insertions(+)\n create mode 100644 README.md\n create mode 100755 bin/wordfreq.js\n create mode 100644 package.json\n",
+            "parts": [
+              {
+                "kind": "edit",
+                "title": "chmod +x bin/wordfreq.js"
+              },
+              {
+                "kind": "test",
+                "title": "npm test"
+              },
+              {
+                "kind": "git",
+                "title": "git add package.json bin/wordfreq.js README.md"
+              },
+              {
+                "kind": "git",
+                "title": "git commit -m chore: scaffold wordfreq CLI"
+              }
+            ],
+            "targets": ["+x", "bin/wordfreq.js"]
+          }
+        ],
+        "labels": {}
+      },
+      "matchedBy": "sha"
+    },
+    {
+      "commit": {
+        "sha": "7212377c932c036687673e728e32705ece5f6747",
+        "subject": "feat: count words across text files",
+        "committedAt": "2026-10-01T15:24:15+02:00",
+        "patchId": "87ad7f789924ff6abb240a8f42da249d74654d01"
+      },
+      "entry": {
+        "formatVersion": 1,
+        "commit": {
+          "sha": "7212377c932c036687673e728e32705ece5f6747",
+          "subject": "feat: count words across text files",
+          "committedAt": "2026-10-01T15:24:15+02:00",
+          "patchId": "87ad7f789924ff6abb240a8f42da249d74654d01"
+        },
+        "thread": {
+          "id": "codex:01a0f7a1-d93a-77b1-b192-7c9ad47b7439",
+          "title": "Build a small dependency-free Node.js 24 CLI called wordfreq in this repo: it prints the N most frequent words across the given text files (flags: -n <count>, -",
+          "source": "codex",
+          "provider": "codex",
+          "origin": "codex_exec"
+        },
+        "match": "sha",
+        "outputs": "included",
+        "redactions": 0,
+        "entries": [
+          {
+            "type": "message",
+            "id": "01a0f7a1-e6c2-7be3-bdca-d58b3f2c57b7",
+            "at": "2026-10-01T13:22:57.858Z",
+            "role": "user",
+            "text": "Build a small dependency-free Node.js 24 CLI called wordfreq in this repo: it prints the N most frequent words across the given text files (flags: -n <count>, --ignore-case, --min-length <k>). Work in small steps and commit after each with a conventional commit message, using plain git commit so its output is printed: 1) scaffold package.json, bin/wordfreq.js and a README; 2) implement counting with node:test tests in test/; 3) run the tests, fix whatever fails, and add an edge-case test for punctuation and unicode words; 4) add a --json output flag with a test. Run the tests before each commit. Stay inside this directory. Keep it simple."
+          },
+          {
+            "type": "action",
+            "id": "exec-9b5f35a9-3de2-4d60-9013-e26f18bb4fe4",
+            "at": "2026-10-01T13:23:59.282Z",
+            "kind": "test",
+            "status": "ok",
+            "title": "write bin/wordfreq.js · mkdir test · write test/wordfreq.test.js · npm test",
+            "command": "/bin/zsh -lc \"cat > bin/wordfreq.js <<'EOF'\n#\"'!/usr/bin/env node\n\nimport { readFileSync } from '\"'node:fs';\n\nconst usage = 'Usage: wordfreq [-n <count>] [--ignore-case] [--min-length <k>] <file...>';\n\ntry {\n  const args = process.argv.slice(2);\n  const files = [];\n  let count = 10;\n  let minLength = 1;\n  let ignoreCase = false;\n  let positional = false;\n  for (let i = 0; i < args.length; i++) {\n    const arg = args[i];\n    if (positional) files.push(arg);\n    else if (arg === '--') positional = true;\n    else if (arg === '--help' || arg === '-h') {\n      console.log(usage);\n      process.exit(0);\n    } else if (arg === '--ignore-case') ignoreCase = true;\n    else if (arg === '-n' || arg === '--min-length') {\n      const value = args[++i];\n      if (\"'!/''^'\"\\\\d+\"'$/.test(value ?? '\"'') || \"'!Number.isSafeInteger(Number(value))) {\n        throw new Error(`${arg} requires a non-negative integer`);\n      }\n      if (arg === '\"'-n') count = Number(value);\n      else minLength = Number(value);\n    } else if (arg.startsWith('-')) throw new Error(\"'`Unknown option: ${arg}`);\n    else files.push(arg);\n  }\n  if (!files.length) throw new Error(usage);\n\n  const frequencies = new Map();\n  for (const file of files) {\n    const text = readFileSync(file, '\"'utf8').normalize('NFC');\n    for (let word of text.match(/\\\\p{L}[\\\\p{L}\\\\p{M}]*/gu) ?? []) {\n      if (ignoreCase) word = word.toLowerCase();\n      if ([...word].length < minLength) continue;\n      frequencies.set(word, (frequencies.get(word) ?? 0) + 1);\n    }\n  }\n  const words = [...frequencies].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).slice(0, count);\n  for (const [word, frequency] of words) console.log(\"'`${word}'\"\\\\t\"'${frequency}`);\n} catch (error) {\n  console.error(`wordfreq: ${error.message}`);\n  process.exitCode = 1;\n}\nEOF\nmkdir -p test\ncat > test/wordfreq.test.js <<'\"'EOF'\nimport test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { mkdtempSync, writeFileSync, rmSync } from 'node:fs';\nimport { join } from 'node:path';\nimport { spawnSync } from 'node:child_process';\n\nfunction run(t, texts, args = []) {\n  const directory = mkdtempSync(join(process.cwd(), '.wordfreq-test-'));\n  t.after(() => rmSync(directory, { recursive: true, force: true }));\n  const files = texts.map((text, index) => {\n    const file = join(directory, \"'`${index}.txt`);\n    writeFileSync(file, text);\n    return file;\n  });\n  return spawnSync(process.execPath, ['\"'bin/wordfreq.js', ...args, ...files], { encoding: 'utf8' });\n}\n\ntest('counts across files, limits results, and sorts ties by word', t => {\n  const result = run(t, ['pear apple pear', 'banana apple pear banana'], ['-n', '2']);\n  assert.equal(result.status, 0);\n  assert.equal(result.stdout, 'pear\\\\t3\\\\napple\\\\t2\\\\n');\n});\n\ntest('applies case and length options', t => {\n  const result = run(t, ['Apple apple APPLE an pear'], ['--ignore-case', '--min-length', '4']);\n  assert.equal(result.status, 0);\n  assert.equal(result.stdout, 'apple\\\\t3\\\\npear\\\\t1\\\\n');\n});\n\ntest('rejects invalid options and missing files', t => {\n  for (const args of [['-n', '-1'], ['--min-length', 'no'], ['--unknown']]) {\n    assert.equal(run(t, ['apple'], args).status, 1);\n  }\n  assert.equal(run(t, []).status, 1);\n});\n\ntest('prints nothing for empty files or a zero limit', t => {\n  assert.equal(run(t, ['']).stdout, '');\n  assert.equal(run(t, ['apple'], ['-n', '0']).stdout, '');\n});\nEOF\nnpm test\"",
+            "exitCode": 0,
+            "output": "\n> wordfreq@1.0.0 test\n> node --test\n\n✔ counts across files, limits results, and sorts ties by word (26.196583ms)\n✔ applies case and length options (24.792875ms)\n✔ rejects invalid options and missing files (113.011209ms)\n✔ prints nothing for empty files or a zero limit (45.371667ms)\nℹ tests 4\nℹ suites 0\nℹ pass 4\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 247.994917\n",
+            "parts": [
+              {
+                "kind": "edit",
+                "title": "write bin/wordfreq.js"
+              },
+              {
+                "kind": "edit",
+                "title": "mkdir test"
+              },
+              {
+                "kind": "edit",
+                "title": "write test/wordfreq.test.js"
+              },
+              {
+                "kind": "test",
+                "title": "npm test"
+              }
+            ],
+            "targets": ["bin/wordfreq.js", "test", "test/wordfreq.test.js"]
+          },
+          {
+            "type": "action",
+            "id": "exec-1e40ebd2-17a1-4843-9b07-18965c8f5efc",
+            "at": "2026-10-01T13:24:15.460Z",
+            "kind": "git",
+            "status": "ok",
+            "title": "git add bin/wordfreq.js test/wordfreq.test.js · git commit -m feat: count words across text files",
+            "command": "/bin/zsh -lc 'git add bin/wordfreq.js test/wordfreq.test.js\n git commit -m \"feat: count words across text files\"'",
+            "exitCode": 0,
+            "output": "[main 7212377] feat: count words across text files\n 2 files changed, 86 insertions(+), 1 deletion(-)\n create mode 100644 test/wordfreq.test.js\n",
+            "parts": [
+              {
+                "kind": "git",
+                "title": "git add bin/wordfreq.js test/wordfreq.test.js"
+              },
+              {
+                "kind": "git",
+                "title": "git commit -m feat: count words across text files"
+              }
+            ],
+            "targets": []
+          }
+        ],
+        "labels": {}
+      },
+      "matchedBy": "sha"
+    },
+    {
+      "commit": {
+        "sha": "a9f8d7575420cba74011e2012905aecc8d52ac8b",
+        "subject": "test: cover punctuation and Unicode words",
+        "committedAt": "2026-10-01T15:24:15+02:00",
+        "patchId": "62f7b57865d75ff3e653128181c7dbe8ac33c86c"
+      },
+      "entry": {
+        "formatVersion": 1,
+        "commit": {
+          "sha": "a9f8d7575420cba74011e2012905aecc8d52ac8b",
+          "subject": "test: cover punctuation and Unicode words",
+          "committedAt": "2026-10-01T15:24:15+02:00",
+          "patchId": "62f7b57865d75ff3e653128181c7dbe8ac33c86c"
+        },
+        "thread": {
+          "id": "codex:01a0f7a1-d93a-77b1-b192-7c9ad47b7439",
+          "title": "Build a small dependency-free Node.js 24 CLI called wordfreq in this repo: it prints the N most frequent words across the given text files (flags: -n <count>, -",
+          "source": "codex",
+          "provider": "codex",
+          "origin": "codex_exec"
+        },
+        "match": "sha",
+        "outputs": "included",
+        "redactions": 0,
+        "entries": [
+          {
+            "type": "message",
+            "id": "01a0f7a1-e6c2-7be3-bdca-d58b3f2c57b7",
+            "at": "2026-10-01T13:22:57.858Z",
+            "role": "user",
+            "text": "Build a small dependency-free Node.js 24 CLI called wordfreq in this repo: it prints the N most frequent words across the given text files (flags: -n <count>, --ignore-case, --min-length <k>). Work in small steps and commit after each with a conventional commit message, using plain git commit so its output is printed: 1) scaffold package.json, bin/wordfreq.js and a README; 2) implement counting with node:test tests in test/; 3) run the tests, fix whatever fails, and add an edge-case test for punctuation and unicode words; 4) add a --json output flag with a test. Run the tests before each commit. Stay inside this directory. Keep it simple."
+          },
+          {
+            "type": "action",
+            "id": "exec-217cf7bb-661e-40d2-bbfa-a26f4e572617",
+            "at": "2026-10-01T13:24:15.874Z",
+            "kind": "test",
+            "status": "ok",
+            "title": "write test/wordfreq.test.js · write README.md · npm test",
+            "command": "/bin/zsh -lc \"cat >> test/wordfreq.test.js <<'EOF'\n\ntest('splits punctuation and counts Unicode words with normalized accents', t => {\n  const result = run(t, ['Café, cafe\\\\u0301\"'! 東京。東京? naïve—naïve; 😀 123'\"'], ['--ignore-case']);\n  assert.equal(result.status, 0);\n  assert.equal(result.stdout, 'café\\\\t2\\\\nnaïve\\\\t2\\\\n東京\\\\t2\\\\n');\n});\nEOF\ncat >> README.md <<'EOF'\n\nWords contain Unicode letters and combining marks. Punctuation, numbers,\nemoji, and whitespace separate words. Accents use NFC normalization.\nLength counts Unicode code points. Output is \"'`word<TAB>count`, one word per\nline. Results sort by count, then by word in code point order for ties.\nUse `--` before file names that start with `-`. A count of zero prints nothing.\nEOF\nnpm test'",
+            "exitCode": 0,
+            "output": "\n> wordfreq@1.0.0 test\n> node --test\n\n✔ counts across files, limits results, and sorts ties by word (25.906792ms)\n✔ applies case and length options (24.901333ms)\n✔ rejects invalid options and missing files (96.470167ms)\n✔ prints nothing for empty files or a zero limit (46.248958ms)\n✔ splits punctuation and counts Unicode words with normalized accents (27.12175ms)\nℹ tests 5\nℹ suites 0\nℹ pass 5\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 257.877458\n",
+            "parts": [
+              {
+                "kind": "edit",
+                "title": "write test/wordfreq.test.js"
+              },
+              {
+                "kind": "edit",
+                "title": "write README.md"
+              },
+              {
+                "kind": "test",
+                "title": "npm test"
+              }
+            ],
+            "targets": ["test/wordfreq.test.js", "README.md"]
+          },
+          {
+            "type": "action",
+            "id": "exec-eed9359d-ff34-4286-978e-ea2f860af79d",
+            "at": "2026-10-01T13:24:15.935Z",
+            "kind": "git",
+            "status": "ok",
+            "title": "git add README.md test/wordfreq.test.js · git commit -m test: cover punctuation and Unicode words",
+            "command": "/bin/zsh -lc 'git add README.md test/wordfreq.test.js\n git commit -m \"test: cover punctuation and Unicode words\"'",
+            "exitCode": 0,
+            "output": "[main a9f8d75] test: cover punctuation and Unicode words\n 2 files changed, 12 insertions(+)\n",
+            "parts": [
+              {
+                "kind": "git",
+                "title": "git add README.md test/wordfreq.test.js"
+              },
+              {
+                "kind": "git",
+                "title": "git commit -m test: cover punctuation and Unicode words"
+              }
+            ],
+            "targets": []
+          }
+        ],
+        "labels": {}
+      },
+      "matchedBy": "sha"
+    },
+    {
+      "commit": {
+        "sha": "a337b69a1916d7a5c7fd4a46e3e5867d5926ffbd",
+        "subject": "feat: add JSON output",
+        "committedAt": "2026-10-01T15:24:49+02:00",
+        "patchId": "36ba7f4e90421a15544c6f3c5df4734920cc24c8"
+      },
+      "entry": {
+        "formatVersion": 1,
+        "commit": {
+          "sha": "a337b69a1916d7a5c7fd4a46e3e5867d5926ffbd",
+          "subject": "feat: add JSON output",
+          "committedAt": "2026-10-01T15:24:49+02:00",
+          "patchId": "36ba7f4e90421a15544c6f3c5df4734920cc24c8"
+        },
+        "thread": {
+          "id": "codex:01a0f7a1-d93a-77b1-b192-7c9ad47b7439",
+          "title": "Build a small dependency-free Node.js 24 CLI called wordfreq in this repo: it prints the N most frequent words across the given text files (flags: -n <count>, -",
+          "source": "codex",
+          "provider": "codex",
+          "origin": "codex_exec"
+        },
+        "match": "sha",
+        "outputs": "included",
+        "redactions": 0,
+        "entries": [
+          {
+            "type": "message",
+            "id": "01a0f7a1-e6c2-7be3-bdca-d58b3f2c57b7",
+            "at": "2026-10-01T13:22:57.858Z",
+            "role": "user",
+            "text": "Build a small dependency-free Node.js 24 CLI called wordfreq in this repo: it prints the N most frequent words across the given text files (flags: -n <count>, --ignore-case, --min-length <k>). Work in small steps and commit after each with a conventional commit message, using plain git commit so its output is printed: 1) scaffold package.json, bin/wordfreq.js and a README; 2) implement counting with node:test tests in test/; 3) run the tests, fix whatever fails, and add an edge-case test for punctuation and unicode words; 4) add a --json output flag with a test. Run the tests before each commit. Stay inside this directory. Keep it simple."
+          },
+          {
+            "type": "message",
+            "id": "msg_097adfc8b41762df016abe5f048e2487d2a2d5bbe46483098c",
+            "at": "2026-10-01T13:24:22.532Z",
+            "role": "assistant",
+            "text": "Word counting and the Unicode edge-case test pass. No fixes were needed. I’ll now add `--json` with a test that checks the output.\n"
+          },
+          {
+            "type": "action",
+            "id": "exec-78bebfae-34f5-4897-ae16-dc979c3acb50",
+            "at": "2026-10-01T13:24:49.174Z",
+            "kind": "edit",
+            "status": "ok",
+            "title": "3 files: README.md, wordfreq.js, wordfreq.test.js",
+            "files": [
+              {
+                "path": "README.md",
+                "added": 3,
+                "removed": 1,
+                "isNew": false,
+                "isDeleted": false,
+                "diff": "@@ -13,2 +13,3 @@\n - `--min-length <k>`: minimum word length. Default: 1.\n+- `--json`: print an array of objects with `word` and `count` fields.\n \n@@ -19,3 +20,4 @@\n Length counts Unicode code points. Output is `word<TAB>count`, one word per\n-line. Results sort by count, then by word in code point order for ties.\n+line. Results sort by count, then by word in JavaScript string order for ties.\n Use `--` before file names that start with `-`. A count of zero prints nothing.\n+With `--json`, empty results print `[]`.\n",
+                "exactLines": true
+              },
+              {
+                "path": "bin/wordfreq.js",
+                "added": 5,
+                "removed": 2,
+                "isNew": false,
+                "isDeleted": false,
+                "diff": "@@ -4,3 +4,3 @@\n \n-const usage = 'Usage: wordfreq [-n <count>] [--ignore-case] [--min-length <k>] <file...>';\n+const usage = 'Usage: wordfreq [-n <count>] [--ignore-case] [--min-length <k>] [--json] <file...>';\n \n@@ -12,2 +12,3 @@\n   let ignoreCase = false;\n+  let json = false;\n   let positional = false;\n@@ -21,2 +22,3 @@\n     } else if (arg === '--ignore-case') ignoreCase = true;\n+    else if (arg === '--json') json = true;\n     else if (arg === '-n' || arg === '--min-length') {\n@@ -43,3 +45,4 @@\n   const words = [...frequencies].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).slice(0, count);\n-  for (const [word, frequency] of words) console.log(`${word}\\t${frequency}`);\n+  if (json) console.log(JSON.stringify(words.map(([word, count]) => ({ word, count }))));\n+  else for (const [word, frequency] of words) console.log(`${word}\\t${frequency}`);\n } catch (error) {\n",
+                "exactLines": true
+              },
+              {
+                "path": "test/wordfreq.test.js",
+                "added": 10,
+                "removed": 0,
+                "isNew": false,
+                "isDeleted": false,
+                "diff": "@@ -46 +46,11 @@\n });\n+\n+test('prints JSON with the same sorting, limits, and filters', t => {\n+  const result = run(t, ['Pear pear apple apple an banana'], ['--json', '--ignore-case', '--min-length', '4', '-n', '2']);\n+  assert.equal(result.status, 0);\n+  assert.deepEqual(JSON.parse(result.stdout), [\n+    { word: 'apple', count: 2 },\n+    { word: 'pear', count: 2 },\n+  ]);\n+  assert.deepEqual(JSON.parse(run(t, [''], ['--json']).stdout), []);\n+});\n",
+                "exactLines": true
+              }
+            ],
+            "targets": ["README.md", "bin/wordfreq.js", "test/wordfreq.test.js"]
+          },
+          {
+            "type": "action",
+            "id": "exec-6f98a8f7-d16d-4d8b-b059-226f050cce3d",
+            "at": "2026-10-01T13:24:49.609Z",
+            "kind": "test",
+            "status": "ok",
+            "title": "npm test",
+            "command": "/bin/zsh -lc 'npm test'",
+            "exitCode": 0,
+            "output": "\n> wordfreq@1.0.0 test\n> node --test\n\n✔ counts across files, limits results, and sorts ties by word (26.9545ms)\n✔ applies case and length options (24.640958ms)\n✔ rejects invalid options and missing files (98.693542ms)\n✔ prints nothing for empty files or a zero limit (48.018291ms)\n✔ splits punctuation and counts Unicode words with normalized accents (25.674834ms)\n✔ prints JSON with the same sorting, limits, and filters (47.861083ms)\nℹ tests 6\nℹ suites 0\nℹ pass 6\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 309.115541\n",
+            "targets": []
+          },
+          {
+            "type": "action",
+            "id": "exec-ab926fc5-dd78-463c-89dc-7bd641af2301",
+            "at": "2026-10-01T13:24:49.671Z",
+            "kind": "git",
+            "status": "ok",
+            "title": "git add bin/wordfreq.js README.md test/wordfreq.test.js · git commit -m feat: add JSON output · git status --short",
+            "command": "/bin/zsh -lc 'git add bin/wordfreq.js README.md test/wordfreq.test.js\n git commit -m \"feat: add JSON output\"\n git status --short'",
+            "exitCode": 0,
+            "output": "[main a337b69] feat: add JSON output\n 3 files changed, 18 insertions(+), 3 deletions(-)\n",
+            "parts": [
+              {
+                "kind": "git",
+                "title": "git add bin/wordfreq.js README.md test/wordfreq.test.js"
+              },
+              {
+                "kind": "git",
+                "title": "git commit -m feat: add JSON output"
+              },
+              {
+                "kind": "read",
+                "title": "git status --short"
+              }
+            ],
+            "targets": []
+          }
+        ],
+        "labels": {}
+      },
+      "matchedBy": "sha"
+    }
+  ]
+}
