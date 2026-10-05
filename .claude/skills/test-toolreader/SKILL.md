@@ -5,7 +5,7 @@ description: Launch, smoke-test and stop the toolreader viewer against a safe sn
 
 # Test toolreader
 
-Run everything from the repository root. Never point a test run at `~/.t3/userdata/state.sqlite` with anything but toolreader's read-only open, and never write to it.
+Run everything from the repository root. Never point a test run at `~/.t3/userdata/statev2.sqlite` (or `state.sqlite`) with anything but toolreader's read-only open, and never write to it.
 
 ## 1. Snapshot the data
 
@@ -13,7 +13,7 @@ Use a snapshot so the run is reproducible and the live database can't be touched
 
 ```bash
 rm -rf .t3 && mkdir .t3
-node -e "new (require('node:sqlite').DatabaseSync)(process.env.HOME + '/.t3/userdata/state.sqlite', { readOnly: true }).exec(\"VACUUM INTO '.t3/state.sqlite'\")"
+node -e "new (require('node:sqlite').DatabaseSync)(process.env.HOME + '/.t3/userdata/statev2.sqlite', { readOnly: true }).exec(\"VACUUM INTO '.t3/statev2.sqlite'\")"
 ```
 
 Skip this step only when the developer explicitly wants live data. In that case run without `T3_DB`; the server still opens the live database read-only.
@@ -24,7 +24,7 @@ Port 4777 is the developer's default and may already be in use. Use another port
 
 ```bash
 lsof -nP -iTCP:4778 -sTCP:LISTEN   # must print nothing
-vp build && T3_DB=$PWD/.t3/state.sqlite PORT=4778 node src/server/bin.ts serve
+vp build && T3_DB=$PWD/.t3/statev2.sqlite PORT=4778 node src/server/bin.ts serve
 ```
 
 Run the server in the background and record its PID **at spawn**. Wait for the `toolreader → http://127.0.0.1:<port>` log line, not a sleep.

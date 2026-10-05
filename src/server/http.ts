@@ -133,7 +133,11 @@ export const HttpServerLive = Layer.unwrap(
     const { port } = yield* ServerConfig;
     const NodeHttp = yield* Effect.promise(() => import("node:http"));
     // Local only: this exposes every agent session on the machine.
-    return HttpRouter.serve(Layer.mergeAll(ApiRoutes, StaticRoute)).pipe(
+    // T3 V2 names provider-native subagent threads after their parent's ids (~200 chars); the
+    // router's default refuses params over 100 characters.
+    return HttpRouter.serve(Layer.mergeAll(ApiRoutes, StaticRoute), {
+      routerConfig: { maxParamLength: 2048 },
+    }).pipe(
       Layer.provide(NodeHttpServer.layer(NodeHttp.createServer, { port, host: "127.0.0.1" })),
     );
   }),

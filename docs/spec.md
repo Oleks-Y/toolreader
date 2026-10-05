@@ -5,7 +5,7 @@ Read-only viewer for what coding agents _did_ in T3 Code threads. Actions come f
 ## Scope
 
 - Sources:
-  - T3 Code's database `~/.t3/userdata/state.sqlite` (override with `T3_DB`), opened read-only. Covers every provider T3 runs (Codex, Claude, Cursor).
+  - T3 Code's database `~/.t3/userdata/statev2.sqlite` (`state.sqlite` before T3 0.0.46) (override with `T3_DB`), opened read-only. Covers every provider T3 runs (Codex, Claude, Cursor).
   - Codex sessions that ran outside T3 (CLI, TUI, Desktop, `codex exec`), read through `codex app-server`: `thread/list` for discovery, `thread/read` with `includeTurns` for content. Items carry no timestamps, so each item's time comes from the first rollout line that mentions its id. Sessions T3 runs itself are hidden (matched through T3's resume cursors); subagent threads are not listed. If `codex` can't start, this source is simply empty.
   - The same Codex sessions straight from rollout files (`$CODEX_HOME/sessions/**/rollout-*.jsonl`), with no app-server: the `thread/read` result is rebuilt from the file's `item_completed` events, so entries are identical. Used by the ledger (e.g. in CI); the viewer still lists Codex sessions through the app-server.
   - Without a T3 database, the T3 source is empty instead of an error.
