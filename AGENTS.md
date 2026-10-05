@@ -18,10 +18,11 @@ Setup, libraries and conventions are copied from `~/proj/t3code`. When in doubt,
   - `payload.ts`: Schemas for T3's raw activity payloads, for every provider.
   - `normalize.ts`, `shell.ts`, `tree.ts`: pure transforms, from raw rows to entries to tree.
   - `codex.ts`: turns Codex `thread/read` items into the same T3-shaped rows.
+  - `t3v2.ts`: turns T3's orchestration V2 turn items into the same rows. T3 0.0.46 nightlies write `statev2.sqlite`; its V1 tables stay, frozen at the upgrade, and still hold V1 threads' tool calls (V2 imports only their messages, under `migration:v1:` ids, which are skipped).
   - `rollout.ts`: scans rollout files for item timestamps and for the tool calls `thread/read` drops (it rebuilds items only from `item_completed` events, which most rollouts keep for messages alone), as app-server items. `shellJoin` quotes argv exactly as Codex does (Rust `shlex`).
   - `rolloutThread.ts`: rebuilds the `thread/read` result from a rollout file alone (its `item_completed` events, mapped from the core's snake_case shapes to the app-server's camelCase), so sessions read without `codex app-server` give the same entries. `src/server/CodexRollouts.test.ts` pins this against a real `thread/read` capture (`src/server/fixtures/`).
 - `src/server`: Effect services and the HTTP server.
-  - `ThreadStore.ts` is the **only** module that knows T3's table layout. If T3 migrates, fix it there.
+  - `ThreadStore.ts` is the **only** module that knows T3's table layout. If T3 migrates, fix it there. It reads V1 tables alone (`state.sqlite`, older T3) or V1 and V2 together (`statev2.sqlite`), by whether the V2 tables exist.
   - `Labeler.ts` runs `codex exec` and caches labels in `~/.toolreader/labels.json`.
   - `CodexSessions.ts` lists and reads Codex sessions that ran outside T3, through a long-lived `codex app-server` process. Sessions T3 owns (its resume cursors) and subagent threads are skipped.
   - `CodexRollouts.ts` does the same straight from `$CODEX_HOME/{sessions,archived_sessions}/**/rollout-*.jsonl` (listing reads only each file's first line), for when there is no T3 and no app-server, e.g. CI after `codex exec`. Without a T3 database, `app.ts` provides `ThreadStore.empty` instead of failing.
@@ -54,8 +55,8 @@ An empty database is a bad test. To run against realistic data without touching 
 
 ```bash
 rm -rf .t3 && mkdir .t3
-node -e "new (require('node:sqlite').DatabaseSync)(process.env.HOME + '/.t3/userdata/state.sqlite', { readOnly: true }).exec(\"VACUUM INTO '.t3/state.sqlite'\")"
-T3_DB=$PWD/.t3/state.sqlite PORT=4778 vp run start
+node -e "new (require('node:sqlite').DatabaseSync)(process.env.HOME + '/.t3/userdata/statev2.sqlite', { readOnly: true }).exec(\"VACUUM INTO '.t3/statev2.sqlite'\")"
+T3_DB=$PWD/.t3/statev2.sqlite PORT=4778 vp run start
 ```
 
 `VACUUM INTO` is safe while T3 has the source open. A plain `cp` without the `-wal`/`-shm` files gives a corrupt copy.

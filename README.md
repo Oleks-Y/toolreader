@@ -1,7 +1,7 @@
 # toolreader
 
 Read-only viewer for what coding agents _did_: T3 Code threads (Codex, Claude, Cursor) plus Codex sessions run outside T3 (CLI, TUI, Desktop, `codex exec`).
-It reads T3's database `~/.t3/userdata/state.sqlite` read-only, reads Codex history through `codex app-server` (or straight from rollout files, for the ledger), and never writes to either.
+It reads T3's database `~/.t3/userdata/statev2.sqlite` (`state.sqlite` before T3 0.0.46) read-only, reads Codex history through `codex app-server` (or straight from rollout files, for the ledger), and never writes to either.
 
 ```bash
 vp i              # install (runs effect-tsgo patch + git hooks)
