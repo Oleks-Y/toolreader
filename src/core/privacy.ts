@@ -1,6 +1,7 @@
 // The privacy check behind the website's demo (scripts/privacyGate.ts runs it on site/demo data
 // before it is written or published). Pure: rules in, findings out. It allows what it knows and
-// reports the rest, so text no one thought of fails the build instead of shipping.
+// reports the rest, so text no one thought of fails the build instead of shipping. `sanitize.ts`
+// finds paths and emails with the same patterns.
 
 export interface PrivacyRules {
   /** Absolute paths that may appear: each one itself, or anything under it. */
@@ -22,12 +23,12 @@ export interface Finding {
 // Paths start a string or follow a separator, so regex literals (`/\p{L}+/gu`) and fractions
 // (`2/3`) don't count; URLs are checked as URLs.
 const BEFORE = String.raw`(?<=^|[\s"'\x60=(:,\[{<>|;&])`;
-const ABSOLUTE = new RegExp(String.raw`${BEFORE}/[\w.-]+(?:/[\w.-]+)*`, "g");
-const HOME_RELATIVE = new RegExp(String.raw`${BEFORE}~/[\w.-]+(?:/[\w.-]+)*`, "g");
-const EMAIL = /[\w.%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?![\w-])/gi;
+export const ABSOLUTE = new RegExp(String.raw`${BEFORE}/[\w.-]+(?:/[\w.-]+)*`, "g");
+export const HOME_RELATIVE = new RegExp(String.raw`${BEFORE}~/[\w.-]+(?:/[\w.-]+)*`, "g");
+export const EMAIL = /[\w.%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?![\w-])/gi;
 const URL_TEXT = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>)\]]+/gi;
 
-const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+export const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 function hostOf(url: string): string | null {
   try {

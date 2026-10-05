@@ -15,6 +15,8 @@ export class ServerConfig extends Context.Service<
     /** Codex's home: rollout files live in `sessions/` and `archived_sessions/` under it. */
     readonly codexHome: string;
     readonly labelsPath: string;
+    /** This machine's toolreader settings (`.toolreader.json` shape), e.g. names to keep private. */
+    readonly userConfigPath: string;
     /** Build output: the viewer in `client/`, the ledger site template in `site/`. */
     readonly distDir: string;
   }
@@ -36,6 +38,9 @@ export class ServerConfig extends Context.Service<
         ),
         labelsPath: yield* Config.string("TOOLREADER_LABELS").pipe(
           Config.withDefault(path.join(home, ".toolreader", "labels.json")),
+        ),
+        userConfigPath: yield* Config.string("TOOLREADER_CONFIG").pipe(
+          Config.withDefault(path.join(home, ".toolreader", "config.json")),
         ),
         // Bundled, this module is dist/bin.mjs itself; in the repo it is src/server/ServerConfig.ts.
         distDir:

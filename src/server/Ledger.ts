@@ -1,6 +1,7 @@
 // The commit ledger (see src/core/ledger.ts): `sync` writes entries for agent-made commits onto the
 // `agent-ledger` branch with git plumbing (never touching HEAD or the working tree), optionally on
 // top of origin's copy and pushed; `range` reads them back; `hook` installs the pre-push hook.
+// Every entry is written as Sanitizer.ts leaves it; `sanitize` rewrites the whole branch that way.
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -33,9 +34,11 @@ import {
   type LedgerRange,
 } from "../core/ledger.ts";
 import { ledgerSiteHtml, publicRange } from "../core/ledgerSite.ts";
+import type { SanitizeMode } from "../core/sanitize.ts";
 import { CodexRollouts, ROLLOUT_DIRS } from "./CodexRollouts.ts";
 import { CODEX_ID_PREFIX, CodexSessions } from "./CodexSessions.ts";
 import { Labeler } from "./Labeler.ts";
+import { Sanitizer, type SanitizeChoice } from "./Sanitizer.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 import { ThreadStore } from "./ThreadStore.ts";
 
@@ -74,6 +77,10 @@ export type SyncOptions = {
   readonly matchSessions: boolean;
   /** Sessions (ids, `codex:` optional) to tie such commits to, instead of guessing which. */
   readonly sessions: ReadonlyArray<string>;
+  /** How entries are sanitized; null: the repo's `.toolreader.json`, else `anonymize`. */
+  readonly sanitize: SanitizeMode | "off" | null;
+  /** Run the agent pass; null: the repo's `.toolreader.json`, else no. */
+  readonly sanitizeAgent: boolean | null;
 };
 export const SYNC_DEFAULTS: SyncOptions = {
   outputs: true,
@@ -82,6 +89,8 @@ export const SYNC_DEFAULTS: SyncOptions = {
   push: false,
   matchSessions: false,
   sessions: [],
+  sanitize: null,
+  sanitizeAgent: null,
 };
 
 export type SyncResult = {
@@ -98,6 +107,21 @@ export type SyncResult = {
   readonly ambiguous: ReadonlyArray<{ commit: LedgerCommit; sessions: ReadonlyArray<string> }>;
   readonly existing: number;
   /** The ledger commit now on origin, when `push` sent one. */
+  readonly pushed: string | null;
+  readonly sanitized: SanitizeSummary;
+};
+
+export type SanitizeSummary = {
+  readonly mode: SanitizeMode | "off";
+  readonly hits: number;
+  /** Spans the agent pass named, when it ran. */
+  readonly spans: number | null;
+};
+
+export type SanitizeBranchResult = SanitizeSummary & {
+  readonly entries: number;
+  /** The new agent-ledger commit: one commit, no history. */
+  readonly head: string | null;
   readonly pushed: string | null;
 };
 
@@ -131,6 +155,15 @@ export class Ledger extends Context.Service<
       range: string | null,
       out: string,
     ) => Effect.Effect<{ readonly file: string; readonly view: LedgerRange }, LedgerFailed>;
+    /**
+     * Rewrites agent-ledger (local and, with `push`, origin's) as one commit of its entries
+     * sanitized, so no earlier version stays in its history. A push only replaces the origin
+     * commit it read.
+     */
+    readonly sanitize: (
+      repo: string,
+      choice: SanitizeChoice & { readonly push: boolean },
+    ) => Effect.Effect<SanitizeBranchResult, LedgerFailed>;
     /** Installs or removes the pre-push hook that runs `<command> sync … --push`; returns what it did. */
     readonly hook: (
       repo: string,
@@ -147,6 +180,7 @@ export class Ledger extends Context.Service<
       const codex = yield* CodexSessions;
       const rollouts = yield* CodexRollouts;
       const labeler = yield* Labeler;
+      const sanitizer = yield* Sanitizer;
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -542,7 +576,7 @@ export class Ledger extends Context.Service<
         const added: Array<SyncResult["added"][number]> = [];
         const unmatched: LedgerCommit[] = [];
         const ambiguous: Array<SyncResult["ambiguous"][number]> = [];
-        const writes: Write[] = [];
+        const built: Array<{ commit: LedgerCommit; entry: LedgerEntry }> = [];
         for (const commit of todo) {
           // A printed SHA anywhere wins; then the latest time match; then the one eligible session
           // that ended between the previous commit and this one.
@@ -587,11 +621,22 @@ export class Ledger extends Context.Service<
             maxOutput: options.maxOutput,
             home: config.home,
           });
+          built.push({ commit, entry });
+        }
+
+        const sanitized = yield* sanitizeAll(
+          repo,
+          built.map((b) => b.entry),
+          { mode: options.sanitize, agent: options.sanitizeAgent },
+        );
+        const writes: Write[] = [];
+        for (const [i, { commit }] of built.entries()) {
+          const entry = sanitized.entries[i]!;
           writes.push({ commit, json: yield* encodeEntry(entry).pipe(Effect.orDie) });
           added.push({
             commit,
             thread: entry.thread.title,
-            match: picked.match,
+            match: entry.match,
             actions: entry.entries.filter((e) => e.type === "action").length,
           });
         }
@@ -613,7 +658,77 @@ export class Ledger extends Context.Service<
           ambiguous,
           existing: commits.length - todo.length,
           pushed,
+          sanitized: summary(sanitized),
         };
+      });
+
+      const sanitizeAll = (
+        repo: string,
+        entries: ReadonlyArray<LedgerEntry>,
+        choice: SanitizeChoice,
+      ) =>
+        sanitizer
+          .sanitize(repo, entries, choice)
+          .pipe(Effect.mapError((e) => new LedgerFailed({ message: `sanitize: ${e.message}` })));
+      const summary = (r: {
+        mode: SanitizeSummary["mode"];
+        hits: number;
+        spans: ReadonlyArray<unknown> | null;
+      }) => ({
+        mode: r.mode,
+        hits: r.hits,
+        spans: r.spans ? r.spans.length : null,
+      });
+
+      const sanitizeBranch = Effect.fn("Ledger.sanitize")(function* (
+        repoArg: string,
+        choice: SanitizeChoice & { readonly push: boolean },
+      ) {
+        const repo = (yield* git(repoArg, ["rev-parse", "--show-toplevel"])).trim();
+        yield* ensureNotCheckedOut(repo);
+        const remote = choice.push ? yield* fetchRemote(repo) : null;
+        const local = yield* resolve(repo, LEDGER_REF);
+        // Every entry either side has; the local copy wins.
+        const from = new Map<string, string>();
+        for (const ref of [remote, local])
+          for (const file of yield* filesIn(repo, ref))
+            if (ref && file.startsWith("commits/")) from.set(file, ref);
+        const entries: LedgerEntry[] = [];
+        for (const [file, ref] of from)
+          entries.push(
+            yield* git(repo, ["show", `${ref}:${file}`]).pipe(
+              Effect.flatMap(decodeEntry),
+              Effect.mapError(
+                (e) => new LedgerFailed({ message: `${ref.slice(0, 8)}:${file}: ${e.message}` }),
+              ),
+            ),
+          );
+        const result = yield* sanitizeAll(repo, entries, choice);
+        if (entries.length === 0)
+          return { ...summary(result), entries: 0, head: local, pushed: null };
+        const writes: Write[] = [];
+        for (const entry of result.entries)
+          writes.push({ commit: entry.commit, json: yield* encodeEntry(entry).pipe(Effect.orDie) });
+        const head = yield* writeTree(
+          repo,
+          [],
+          writes,
+          `ledger: ${writes.length} entries, sanitized (${result.mode})`,
+        );
+        let pushed: string | null = null;
+        if (choice.push) {
+          yield* git(repo, [
+            "push",
+            "--quiet",
+            "--no-verify",
+            `--force-with-lease=${LEDGER_REF}:${remote ?? ""}`,
+            REMOTE,
+            `${head}:${LEDGER_REF}`,
+          ]);
+          pushed = head;
+        }
+        yield* git(repo, ["update-ref", LEDGER_REF, head, local ?? ""]);
+        return { ...summary(result), entries: writes.length, head, pushed };
       });
 
       const range = Effect.fn("Ledger.range")(function* (repoArg: string, rangeArg: string | null) {
@@ -711,7 +826,7 @@ export class Ledger extends Context.Service<
         ),
       );
 
-      return Ledger.of({ sync, range, site, hook });
+      return Ledger.of({ sync, range, site, hook, sanitize: sanitizeBranch });
     }),
   );
 }

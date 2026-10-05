@@ -10,6 +10,7 @@ import { Labeler } from "./Labeler.ts";
 import { Ledger } from "./Ledger.ts";
 import * as NodeSqliteClient from "./NodeSqliteClient.ts";
 import { Proofs } from "./Proofs.ts";
+import { Sanitizer } from "./Sanitizer.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 import { ThreadStore } from "./ThreadStore.ts";
 
@@ -44,7 +45,9 @@ const appLayer = <R>(
   codexHome: string | null = null,
 ) =>
   Layer.mergeAll(Proofs.layer, Ledger.layer).pipe(
-    Layer.provideMerge(Layer.mergeAll(codexSessions, CodexRollouts.layer, Labeler.layer)),
+    Layer.provideMerge(
+      Layer.mergeAll(codexSessions, CodexRollouts.layer, Labeler.layer, Sanitizer.layer),
+    ),
     Layer.provideMerge(ThreadStoreLive),
     Layer.provideMerge(configLayer(codexHome)),
     Layer.provideMerge(NodeServices.layer),

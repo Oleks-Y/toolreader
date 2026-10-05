@@ -1,0 +1,20 @@
+{
+  "sanitize": {
+    "mode": "anonymize",
+    "allow": [
+      "~/.t3",
+      "~/.claude/projects",
+      "~/.claude/file-history",
+      "~/.toolreader",
+      "~/proj/t3code",
+      "t3code",
+      "~/.codex/sessions",
+      "~/.codex/archived_sessions",
+      "~/.codex/config.toml"
+    ],
+    "agent": {
+      "enabled": false,
+      "instructions": "toolreader reads sessions from T3 Code, Codex and Claude Code; those tools, their file layouts (~/.codex, ~/.t3, rollout files) and the wordfreq demo are public. Session titles, project names, branch names and file contents from any other project on this machine are private, and so are client or employer names."
+    }
+  }
+}

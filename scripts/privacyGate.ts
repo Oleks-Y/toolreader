@@ -1,9 +1,7 @@
 // The publication gate for site/demo data: site/demo/make-data.sh runs it before writing
 // ledger.json, and scripts/site.ts before embedding it. It checks the data against
-// scripts/privacy.ts with this machine's own values, read at run time, and fails listing every
+// src/core/privacy.ts with this machine's own values, read at run time, and fails listing every
 // offending string's path: `node scripts/privacyGate.ts FILE.json`.
-import * as NodeOS from "node:os";
-
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Config from "effect/Config";
@@ -11,9 +9,9 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { findPrivate, type Finding, type PrivacyRules } from "./privacy.ts";
+import { findPrivate, type Finding, type PrivacyRules } from "../src/core/privacy.ts";
+import { machineValues as localValues } from "../src/server/Sanitizer.ts";
 
 export class PrivacyGateFailed extends Schema.TaggedErrorClass<PrivacyGateFailed>()(
   "PrivacyGateFailed",
@@ -25,36 +23,15 @@ const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unkno
 /** Where local names come from: skills an agent may mention, and sibling projects. */
 const NAME_DIRS = [".agents/skills", ".codex/skills", ".claude/skills", "proj"];
 
-/**
- * Home, user, git identity, hostname, and the names of NAME_DIRS' entries. Names that are ordinary
- * English words (the system word list) are left out: a project called `empty` must not fail
- * "chore: empty repo". Without a word list, every name is checked.
- */
+/** This machine's values (Sanitizer.machineValues) with NAME_DIRS under home. */
 const machineValues = Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const home = yield* Config.string("HOME").pipe(Config.withDefault(""));
-  const user = yield* Config.string("USER").pipe(Config.withDefault(""));
-  const gitConfig = (key: string) =>
-    spawner.string(ChildProcess.make("git", ["config", key])).pipe(
-      Effect.map((s) => s.trim()),
-      Effect.orElseSucceed(() => ""),
-    );
-  const host = NodeOS.hostname();
-  const words = yield* fs.readFileString("/usr/share/dict/words").pipe(
-    Effect.map((text) => new Set(text.toLowerCase().split("\n"))),
-    Effect.orElseSucceed(() => new Set<string>()),
+  const { identities, names } = yield* localValues(
+    home,
+    NAME_DIRS.map((d) => path.join(home, d)),
   );
-  const names: Array<string> = [];
-  for (const dir of NAME_DIRS)
-    for (const name of yield* fs
-      .readDirectory(path.join(home, dir))
-      .pipe(Effect.orElseSucceed(() => [])))
-      if (name.length >= 3 && !words.has(name.toLowerCase())) names.push(name);
-  const identities = [home, user, yield* gitConfig("user.email"), yield* gitConfig("user.name")];
-  identities.push(host, host.split(".")[0] ?? "");
-  return [...new Set([...identities.filter((v) => v.length >= 2), ...names])];
+  return [...identities, ...names];
 });
 
 export const demoRules = (forbidden: ReadonlyArray<string>): PrivacyRules => ({

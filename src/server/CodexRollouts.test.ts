@@ -59,6 +59,7 @@ describe("CodexRollouts", () => {
           codexBin: bin,
           codexHome,
           labelsPath: "",
+          userConfigPath: "",
           distDir: "",
         }),
       );

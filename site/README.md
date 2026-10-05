@@ -31,7 +31,7 @@ Then the script syncs and builds the page in a Docker container where the repo r
 `/work/wordfreq`. It never writes to the demo repo or to `~/.codex`.
 
 The curation removes only what it knows. The privacy gate (`scripts/privacyGate.ts`, rules in
-`scripts/privacy.ts`) decides what may be published. It runs before `make-data.sh` replaces
+`src/core/privacy.ts`) decides what may be published. It runs before `make-data.sh` replaces
 `ledger.json` and before `pnpm run site:build` builds anything. It fails on:
 
 - absolute or `~/` paths outside `/work/wordfreq`, except the shell and `env` binaries;

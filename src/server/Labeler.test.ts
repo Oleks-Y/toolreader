@@ -46,6 +46,7 @@ const withLabeler = <A, E>(
         codexBin,
         codexHome: dir,
         labelsPath,
+        userConfigPath: "",
         distDir: dir,
       }),
     );
