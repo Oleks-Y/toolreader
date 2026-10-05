@@ -70,7 +70,14 @@ describe("textSanitizer", () => {
       clean(
         "open /ledger?repo=%2Fhome%2Fme%2Fproj%2Fapp and ?r=%2Fhome%2Fme%2Fproj%2Facme-backend",
       ),
-      { text: "open /ledger?repo=. and ?r=~%2Fproj%2F<private>", hits: 1 },
+      { text: "open /ledger?repo=. and ?r=<path>", hits: 1 },
+    );
+    assert.deepStrictEqual(
+      clean("?a=%2Fhome%2Fme%2Fclients%2Fwidget&b=%2Fhome%2Fme%2F.codex%2Fx"),
+      {
+        text: "?a=<path>&b=~%2F.codex%2Fx",
+        hits: 1,
+      },
     );
   });
 
@@ -87,7 +94,7 @@ describe("textSanitizer", () => {
         "docker ps: acme-backend-db-1, ACME-BACKEND; mail jdoe@corp.com, not noreply@github.com",
       ),
       {
-        text: "docker ps: <private>-db-1, <private>; mail <private>@corp.com, not noreply@github.com",
+        text: "docker ps: <private>-db-1, <private>; mail <email>, not noreply@github.com",
         hits: 3,
       },
     );

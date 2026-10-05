@@ -194,6 +194,32 @@ export function jsonObjects(text: string): string[] {
 }
 
 /** The last findings object in a reply, if any. */
+/**
+ * Codex config for the agent pass: no tools, so the agent can only read the prompt. Read-only mode
+ * still lets a shell read any file, and reads ask no permission.
+ */
+const NO_TOOLS = JSON.stringify({
+  web_search: "disabled",
+  include_apply_patch_tool: false,
+  features: Object.fromEntries(
+    [
+      "shell_tool",
+      "unified_exec",
+      "view_image",
+      "apps",
+      "plugins",
+      "browser_use",
+      "computer_use",
+      "multi_agent",
+      "memories",
+      "image_generation",
+      "hooks",
+      "skill_search",
+      "goals",
+    ].map((f) => [f, false]),
+  ),
+});
+
 const findingsIn = (reply: string) =>
   jsonObjects(reply)
     .toReversed()
@@ -316,6 +342,17 @@ export class Sanitizer extends Context.Service<
       ) {
         const dir = yield* fs.makeTempDirectoryScoped({ prefix: "toolreader-sanitize-" });
         const codex = yield* codexPath();
+        // A Codex home of its own, holding only the login: no user config, MCP servers, skills or
+        // memories reach the agent.
+        const codexHome = yield* fs.makeTempDirectoryScoped({ prefix: "toolreader-codex-home-" });
+        const auth = path.join(
+          process.env.CODEX_HOME ?? path.join(NodeOS.homedir(), ".codex"),
+          "auth.json",
+        );
+        if (yield* fs.exists(auth).pipe(Effect.orElseSucceed(() => false)))
+          yield* fs
+            .symlink(auth, path.join(codexHome, "auth.json"))
+            .pipe(Effect.mapError((e) => new SanitizeFailed({ message: e.message })));
         // Names and paths the config or the project already declare public stay public.
         const knownNames = new Set(known.map((k) => k.toLowerCase()));
         const knownPaths = known.filter((k) => k.startsWith("~") || k.startsWith("/"));
@@ -333,7 +370,12 @@ export class Sanitizer extends Context.Service<
             acpPrompt({
               command: agent.command ?? AGENT_DEFAULTS.command,
               args: agent.args ?? AGENT_DEFAULTS.args,
-              env: { INITIAL_AGENT_MODE: "read-only", ...(codex ? { CODEX_PATH: codex } : {}) },
+              env: {
+                INITIAL_AGENT_MODE: "read-only",
+                CODEX_CONFIG: NO_TOOLS,
+                CODEX_HOME: codexHome,
+                ...(codex ? { CODEX_PATH: codex } : {}),
+              },
               cwd: dir,
               model: agent.model ?? AGENT_DEFAULTS.model,
               effort: agent.effort ?? AGENT_DEFAULTS.effort,
@@ -346,7 +388,7 @@ export class Sanitizer extends Context.Service<
                 ? Effect.succeed(found.value)
                 : Effect.fail(
                     new AcpFailed({
-                      message: `no findings in the reply (${reply.length} chars): ${reply.slice(0, 200)} … ${reply.slice(-200)}`,
+                      message: `no findings in the reply (${reply.length} chars)`,
                     }),
                   );
             }),

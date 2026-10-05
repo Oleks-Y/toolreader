@@ -25,7 +25,7 @@ process.stdin.on("data", (d) => {
   while ((i = buf.indexOf("\\n")) >= 0) {
     const m = JSON.parse(buf.slice(0, i));
     buf = buf.slice(i + 1);
-    log({ jsonrpc: m.jsonrpc, method: m.method, params: m.params, result: m.result, mode: process.env.INITIAL_AGENT_MODE });
+    log({ jsonrpc: m.jsonrpc, method: m.method, params: m.params, result: m.result, mode: process.env.INITIAL_AGENT_MODE, codexHome: fs.readdirSync(process.env.CODEX_HOME), codexConfig: process.env.CODEX_CONFIG });
     if (m.method === "initialize") send({ id: m.id, result: { protocolVersion: 1 } });
     else if (m.method === "session/new") send({ id: m.id, result: { sessionId: "s1" } });
     else if (m.method === "session/set_config_option") send({ id: m.id, result: { configOptions: [] } });
@@ -65,6 +65,8 @@ const Logged = Schema.Struct({
   params: Schema.optional(Schema.Unknown),
   result: Schema.optional(Schema.Unknown),
   mode: Schema.optional(Schema.String),
+  codexHome: Schema.optional(Schema.Array(Schema.String)),
+  codexConfig: Schema.optional(Schema.String),
 });
 const decodeLogged = Schema.decodeUnknownSync(Schema.fromJsonString(Logged));
 const decodePrompt = Schema.decodeUnknownSync(
@@ -176,7 +178,12 @@ const withSanitizer = <A, E>(
       }),
     );
     // The agent inherits this process's environment.
-    const added = { FAKE_ACP_LOG: logFile, ...env };
+    // The user's Codex home: the agent gets the login and nothing else.
+    const codexHome = path.join(dir, "codex-home");
+    yield* fs.makeDirectory(codexHome);
+    yield* fs.writeFileString(path.join(codexHome, "auth.json"), "{}");
+    yield* fs.writeFileString(path.join(codexHome, "config.toml"), "[mcp_servers.x]\n");
+    const added = { FAKE_ACP_LOG: logFile, CODEX_HOME: codexHome, ...env };
     Object.assign(process.env, added);
     return yield* Effect.flatMap(Sanitizer, (s) => use(s, repo, logFile)).pipe(
       Effect.provide(Sanitizer.layer.pipe(Layer.provide(serverConfig))),
@@ -231,6 +238,8 @@ describe("Sanitizer", () => {
           .split("\n")
           .map((l) => decodeLogged(l));
         assert.isTrue(log.every((m) => m.jsonrpc === "2.0" && m.mode === "read-only"));
+        assert.deepStrictEqual(log[0]!.codexHome, ["auth.json"]);
+        assert.include(log[0]!.codexConfig, '"shell_tool":false');
         assert.deepStrictEqual(
           log.filter((m) => m.method === "session/set_config_option").map((m) => m.params),
           [
@@ -263,7 +272,7 @@ describe("Sanitizer", () => {
           sanitizer.sanitize(repo, [entry([run("a1", "ls")])], { mode: "remove", agent: null }),
         );
         assert.strictEqual(error._tag, "SanitizeFailed");
-        assert.include(error.message, "no json here");
+        assert.notInclude(error.message, "no json here", "the reply may echo session text");
         const fs = yield* FileSystem.FileSystem;
         const prompts = (yield* fs.readFileString(logFile)).match(/"session\/prompt"/g) ?? [];
         assert.strictEqual(prompts.length, 3, "tried twice more first");

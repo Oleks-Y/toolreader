@@ -41,6 +41,14 @@ const alternation = (items: Iterable<string>) =>
     .map(escapeRegExp)
     .join("|");
 
+const safeDecode = (s: string) => {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+};
+
 /** `clean(text)`: the text with every hit replaced, and how many there were. */
 export function textSanitizer(rules: SanitizeRules) {
   const tilde = (p: string) =>
@@ -48,9 +56,11 @@ export function textSanitizer(rules: SanitizeRules) {
   // URLs carry paths encoded (`?repo=%2FUsers%2Fme%2Fapp`); those forms count too.
   const repoForms = [rules.repo, tilde(rules.repo), encodeURIComponent(rules.repo)];
   const repoPattern = new RegExp(`(?:${alternation(repoForms)})${NOT_PATH_CHAR}`, "g");
-  const homePattern = new RegExp(
-    `${escapeRegExp(rules.home)}(?=/|[^\\w.-]|$)|${escapeRegExp(encodeURIComponent(rules.home))}(?![\\w.-])`,
-    "g",
+  const homePattern = new RegExp(`${escapeRegExp(rules.home)}(?=/|[^\\w.-]|$)`, "g");
+  // An encoded home path reads as a whole: `%2Fhome%2Fme%2Fclients%2Facme`.
+  const encodedHome = new RegExp(
+    `${escapeRegExp(encodeURIComponent(rules.home))}(?![\\w.~-])((?:%2F[\\w.~-]+)*)`,
+    "gi",
   );
   const allowedPaths = rules.allow.filter((a) => a.startsWith("~") || a.startsWith("/")).map(tilde);
   const allowedNames = new Set(rules.allow.map((a) => a.toLowerCase()));
@@ -78,12 +88,17 @@ export function textSanitizer(rules: SanitizeRules) {
       return replacement;
     };
     let out = text.replace(repoPattern, ".").replace(homePattern, "~");
+    out = out.replace(encodedHome, (_, rest: string) => {
+      const p = `~${safeDecode(rest)}`;
+      return rest === "" || pathAllowed(p) ? `~${rest}` : hit("<path>");
+    });
     out = out.replace(HOME_RELATIVE, (p) => (pathAllowed(p) ? p : hit("<path>")));
     out = out.replace(ABSOLUTE, (p) => (HOME_ROOTS.test(p) && !pathAllowed(p) ? hit("<path>") : p));
+    // Whole addresses first: a name in the local part must not leave the domain behind.
+    out = out.replace(EMAIL, (e) => (PUBLIC_EMAIL.test(e) ? e : hit("<email>")));
     if (spanPattern)
       out = out.replace(spanPattern, (m) => hit(`<${spanKind.get(m.toLowerCase()) ?? "private"}>`));
     if (namePattern) out = out.replace(namePattern, () => hit("<private>"));
-    out = out.replace(EMAIL, (e) => (PUBLIC_EMAIL.test(e) ? e : hit("<email>")));
     return { text: out, hits };
   };
 }

@@ -68,7 +68,7 @@ Session text is about the whole machine: an agent lists `~/proj`, reads other re
 
 `--sanitize anonymize` (default) keeps the structure with those placeholders; `--sanitize remove` drops what carries a hit: the output, file, message or the whole action when its command names something private. `--sanitize off` writes entries as they are.
 
-`--sanitize-agent on` also has an ACP agent read the entries first (by default `codex-acp`, which must be installed, running `gpt-6-luna` with low effort, read-only, in an empty directory; every permission it asks for is refused). It names what else is private (other projects, clients, people, internal hosts); those spans are hidden everywhere like the rest. A reply that doesn't parse fails the sync rather than writing unchecked text. The agent sees the text, so it goes to that model's provider.
+`--sanitize-agent on` also has an ACP agent read the entries first (by default `codex-acp`, which must be installed, running `gpt-6-luna` with low effort, in an empty directory with its tools turned off and a Codex home holding only your login, so no config, MCP servers, skills or memories; every permission it asks for is refused). It names what else is private (other projects, clients, people, internal hosts); those spans are hidden everywhere like the rest. A reply that doesn't parse fails the sync rather than writing unchecked text, and the error never quotes it. The agent sees the text, so it goes to that model's provider.
 
 `ledger sanitize` applies the same to every entry already on the branch (local and origin's) and writes them as one commit with no history, so no earlier version survives; `--push` replaces origin's copy unless it moved meanwhile. Rewriting entries never adds back what was hidden.
 
