@@ -222,6 +222,81 @@ export function splitCommand(command: string): string[][][] {
   return pipelines;
 }
 
+/**
+ * Lays out long one-line commands for reading: one statement per line (breaking at top-level
+ * `;` `&` `&&` `||`), loop and `if` bodies indented. Shorter lines, heredoc and `\`-continued
+ * lines, and lines it can't follow (`case`, unbalanced blocks) stay as written. Text is never rewritten, only split.
+ */
+export function formatShell(command: string, width = 80): string {
+  const lines = command.split("\n");
+  // A `\`-continued line is half a statement; leave both halves alone.
+  const continued = (i: number) => lines[i]?.endsWith("\\") ?? false;
+  return lines
+    .map((line, i) =>
+      line.length > width && !line.includes("<<") && !continued(i) && !continued(i - 1)
+        ? formatLine(line)
+        : line,
+    )
+    .join("\n");
+}
+
+function formatLine(line: string): string {
+  const out: string[] = [];
+  let depth = 0;
+  const emit = (text: string) => out.push("  ".repeat(depth) + text);
+  for (const s of statements(line)) {
+    const word = /^\S+/.exec(s.text)?.[0] ?? "";
+    let text = s.text;
+    if (word === "case") return line;
+    if (["done", "fi", "}", "else", "elif"].includes(word)) depth--;
+    if (depth < 0) return line;
+    if (word === "do" || word === "then") {
+      // `for x in a b; do` keeps its `do` on the header line.
+      if (!out.length) return line;
+      out[out.length - 1] += `; ${word}`;
+      depth++;
+      text = text.slice(word.length).trim();
+    } else if (word === "else" || word === "{") {
+      emit(word);
+      depth++;
+      text = text.slice(word.length).trim();
+    }
+    if (text) emit(s.op && s.op !== ";" ? `${text} ${s.op}` : text);
+  }
+  return depth === 0 ? out.join("\n") : line;
+}
+
+/** One line's top-level statements and the operator ending each. Quotes, substitutions, subshells and comments are opaque. */
+function statements(line: string): { text: string; op: string }[] {
+  const out: { text: string; op: string }[] = [];
+  let start = 0;
+  let parens = 0;
+  const cut = (end: number, op: string) => {
+    out.push({ text: line.slice(start, end).trim(), op });
+    start = end + op.length;
+  };
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]!;
+    if (c === "\\") i++;
+    else if (c === "'") {
+      const close = line.indexOf("'", i + 1);
+      i = close < 0 ? line.length : close;
+    } else if (c === '"') i = doubleQuoteEnd(line, i) - 1;
+    else if ((c === "$" && line[i + 1] === "(") || c === "`") i = substitutionEnd(line, i) - 1;
+    else if (c === "#" && (i === 0 || /\s/.test(line[i - 1]!))) break;
+    else if (c === "(") parens++;
+    else if (c === ")") parens--;
+    else if (parens > 0) continue;
+    else if ((c === "&" || c === "|") && line[i + 1] === c) {
+      cut(i, c + c);
+      i++;
+    } else if (c === ";" || (c === "&" && !/[<>|]/.test(line[i - 1] ?? "") && line[i + 1] !== ">"))
+      cut(i, c);
+  }
+  out.push({ text: line.slice(start).trim(), op: "" });
+  return out.filter((s) => s.text);
+}
+
 /** `isSearch`: exit code 1 means "no match" (rg/grep), not failure. */
 export type Part = { kind: ActionKind; title: string; targets?: string[]; isSearch?: boolean };
 
