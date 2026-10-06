@@ -12,7 +12,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import type { FileChange } from "../core/domain.ts";
-import { unwrapShell } from "../core/shell.ts";
+import { formatShell, unwrapShell } from "../core/shell.ts";
 import { commandSegments, outputLang } from "./codeLang.ts";
 import { SHIKI_THEMES, useTheme } from "./theme.tsx";
 
@@ -78,7 +78,9 @@ export function Code({ text, lang }: { text: string; lang: string }) {
 /** Shell command with heredoc bodies in their own language (python, ts, sql, …). */
 export function CommandBlock({ command }: { command: string }) {
   // The `/bin/zsh -lc "…"` wrapper is noise, and its quotes would hide heredoc terminators.
-  const segments = commandSegments(unwrapShell(command));
+  const segments = commandSegments(unwrapShell(command)).map((s) =>
+    s.lang === "bash" ? { ...s, text: formatShell(s.text) } : s,
+  );
   return (
     <div className="code-stack cmd">
       {segments.map((s, i) => (

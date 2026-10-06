@@ -3,7 +3,7 @@ import { assert, describe, it } from "@effect/vitest";
 import type { Action } from "./domain.ts";
 import { clipDiff, normalize, type ActivityRow } from "./normalize.ts";
 import type { ToolPayload } from "./payload.ts";
-import { classifyRun, humanizeCommand } from "./shell.ts";
+import { classifyRun, formatShell, humanizeCommand } from "./shell.ts";
 import { buildTree, DEFAULT_SWITCHES } from "./tree.ts";
 
 describe("core", () => {
@@ -52,6 +52,45 @@ describe("core", () => {
     assert.deepStrictEqual(titles(`bash -lc "rg \\"a\\.b\\" src"`), [
       'search:search "a\\.b" in src',
     ]);
+  });
+
+  it("lays out long one-line commands, one statement per line", () => {
+    const loop =
+      'cd /w/agents/shared; for t in "a b" "c"; do (bun test tests/integration -t "$t" > /tmp/int.log 2>&1 &); sleep 8; echo "== $t; x"; grep -E "pass|fail" /tmp/int.log | head -5; pkill -f "tests/integration"; done';
+    assert.strictEqual(
+      formatShell(loop),
+      [
+        "cd /w/agents/shared",
+        'for t in "a b" "c"; do',
+        '  (bun test tests/integration -t "$t" > /tmp/int.log 2>&1 &)',
+        "  sleep 8",
+        '  echo "== $t; x"',
+        '  grep -E "pass|fail" /tmp/int.log | head -5',
+        '  pkill -f "tests/integration"',
+        "done",
+      ].join("\n"),
+    );
+    const chain =
+      "cd /Users/someone/proj/x && if [ -f a ]; then rm a; else touch b; fi && pnpm test $(echo a;b) || true";
+    assert.strictEqual(
+      formatShell(chain),
+      [
+        "cd /Users/someone/proj/x &&",
+        "if [ -f a ]; then",
+        "  rm a",
+        "else",
+        "  touch b",
+        "fi &&",
+        "pnpm test $(echo a;b) ||",
+        "true",
+      ].join("\n"),
+    );
+    // Short lines, `case` and unbalanced blocks stay as written.
+    assert.strictEqual(formatShell("cd x && pnpm test"), "cd x && pnpm test");
+    const odd = `case $x in a) echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;; b) echo bbbbbbbbbbbbbbbbbbbbbbbbbbb;; esac`;
+    assert.strictEqual(formatShell(odd), odd);
+    const continued = `docker cp a "$c:/usr/local/bin/aaaaaaaaaaaaaaaaaaaa" > /dev/null 2>&1 \\\n  && docker exec "$c" sh -c 'chmod 755 /usr/local/bin/aaaaaaaaaaaaaaaaaaaaaaa; ls'`;
+    assert.strictEqual(formatShell(continued), continued);
   });
 
   it("keeps command substitutions inside their word", () => {
