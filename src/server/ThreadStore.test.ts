@@ -43,6 +43,7 @@ const ConfigLive = Layer.succeed(
     dbPath: ":memory:",
     codexBin: "codex",
     codexHome: "/home/me/.codex",
+    claudeHome: "/nonexistent",
     labelsPath: "/dev/null",
     userConfigPath: "",
     distDir: "dist",

@@ -10,6 +10,7 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
 import { InvalidProofScope, ToolreaderApi } from "../core/api.ts";
+import { CLAUDE_ID_PREFIX, ClaudeTranscripts } from "./ClaudeTranscripts.ts";
 import { CODEX_ID_PREFIX, CodexSessions } from "./CodexSessions.ts";
 import { Labeler } from "./Labeler.ts";
 import { Ledger } from "./Ledger.ts";
@@ -26,15 +27,18 @@ const ThreadsHandlers = HttpApiBuilder.group(
   Effect.fn(function* (handlers) {
     const store = yield* ThreadStore;
     const codex = yield* CodexSessions;
+    const claude = yield* ClaudeTranscripts;
     const labeler = yield* Labeler;
     const proofs = yield* Proofs;
     const codexId = (id: string) =>
       id.startsWith(CODEX_ID_PREFIX) ? id.slice(CODEX_ID_PREFIX.length) : null;
+    const claudeId = (id: string) =>
+      id.startsWith(CLAUDE_ID_PREFIX) ? id.slice(CLAUDE_ID_PREFIX.length) : null;
     return handlers
       .handle("list", () =>
-        Effect.all([store.list, codex.list], { concurrency: "unbounded" }).pipe(
-          Effect.map(([t3, other]) =>
-            [...t3, ...other].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)),
+        Effect.all([store.list, codex.list, claude.list], { concurrency: "unbounded" }).pipe(
+          Effect.map((sources) =>
+            sources.flat().sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)),
           ),
         ),
       )
@@ -42,13 +46,19 @@ const ThreadsHandlers = HttpApiBuilder.group(
         labeler.forThread(params.id).pipe(
           Effect.flatMap((labels) => {
             const id = codexId(params.id);
-            return id ? codex.get(id, labels) : store.get(params.id, labels);
+            const cid = claudeId(params.id);
+            return id
+              ? codex.get(id, labels)
+              : cid
+                ? claude.get(cid, labels)
+                : store.get(params.id, labels);
           }),
         ),
       )
       .handle("head", ({ params }) => {
         const id = codexId(params.id);
-        return id ? codex.head(id) : store.head(params.id);
+        const cid = claudeId(params.id);
+        return id ? codex.head(id) : cid ? claude.head(cid) : store.head(params.id);
       })
       .handle("proof", ({ params, query }) =>
         Effect.gen(function* () {

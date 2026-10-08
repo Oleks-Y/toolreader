@@ -172,6 +172,7 @@ const withSanitizer = <A, E>(
         dbPath: "",
         codexBin: "/opt/codex/bin/codex",
         codexHome: "",
+        claudeHome: "",
         labelsPath: "",
         userConfigPath: machineConfig,
         distDir: "",

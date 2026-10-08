@@ -175,6 +175,9 @@ pre {
 .provider.source-codex {
   color: var(--search);
 }
+.provider.source-claude {
+  color: var(--write);
+}
 .thread-row .num {
   text-align: right;
 }

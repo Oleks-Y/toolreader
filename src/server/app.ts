@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 
+import { ClaudeTranscripts } from "./ClaudeTranscripts.ts";
 import { CodexRollouts } from "./CodexRollouts.ts";
 import { CodexSessions } from "./CodexSessions.ts";
 import { Labeler } from "./Labeler.ts";
@@ -46,7 +47,13 @@ const appLayer = <R>(
 ) =>
   Layer.mergeAll(Proofs.layer, Ledger.layer).pipe(
     Layer.provideMerge(
-      Layer.mergeAll(codexSessions, CodexRollouts.layer, Labeler.layer, Sanitizer.layer),
+      Layer.mergeAll(
+        codexSessions,
+        CodexRollouts.layer,
+        ClaudeTranscripts.layer,
+        Labeler.layer,
+        Sanitizer.layer,
+      ),
     ),
     Layer.provideMerge(ThreadStoreLive),
     Layer.provideMerge(configLayer(codexHome)),
