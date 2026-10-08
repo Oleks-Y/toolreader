@@ -386,7 +386,8 @@ const linkKey = (l: LedgerLink) => `${l.thread.id}\u0000${l.role}`;
 
 /**
  * `found` added to `current`, one link per thread and role (a coder can review its own commit):
- * the stronger `via` wins, and a link with no history yet takes the other's. `explicit` (what
+ * the stronger `via` wins (at equal strength the found one, unless asserted), and a link with no
+ * history yet takes the other's. `explicit` (what
  * `ledger link`/`review` just asserted) replaces its link outright. Nothing is dropped.
  */
 export function mergeLinks(
@@ -401,7 +402,9 @@ export function mergeLinks(
       out.set(linkKey(link), link);
       continue;
     }
-    const [keep, other] = strongerVia(link.via, old.via) ? [link, old] : [old, link];
+    // Sync's own finding at the same strength is newer: it may hold history the old one lacks.
+    const newer = link.via !== "asserted" && !strongerVia(old.via, link.via);
+    const [keep, other] = newer ? [link, old] : [old, link];
     out.set(
       linkKey(link),
       keep.entries.length > 0

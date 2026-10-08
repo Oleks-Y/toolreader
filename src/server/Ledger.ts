@@ -777,11 +777,17 @@ export class Ledger extends Context.Service<
             if (editedPaths(segment, files).size > 0) add(s, "evidence", segment);
           }
 
-          // Only what the entry doesn't already hold as strongly, nor had unlinked.
+          // Only what the entry doesn't already hold as strongly (or holds with less history),
+          // nor had unlinked.
           const fresh = found.filter((f) => {
             if (current?.unlinked.includes(f.thread.id)) return false;
-            const old = current?.links.find((l) => l.thread.id === f.thread.id);
-            return !old || strongerVia(f.via, old.via) || old.entries.length === 0;
+            const old = current?.links.find(
+              (l) => l.thread.id === f.thread.id && l.role === f.role,
+            );
+            if (!old || old.entries.length === 0 || strongerVia(f.via, old.via)) return true;
+            if (strongerVia(old.via, f.via)) return false;
+            const have = new Set(old.entries.map((e) => e.id));
+            return f.segment.some((e) => !have.has(e.id));
           });
           if (current && fresh.length === 0) {
             existing++;

@@ -302,6 +302,8 @@ describe("several threads per commit", () => {
       "an asserted link takes the history sync found",
     );
     assert.strictEqual(mergeLinks([link("s1", { via: "evidence" })], [link("s1")])[0]!.via, "time");
+    const longer = link("s1", { entries: [action("x", "t", "ls"), action("y", "t", "ls")] });
+    assert.strictEqual(mergeLinks([link("s1")], [longer])[0]!.entries.length, 2, "same via: newer");
     // A coder reviewing its own commit keeps both links.
     const self = mergeLinks(
       [link("s1", { via: "sha" })],
