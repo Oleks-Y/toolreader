@@ -34,6 +34,8 @@ const lines = [
   user("<command-name>/model</command-name>"),
   user([{ type: "text", text: "Run the deep-research workflow." }], { isMeta: true }),
   user("fix the build"),
+  user("<task-notification>agent finished</task-notification>"),
+  user("<template>\n  <p>hi</p>\n</template> make this a component"),
   "not json",
   assistant({ type: "thinking", thinking: "Check the test first", signature: "x" }),
   assistant(use("t1", "Bash", { command: "pnpm test", description: "Run tests" })),
@@ -68,6 +70,8 @@ const lines = [
   assistant({ type: "text", text: "Fixed." }, use("t4", "Bash", { command: "pnpm build" })),
   JSON.stringify({ type: "custom-title", customTitle: "Build fix", sessionId: "s1" }),
 ];
+// Compaction can re-append records already in the file.
+lines.push(lines[3]!, lines[7]!);
 
 const actions = (entries: Entry[]) => entries.filter((e): e is Action => e.type === "action");
 
@@ -93,6 +97,7 @@ describe("claudeTranscript", () => {
         .map((e) => e.type === "message" && [e.role, e.text]),
       [
         ["user", "fix the build"],
+        ["user", "<template>\n  <p>hi</p>\n</template> make this a component"],
         ["reasoning", "Check the test first"],
         ["assistant", "Fixed."],
       ],

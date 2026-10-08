@@ -61,14 +61,16 @@ const blocks = (l: Line): ReadonlyArray<Block> => {
   return Predicate.isString(c) ? [{ type: "text", text: c }] : (c ?? []);
 };
 
-/** What the user typed. Slash-command echoes, hook output and reminders arrive as `<tag>…` text. */
+/** Text Claude Code writes as the user: slash-command echoes, `!` shell runs, reminders, task notices. */
+const SYNTHETIC =
+  /^\s*<(?:command-(?:name|message|args)|local-command-(?:stdout|stderr|caveat)|bash-(?:input|stdout|stderr)|system-reminder|task-notification)>/;
+
+/** What the user typed. */
 const typed = (l: Line): string =>
   l.isMeta || l.isCompactSummary
     ? ""
     : blocks(l)
-        .flatMap((b) =>
-          b.type === "text" && b.text && !/^\s*<[\w-]+>/.test(b.text) ? [b.text] : [],
-        )
+        .flatMap((b) => (b.type === "text" && b.text && !SYNTHETIC.test(b.text) ? [b.text] : []))
         .join("\n");
 
 const parse = (lines: ReadonlyArray<string>): Line[] =>
@@ -110,9 +112,15 @@ export function claudeTranscriptToRows(lines: ReadonlyArray<string>): {
   const messages: MessageRow[] = [];
   const calls = new Map<string, { at: string; seq: number; name: string; input: Block["input"] }>();
   const results = new Map<string, Block>();
+  const seen = new Set<string>();
   parse(lines).forEach((l, seq) => {
     // Subagents write their own files; a stray sidechain line isn't this session's work.
     if (l.isSidechain) return;
+    // Compaction can re-append earlier records; the first copy keeps its place.
+    if (l.uuid) {
+      if (seen.has(l.uuid)) return;
+      seen.add(l.uuid);
+    }
     const at = l.timestamp ?? "";
     const id = l.uuid ?? `line-${seq}`;
     if (l.type === "user") {
