@@ -527,7 +527,11 @@ export class Sanitizer extends Context.Service<
               entryTexts(first),
               settings.agent ?? {},
               // The entries' own sessions belong to this project; their titles stay.
-              [...project, ...(settings.allow ?? []), ...first.map((e) => e.thread.title)],
+              [
+                ...project,
+                ...(settings.allow ?? []),
+                ...first.flatMap((e) => e.links.map((l) => l.thread.title)),
+              ],
             );
           }
           const rules = { ...base, spans: spans ?? [] };

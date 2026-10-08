@@ -124,11 +124,11 @@ const seedV2 = Effect.gen(function* () {
   yield* sql`create table orchestration_v2_projection_threads (thread_id text primary key, project_id text not null, title text not null, default_provider text not null, updated_at text not null, archived_at text, deleted_at text, payload_json text not null)`;
   yield* sql`create table orchestration_v2_projection_runs (run_id text primary key, thread_id text not null, ordinal integer not null, status text not null)`;
   yield* sql`create table orchestration_v2_projection_turn_items (turn_item_id text primary key, thread_id text not null, ordinal integer not null, type text not null, status text not null, updated_at text not null, payload_json text not null)`;
-  yield* sql`create table orchestration_v2_projection_provider_threads (provider_thread_id text primary key, provider text not null, payload_json text not null)`;
+  yield* sql`create table orchestration_v2_projection_provider_threads (provider_thread_id text primary key, thread_id text, provider text not null, payload_json text not null)`;
   yield* sql`create table provider_session_runtime (thread_id text primary key, provider_name text not null, resume_cursor_json text)`;
   yield* sql`insert into orchestration_v2_projection_threads values
     ('t1', 'p1', 'Fix it', 'codex', '2026-01-01T00:00:00Z', null, null, '{}'),
-    ('n1', 'p1', 'New work', 'claudeAgent', '2026-02-01T00:00:00Z', null, null, '{"worktreePath":"/wt"}'),
+    ('n1', 'p1', 'New work', 'claudeAgent', '2026-02-01T00:00:00Z', null, null, '{"worktreePath":"/wt","lineage":{"parentThreadId":"t1","relationshipToParent":"subagent"}}'),
     ('gone', 'p1', 'Deleted', 'codex', '2026-01-02T00:00:00Z', null, '2026-01-03T00:00:00Z', '{}')`;
   yield* sql`insert into orchestration_v2_projection_runs values ('r1', 'n1', 1, 'completed'), ('r2', 'n1', 2, 'running')`;
   const turnItem = (
@@ -154,7 +154,9 @@ const seedV2 = Effect.gen(function* () {
     input: { file_path: "/wt/src/b.ts" },
   });
   yield* sql`insert into provider_session_runtime values ('t1', 'codex', '{"threadId":"codex-v1"}')`;
-  yield* sql`insert into orchestration_v2_projection_provider_threads values ('pt1', 'codex', '{"nativeThreadRef":{"nativeId":"codex-v2"}}')`;
+  yield* sql`insert into orchestration_v2_projection_provider_threads values
+    ('pt1', 't1', 'codex', '{"nativeThreadRef":{"nativeId":"codex-v2"}}'),
+    ('pt2', 'n1', 'claudeAgent', '{"nativeThreadRef":{"nativeId":"claude-session"}}')`;
 });
 
 const TestV2Live = ThreadStore.layer.pipe(
@@ -211,6 +213,18 @@ describe("ThreadStore on orchestration V2", () => {
         const gone = yield* Effect.flip(store.head("gone"));
         assert.strictEqual(gone._tag, "ThreadNotFound");
         assert.deepStrictEqual([...(yield* store.codexThreadIds)].sort(), ["codex-v1", "codex-v2"]);
+      }),
+    );
+
+    it.effect("maps what agents export to T3 threads, and a subagent to its parent", () =>
+      Effect.gen(function* () {
+        const { nativeIds, parents } = yield* (yield* ThreadStore).lineage;
+        assert.deepStrictEqual([...nativeIds].sort(), [
+          ["claude-session", "n1"],
+          ["codex-v1", "t1"],
+          ["codex-v2", "t1"],
+        ]);
+        assert.deepStrictEqual([...parents], [["n1", "t1"]]);
       }),
     );
   });

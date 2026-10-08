@@ -30,19 +30,32 @@ const entry = (entries: Entry[], labels: Record<string, string> = {}): LedgerEnt
     committedAt: "2026-01-01T10:00:00Z",
     patchId: null,
   },
-  thread: {
-    id: "t1",
-    title: "help with acme-backend",
-    source: "codex",
-    provider: "codex",
-    origin: null,
-  },
-  match: "sha",
+  links: [
+    {
+      thread: {
+        id: "t1",
+        title: "help with acme-backend",
+        source: "codex",
+        provider: "codex",
+        origin: null,
+        parent: null,
+      },
+      role: "coder",
+      via: "sha",
+      reviewedSha: null,
+      files: [],
+      entries,
+      labels,
+    },
+  ],
+  unlinked: [],
+  files: [],
+  notes: [{ text: "fixed on box by hand", file: null, at: "2026-01-01T11:00:00Z" }],
   outputs: "included",
   redactions: 1,
-  entries,
-  labels,
 });
+/** The one link's history, as the tests read it. */
+const only = (e: LedgerEntry) => e.links[0]!;
 
 describe("textSanitizer", () => {
   const clean = textSanitizer(rules);
@@ -125,34 +138,36 @@ describe("sanitizeEntry", () => {
 
   it("anonymize keeps the structure and counts every hit", () => {
     const { entry: out, hits } = sanitizeEntry(entry(entries, labels), rules, "anonymize");
-    assert.strictEqual(out.entries.length, 5);
+    assert.strictEqual(only(out).entries.length, 5);
     assert.strictEqual(out.commit.subject, "fix: works on <private>");
-    assert.strictEqual(out.thread.title, "help with <private>");
-    assert.strictEqual((out.entries[2] as Action).output, "<private>\napp\n");
-    assert.strictEqual((out.entries[3] as Action).command, "cat <path>");
+    assert.strictEqual(only(out).thread.title, "help with <private>");
+    assert.strictEqual((only(out).entries[2] as Action).output, "<private>\napp\n");
+    assert.strictEqual((only(out).entries[3] as Action).command, "cat <path>");
     assert.deepStrictEqual(
-      (out.entries[4] as Action).files?.map((f) => f.path),
+      (only(out).entries[4] as Action).files?.map((f) => f.path),
       ["src/a.ts", "<path>"],
     );
-    assert.strictEqual(out.labels.m2, "compared with <private>");
-    assert.strictEqual(hits, 8);
-    assert.strictEqual(out.redactions, 9);
+    assert.strictEqual(only(out).labels.m2, "compared with <private>");
+    assert.strictEqual(out.notes[0]!.text, "fixed on <private> by hand");
+    assert.strictEqual(hits, 9);
+    assert.strictEqual(out.redactions, 10);
   });
 
   it("remove drops what carries a hit: messages, actions, outputs, files and their labels", () => {
     const { entry: out } = sanitizeEntry(entry(entries, labels), rules, "remove");
     assert.deepStrictEqual(
-      out.entries.map((e) => e.id),
+      only(out).entries.map((e) => e.id),
       ["m1", "a1", "a3"],
     );
-    const ls = out.entries[1] as Action;
+    const ls = only(out).entries[1] as Action;
     assert.strictEqual(ls.output, undefined);
     assert.strictEqual(ls.clipped, undefined);
     assert.deepStrictEqual(
-      (out.entries[2] as Action).files?.map((f) => f.path),
+      (only(out).entries[2] as Action).files?.map((f) => f.path),
       ["src/a.ts"],
     );
-    assert.deepStrictEqual(out.labels, { a1: "listed projects", "fold:x": "explored" });
+    assert.deepStrictEqual(only(out).labels, { a1: "listed projects", "fold:x": "explored" });
+    assert.deepStrictEqual(out.notes, [], "a note that names something private goes");
     assert.strictEqual(out.commit.subject, "fix: works on <private>");
   });
 

@@ -703,3 +703,33 @@ a.chip {
 .ledger-commit.empty .turn-head {
   cursor: default;
 }
+.ledger-link > summary {
+  cursor: pointer;
+  padding: 4px 0;
+}
+.ledger-link .role {
+  font-size: 11.5px;
+  font-weight: 650;
+  padding: 1px 7px;
+  border-radius: 9px;
+  background: var(--panel);
+}
+.ledger-link .stale,
+.ledger-files .bucket.untracked {
+  color: var(--fail);
+}
+.ledger-files {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0;
+  font-size: 12.5px;
+}
+.ledger-files .bucket {
+  display: inline-block;
+  width: 7em;
+  color: var(--dim);
+}
+.ledger-note {
+  margin: 4px 0;
+  color: var(--dim);
+}

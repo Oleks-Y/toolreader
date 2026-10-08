@@ -68,6 +68,7 @@ describe("Proofs", () => {
                 get: () => Effect.succeed(view),
                 head: () => Effect.die("unused"),
                 codexThreadIds: Effect.succeed(new Set()),
+                lineage: Effect.succeed({ nativeIds: new Map(), parents: new Map() }),
                 projects: Effect.succeed([]),
               }),
             ),

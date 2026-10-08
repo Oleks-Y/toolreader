@@ -155,33 +155,43 @@ export function sanitizeEntry(
     return result;
   };
 
-  const entries = entry.entries.flatMap((e): Entry[] => {
-    if (e.type === "action") {
-      const a = action(e);
-      return a ? [a] : [];
-    }
-    const text = field(e.text);
-    return mode === "remove" && text.hit ? [] : [{ ...e, text: text.text }];
-  });
-  const ids = new Set(entries.map((e) => e.id));
-  const labels = Object.fromEntries(
-    Object.entries(entry.labels).flatMap(([id, label]) => {
-      if (!ids.has(id) && !id.startsWith("fold:")) return [];
-      const l = field(label);
-      return mode === "remove" && l.hit ? [] : [[id, l.text]];
-    }),
-  );
+  const history = (list: ReadonlyArray<Entry>, labels: Readonly<Record<string, string>>) => {
+    const entries = list.flatMap((e): Entry[] => {
+      if (e.type === "action") {
+        const a = action(e);
+        return a ? [a] : [];
+      }
+      const text = field(e.text);
+      return mode === "remove" && text.hit ? [] : [{ ...e, text: text.text }];
+    });
+    const ids = new Set(entries.map((e) => e.id));
+    const kept = Object.fromEntries(
+      Object.entries(labels).flatMap(([id, label]) => {
+        if (!ids.has(id) && !id.startsWith("fold:")) return [];
+        const l = field(label);
+        return mode === "remove" && l.hit ? [] : [[id, l.text]];
+      }),
+    );
+    return { entries, labels: kept };
+  };
   // Commit subjects and thread titles can't be dropped; they are anonymized in either mode.
   const subject = field(entry.commit.subject).text;
-  const title = field(entry.thread.title).text;
+  const links = entry.links.map((l) => ({
+    ...l,
+    thread: { ...l.thread, title: field(l.thread.title).text },
+    ...history(l.entries, l.labels),
+  }));
+  const notes = entry.notes.flatMap((n) => {
+    const text = field(n.text);
+    return mode === "remove" && text.hit ? [] : [{ ...n, text: text.text }];
+  });
   return {
     entry: {
       ...entry,
       commit: { ...entry.commit, subject },
-      thread: { ...entry.thread, title },
+      links,
+      notes,
       redactions: entry.redactions + total,
-      entries,
-      labels,
     },
     hits: total,
   };
@@ -193,19 +203,22 @@ export function entryTexts(entries: ReadonlyArray<LedgerEntry>): string[] {
   const add = (s: string | undefined) => s && texts.add(s);
   for (const e of entries) {
     add(e.commit.subject);
-    add(e.thread.title);
-    for (const l of Object.values(e.labels)) add(l);
-    for (const x of e.entries) {
-      if (x.type !== "action") {
-        add(x.text);
-        continue;
-      }
-      for (const s of [x.title, x.hint, x.command, x.output]) add(s);
-      for (const p of x.parts ?? []) add(p.title);
-      for (const t of x.targets ?? []) add(t);
-      for (const f of x.files ?? []) {
-        add(f.path);
-        add(f.diff);
+    for (const n of e.notes) add(n.text);
+    for (const l of e.links) {
+      add(l.thread.title);
+      for (const label of Object.values(l.labels)) add(label);
+      for (const x of l.entries) {
+        if (x.type !== "action") {
+          add(x.text);
+          continue;
+        }
+        for (const s of [x.title, x.hint, x.command, x.output]) add(s);
+        for (const p of x.parts ?? []) add(p.title);
+        for (const t of x.targets ?? []) add(t);
+        for (const f of x.files ?? []) {
+          add(f.path);
+          add(f.diff);
+        }
       }
     }
   }

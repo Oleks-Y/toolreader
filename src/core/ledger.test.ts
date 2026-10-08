@@ -1,16 +1,27 @@
 import { assert, describe, it } from "@effect/vitest";
 
 import type { Action, Entry } from "./domain.ts";
+import * as Schema from "effect/Schema";
+
 import {
   buildEntry,
   clipOutputs,
+  editedPaths,
+  fileCoverage,
   findCommitActions,
+  isStale,
+  LedgerEntry,
   matchCommit,
   madeEdits,
+  mergeEntries,
+  mergeLinks,
+  segmentByTime,
   segmentFor,
+  sessionFromEnv,
   sessionsBetween,
   sessionSegment,
   type LedgerCommit,
+  type LedgerLink,
 } from "./ledger.ts";
 import { publicRange } from "./ledgerSite.ts";
 
@@ -37,6 +48,25 @@ const user = (id: string, at: string): Entry => ({
   role: "user",
   text: id,
 });
+const thread = {
+  id: "t",
+  title: "t",
+  source: "codex" as const,
+  provider: null,
+  origin: null,
+  parent: null,
+};
+const link = (id: string, over: Partial<LedgerLink> = {}): LedgerLink => ({
+  thread: { ...thread, id, title: id },
+  role: "coder",
+  via: "time",
+  reviewedSha: null,
+  files: [],
+  entries: [action(`${id}-a`, "2026-01-01T09:00:00Z", "ls")],
+  labels: {},
+  ...over,
+});
+const decodeEntry = Schema.decodeUnknownSync(Schema.fromJsonString(LedgerEntry));
 const commit = (sha: string, committedAt: string): LedgerCommit => ({
   sha,
   subject: "s",
@@ -215,13 +245,20 @@ describe("ledger", () => {
     };
     const entry = buildEntry({
       commit,
-      thread: { id: "t", title: "Fix it", source: "codex", provider: null, origin: null },
-      match: "sha",
-      segment: [
-        action("c0", "2026-01-01T09:58:00Z", "pwd", "/home/me/private-client/backend\n"),
-        action("c1", "2026-01-01T09:59:00Z", "git commit -m fix"),
+      links: [
+        {
+          thread: { ...thread, title: "Fix it" },
+          role: "coder",
+          via: "sha",
+          reviewedSha: null,
+          segment: [
+            action("c0", "2026-01-01T09:58:00Z", "pwd", "/home/me/private-client/backend\n"),
+            action("c1", "2026-01-01T09:59:00Z", "git commit -m fix"),
+          ],
+          labels: {},
+        },
       ],
-      labels: {},
+      paths: [],
       outputs: true,
       maxOutput: 0,
       home: "/home/me",
@@ -244,7 +281,135 @@ describe("ledger", () => {
     );
     assert.notInclude(JSON.stringify(view), "/home/me");
     assert.notInclude(JSON.stringify(view), "private-client", "not even as ~/private-client");
-    const pwd = view.commits[0]!.entry!.entries[0]!;
+    const pwd = view.commits[0]!.entry!.links[0]!.entries[0]!;
     assert.strictEqual(pwd.type === "action" && pwd.output, ".\n");
+  });
+});
+
+describe("several threads per commit", () => {
+  it("keeps one link per thread: the stronger via wins, and an asserted link is never dropped", () => {
+    const asserted = link("s1", { via: "asserted", role: "reviewer", entries: [] });
+    const merged = mergeLinks(
+      [asserted],
+      [link("s1", { via: "sha" }), link("s2", { via: "evidence" })],
+    );
+    assert.deepStrictEqual(
+      merged.map((l) => [l.thread.id, l.via, l.role]),
+      [
+        ["s1", "asserted", "reviewer"],
+        ["s2", "evidence", "coder"],
+      ],
+    );
+    assert.strictEqual(
+      merged[0]!.entries.length,
+      1,
+      "an asserted link takes the history sync found",
+    );
+    assert.strictEqual(mergeLinks([link("s1", { via: "evidence" })], [link("s1")])[0]!.via, "time");
+  });
+
+  it("puts each changed file in exactly one bucket", () => {
+    const files = fileCoverage(
+      ["a.ts", "b.ts", "c.ts"],
+      [link("s1", { files: ["a.ts", "b.ts"] }), link("s2", { files: ["b.ts"] })],
+    );
+    assert.deepStrictEqual(
+      files.map((f) => [f.path, f.bucket]),
+      [
+        ["a.ts", "attributed"],
+        ["b.ts", "shared"],
+        ["c.ts", "untracked"],
+      ],
+    );
+  });
+
+  it("counts edits and shell writes to a commit's files, never reads or git add", () => {
+    const cases: Array<[string, boolean]> = [
+      ["sed -i 's/x/y/' src/a.ts", true],
+      ["echo x > src/a.ts", true],
+      ["/bin/zsh -lc 'cat > a.ts <<EOF\nhi\nEOF'", true],
+      ["cat src/a.ts", false],
+      ["rg foo src/a.ts", false],
+      ["git add src/a.ts", false],
+    ];
+    for (const [command, counts] of cases)
+      assert.strictEqual(
+        editedPaths([action("x", "2026-01-01T09:00:00Z", command)], ["src/a.ts"]).has("src/a.ts"),
+        counts,
+        command,
+      );
+    const edit: Action = {
+      ...action("e", "2026-01-01T09:00:00Z", "apply_patch"),
+      kind: "edit",
+      files: [{ path: "/w/repo/src/a.ts", added: 1, removed: 0, isNew: false, isDeleted: false }],
+    };
+    assert.deepStrictEqual([...editedPaths([edit], ["src/a.ts", "a.ts"])], ["src/a.ts"]);
+    assert.strictEqual(editedPaths([{ ...edit, status: "failed" }], ["src/a.ts"]).size, 0);
+  });
+
+  it("takes history between the previous commit and this one", () => {
+    const entries = [
+      user("u0", "2026-01-01T08:00:00Z"),
+      action("a0", "2026-01-01T08:01:00Z", "ls"),
+      user("u1", "2026-01-01T09:00:00Z"),
+      action("a1", "2026-01-01T09:01:00Z", "ls"),
+      action("a2", "2026-01-01T11:00:00Z", "ls"),
+    ];
+    assert.deepStrictEqual(
+      segmentByTime(entries, "2026-01-01T08:30:00Z", "2026-01-01T10:00:00Z").map((e) => e.id),
+      ["u1", "a1"],
+    );
+  });
+
+  it("marks a review stale on any commit but the one reviewed", () => {
+    const review = link("r", { role: "reviewer", reviewedSha: "a1b2" });
+    assert.isFalse(isStale(review, "a1b2"));
+    assert.isTrue(isStale(review, "e4f5"));
+    assert.isFalse(isStale(link("c"), "e4f5"), "only reviews go stale");
+  });
+
+  it("names the agent session from what the agent exports", () => {
+    assert.strictEqual(sessionFromEnv({ CODEX_THREAD_ID: "01a0" }), "codex:01a0");
+    assert.strictEqual(sessionFromEnv({ CLAUDE_CODE_SESSION_ID: "7c2e" }), "claude-code:7c2e");
+    assert.isNull(sessionFromEnv({}));
+  });
+
+  it("reads a v1 entry as one coder link", () => {
+    const v1 = {
+      formatVersion: 1,
+      commit: commit("a".repeat(40), "2026-01-01T10:00:00Z"),
+      thread: { id: "t1", title: "Do it", source: "codex", provider: null, origin: null },
+      match: "time",
+      outputs: "included",
+      redactions: 2,
+      entries: [action("c1", "2026-01-01T09:59:00Z", "git commit -m x")],
+      labels: { c1: "commit" },
+    };
+    const entry = decodeEntry(JSON.stringify(v1));
+    assert.strictEqual(entry.formatVersion, 2);
+    assert.deepStrictEqual(
+      entry.links.map((l) => [l.thread.id, l.role, l.via, l.entries.length, l.labels]),
+      [["t1", "coder", "time", 1, { c1: "commit" }]],
+    );
+  });
+
+  it("adds a note and a link to an entry, and adds nothing twice", () => {
+    const c = commit("a".repeat(40), "2026-01-01T10:00:00Z");
+    const empty = buildEntry({
+      commit: c,
+      links: [],
+      paths: ["a.ts"],
+      outputs: true,
+      maxOutput: 0,
+    });
+    assert.deepStrictEqual(empty.files, [{ path: "a.ts", bucket: "untracked" }]);
+    const fresh = {
+      ...empty,
+      links: [link("s1", { files: ["a.ts"] })],
+      notes: [{ text: "by hand", file: "a.ts", at: "2026-01-01T11:00:00Z" }],
+    };
+    const once = mergeEntries(empty, fresh);
+    assert.deepStrictEqual(once.files, [{ path: "a.ts", bucket: "attributed" }]);
+    assert.deepStrictEqual(mergeEntries(once, fresh), once);
   });
 });

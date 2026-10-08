@@ -92,6 +92,7 @@ const withSessions = <A, E>(
         get: () => Effect.die("unused"),
         head: () => Effect.die("unused"),
         codexThreadIds: Effect.succeed(new Set(["owned-by-t3"])),
+        lineage: Effect.succeed({ nativeIds: new Map(), parents: new Map() }),
         projects: Effect.succeed([{ id: "p1", title: "repo", root: "/work/repo" }]),
       }),
     );

@@ -77,18 +77,29 @@ const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const entry = (actions: Action[]): LedgerEntry => ({
   formatVersion: LEDGER_FORMAT_VERSION,
   commit: { sha: "abc", subject: "feat: invoices", committedAt: "t", patchId: null },
-  thread: {
-    id: "t1",
-    title: "invoices for Clover Casino",
-    source: "codex",
-    provider: null,
-    origin: null,
-  },
-  match: "sha",
+  links: [
+    {
+      thread: {
+        id: "t1",
+        title: "invoices for Clover Casino",
+        source: "codex",
+        provider: null,
+        origin: null,
+        parent: null,
+      },
+      role: "coder",
+      via: "sha",
+      reviewedSha: null,
+      files: [],
+      entries: actions,
+      labels: {},
+    },
+  ],
+  unlinked: [],
+  files: [],
+  notes: [],
   outputs: "included",
   redactions: 0,
-  entries: actions,
-  labels: {},
 });
 
 const run = (id: string, command: string, output?: string): Action => ({
@@ -223,14 +234,14 @@ describe("Sanitizer", () => {
         const out = yield* sanitizer.sanitize(repo, [input], { mode: null, agent: null });
         assert.strictEqual(out.mode, "anonymize");
         assert.deepStrictEqual(out.spans, [{ text: "Clover Casino", kind: "organization" }]);
-        const [a1, a2] = out.entries[0]!.entries as Action[];
+        const [a1, a2] = out.entries[0]!.links[0]!.entries as Action[];
         assert.strictEqual(a1!.command, "cat <path> ~/.codex/config.toml");
         assert.strictEqual(
           a1!.output,
           "deploy for <organization> with Widget Works on http://127.0.0.1:4783/x, localhost:4777, @acme, ~/.codex/sessions/2026, README.md, https://github.com/acme/app/pull/1, bot@users.noreply.github.com",
         );
         assert.strictEqual(a2!.command, "cd . && ls src/app", "the project's own name stays");
-        assert.strictEqual(out.entries[0]!.thread.title, "invoices for <organization>");
+        assert.strictEqual(out.entries[0]!.links[0]!.thread.title, "invoices for <organization>");
 
         const fs = yield* FileSystem.FileSystem;
         const log = (yield* fs.readFileString(logFile))
@@ -292,12 +303,15 @@ describe("Sanitizer", () => {
           { mode: "anonymize", agent: false },
         );
         assert.strictEqual(
-          (named.entries[0]!.entries[0] as Action).command,
+          (named.entries[0]!.links[0]!.entries[0] as Action).command,
           "diff ../quaxly ../<private>",
           "a sibling the project names stays",
         );
         const removed = yield* sanitizer.sanitize(repo, [input], { mode: "remove", agent: false });
-        assert.deepStrictEqual([removed.entries[0]!.entries.length, removed.spans], [0, null]);
+        assert.deepStrictEqual(
+          [removed.entries[0]!.links[0]!.entries.length, removed.spans],
+          [0, null],
+        );
       }),
     ),
   );

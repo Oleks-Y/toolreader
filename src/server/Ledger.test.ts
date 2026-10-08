@@ -186,6 +186,8 @@ const ledgerLayer = (options: {
   labels?: Record<string, string>;
   distDir?: string;
   sanitizer?: Layer.Layer<Sanitizer>;
+  nativeIds?: ReadonlyArray<readonly [string, string]>;
+  parents?: ReadonlyArray<readonly [string, string]>;
 }) =>
   Ledger.layer.pipe(
     Layer.provide(CodexRollouts.layer),
@@ -211,6 +213,10 @@ const ledgerLayer = (options: {
               get: (id) => Effect.succeed(options.t3!.find((v) => v.thread.id === id)!),
               head: () => Effect.die("unused"),
               codexThreadIds: Effect.succeed(new Set(["owned-by-t3"])),
+              lineage: Effect.succeed({
+                nativeIds: new Map(options.nativeIds ?? []),
+                parents: new Map(options.parents ?? []),
+              }),
               projects: Effect.succeed([]),
             }),
           )
@@ -310,10 +316,10 @@ describe("Ledger", () => {
           assert.strictEqual(result.range, "main..HEAD");
           assert.deepStrictEqual(result.sources, ["t3", "codex-rollouts"]);
           assert.deepStrictEqual(
-            result.added.map((a) => [a.commit.subject, a.match, a.actions]),
+            result.added.map((a) => [a.commit.subject, a.links.map((l) => [l.via, l.actions])]),
             [
-              ["feat: a", "time", 2],
-              ["feat: b", "sha", 2],
+              ["feat: a", [["time", 2]]],
+              ["feat: b", [["sha", 2]]],
             ],
           );
           assert.deepStrictEqual(
@@ -329,7 +335,20 @@ describe("Ledger", () => {
           );
           assert.deepStrictEqual(
             files.sort(),
-            [`commits/${first}.json`, `commits/${second}.json`, "patch-ids.json"].sort(),
+            [
+              `commits/${first}.json`,
+              `commits/${second}.json`,
+              `commits/${human}.json`,
+              "patch-ids.json",
+            ].sort(),
+          );
+          // The commit no thread made is recorded too, its file untracked.
+          const byHand = decodeEntry(
+            yield* git(repo, ["show", `agent-ledger:commits/${human}.json`]),
+          );
+          assert.deepStrictEqual(
+            [byHand.links, byHand.files],
+            [[], [{ path: "c.ts", bucket: "untracked" }]],
           );
           assert.include(
             yield* git(repo, ["show", `agent-ledger:commits/${second}.json`]),
@@ -339,7 +358,10 @@ describe("Ledger", () => {
           // A second sync finds nothing new.
           const again = yield* ledger.sync(repo, null, { source: "t3" });
           assert.strictEqual(again.added.length, 0);
-          assert.strictEqual(again.existing, 2);
+          assert.strictEqual(again.existing, 3);
+          const tip = yield* git(repo, ["rev-parse", "agent-ledger"]);
+          yield* ledger.sync(repo, null, { source: "t3" });
+          assert.strictEqual(yield* git(repo, ["rev-parse", "agent-ledger"]), tip, "no new commit");
 
           // Amend keeps the diff: the entry is found again by patch-id.
           yield* git(
@@ -358,14 +380,14 @@ describe("Ledger", () => {
             range.commits.map((c) => [
               c.commit.subject,
               c.matchedBy,
-              c.entry?.entries.map((e) => e.id),
+              c.entry?.links[0]?.entries.map((e) => e.id),
             ]),
             [
               ["feat: a", "sha", ["u1", "e1", "c1"]],
               ["feat: b (reworded)", "patch-id", ["u1", "e2", "c2"]],
             ],
           );
-          assert.deepStrictEqual(range.commits[1]?.entry?.labels, { c2: "Committed b" });
+          assert.deepStrictEqual(range.commits[1]?.entry?.links[0]?.labels, { c2: "Committed b" });
         }).pipe(
           Effect.provide(
             ledgerLayer({
@@ -426,15 +448,16 @@ describe("Ledger", () => {
           const result = yield* ledger.sync(repo, null, { maxOutput: 1000, matchSessions: true });
           assert.deepStrictEqual(result.sources, ["codex-rollouts"]);
           assert.deepStrictEqual(
-            result.added.map((a) => [a.commit.sha, a.thread, a.match, a.actions]),
+            result.added.flatMap((a) =>
+              a.links.map((l) => [a.commit.sha, l.title, l.via, l.actions]),
+            ),
             [
               [byAgent, "Add a", "sha", 2],
               [byCi, "Add b", "session", 2],
             ],
           );
-          const entry = decodeEntry(
-            yield* git(repo, ["show", `agent-ledger:commits/${byCi}.json`]),
-          );
+          const entry = decodeEntry(yield* git(repo, ["show", `agent-ledger:commits/${byCi}.json`]))
+            .links[0]!;
           assert.strictEqual(entry.thread.id, "codex:s2");
           assert.deepStrictEqual(
             entry.entries.map((e) => e.id),
@@ -628,8 +651,12 @@ describe("Ledger", () => {
           );
           const json = yield* git(repo, ["show", `agent-ledger:commits/${sha}.json`]);
           assert.notInclude(json, "supersecret");
-          assert.include(decodeEntry(json).thread.title, "API_TOKEN=[redacted]");
-          assert.notInclude(result.added[0]!.thread, "supersecret", "nor in what sync prints");
+          assert.include(decodeEntry(json).links[0]!.thread.title, "API_TOKEN=[redacted]");
+          assert.notInclude(
+            result.added[0]!.links[0]!.title,
+            "supersecret",
+            "nor in what sync prints",
+          );
         }).pipe(
           Effect.provide(
             ledgerLayer({
@@ -696,7 +723,10 @@ describe("Ledger", () => {
         assert.deepStrictEqual(inlined, decodeRange(encodeRange(view)));
         assert.strictEqual(inlined.range, "main..HEAD");
         const entry = inlined.commits.find((c) => c.commit.sha === sha)!.entry!;
-        assert.include(entry.thread.title, "API_TOKEN=[redacted] and keep </script> in text");
+        assert.include(
+          entry.links[0]!.thread.title,
+          "API_TOKEN=[redacted] and keep </script> in text",
+        );
         assert.strictEqual(entry.commit.subject, "feat: a with API_TOKEN=[redacted]");
         assert.strictEqual(inlined.repo, path.basename(repo));
         assert.deepStrictEqual(
@@ -754,11 +784,11 @@ describe("Ledger", () => {
 
         yield* Effect.gen(function* () {
           const ledger = yield* Ledger;
+          // By default only as evidence: the editor wrote e.ts, the file CI committed.
           const byDefault = yield* ledger.sync(repo, null);
           assert.deepStrictEqual(
-            [byDefault.added.length, byDefault.unmatched.map((c) => c.sha)],
-            [0, [ci]],
-            "off by default",
+            byDefault.added.flatMap((a) => a.links.map((l) => [a.commit.sha, l.via, l.title])),
+            [[ci, "evidence", "Edit e"]],
           );
 
           const twoEditors = yield* ledger.sync(repo, null, { matchSessions: true });
@@ -771,7 +801,7 @@ describe("Ledger", () => {
           yield* fs.remove(second);
           const oneEditor = yield* ledger.sync(repo, null, { matchSessions: true });
           assert.deepStrictEqual(
-            oneEditor.added.map((a) => [a.commit.sha, a.match, a.thread]),
+            oneEditor.added.flatMap((a) => a.links.map((l) => [a.commit.sha, l.via, l.title])),
             [[ci, "session", "Edit e"]],
           );
 
@@ -789,8 +819,9 @@ describe("Ledger", () => {
           const unknown = yield* Effect.flip(ledger.sync(repo, null, { sessions: ["nope"] }));
           assert.include(unknown.message, "nope");
           const named = yield* ledger.sync(repo, null, { sessions: ["reviewer2"] });
+          // ci2 was recorded with no thread; naming one adds it to that entry.
           assert.deepStrictEqual(
-            named.added.map((a) => [a.commit.sha, a.match, a.thread]),
+            named.added.flatMap((a) => a.links.map((l) => [a.commit.sha, l.via, l.title])),
             [[ci2, "session", "Review again"]],
           );
         }).pipe(Effect.provide(ledgerLayer({ dbPath: "/nonexistent/state.sqlite", codexHome })));
@@ -837,7 +868,10 @@ describe("Ledger", () => {
               Effect.succeed({
                 entries: entries.map((e) => ({
                   ...e,
-                  thread: { ...e.thread, title: `clean:${choice.mode}:${choice.agent}` },
+                  links: e.links.map((l) => ({
+                    ...l,
+                    thread: { ...l.thread, title: `clean:${choice.mode}:${choice.agent}` },
+                  })),
                 })),
                 mode: choice.mode ?? "anonymize",
                 hits: entries.length,
@@ -848,7 +882,7 @@ describe("Ledger", () => {
         const titleOn = (ref: string, sha: string) =>
           git(repo, ["show", `${ref}:commits/${sha}.json`]).pipe(
             Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(LedgerEntry))),
-            Effect.map((e) => e.thread.title),
+            Effect.map((e) => e.links[0]!.thread.title),
           );
 
         yield* Effect.gen(function* () {
@@ -1057,10 +1091,243 @@ describe("Ledger", () => {
         const ledger = yield* Ledger;
         const named = yield* ledger.sync(repo, null, { source: "codex-rollouts" });
         assert.deepStrictEqual(
-          named.added.map((a) => [a.commit.sha, a.match]),
+          named.added.flatMap((a) => a.links.map((l) => [a.commit.sha, l.via])),
           [[sha, "sha"]],
         );
       }).pipe(Effect.provide(ledgerLayer({ dbPath: "/nonexistent/state.sqlite", codexHome })));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live(
+    "links every thread of a commit: a trailer, a subagent's edits, a reviewer, notes; and unlinks",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { repo, commitFile } = yield* makeRepo;
+        yield* git(repo, ["switch", "-q", "-c", "feat/x"]);
+        yield* fs.writeFileString(path.join(repo, "b.ts"), "b\n");
+        yield* git(repo, ["add", "b.ts"]);
+        // A coder that never ran `git commit` itself; the commit names it by trailer.
+        const sha = yield* commitFile(
+          "a.ts",
+          "a\n",
+          "feat: a and b\n\nAgent-Session: codex:N1",
+          "2026-01-01T10:10:00Z",
+        );
+        const thread = (id: string, title: string, entries: Entry[]): ThreadView => ({
+          thread: {
+            id,
+            source: "t3",
+            origin: null,
+            title,
+            projectId: "p",
+            projectTitle: "repo",
+            provider: "codex",
+            status: "idle",
+            archived: false,
+            updatedAt: "2026-01-01T10:30:00Z",
+            actionCount: 1,
+            worktree: repo,
+            head: "h",
+          },
+          entries,
+          labels: {},
+        });
+        const t3 = [
+          thread("t-coder", "Write a", [
+            { type: "message", id: "u1", at: "2026-01-01T10:00:00Z", role: "user", text: "a" },
+            action("w1", "2026-01-01T10:05:00Z", "printf 'a' > a.ts"),
+          ]),
+          thread("t-sub", "Write b", [action("w2", "2026-01-01T10:06:00Z", "printf 'b' > b.ts")]),
+          thread("t-review", "Review a", [action("r1", "2026-01-01T10:20:00Z", "git show HEAD")]),
+          thread("t-late", "Write c", [action("w3", "2026-01-01T10:30:00Z", "printf 'c' > c.ts")]),
+        ];
+        const dbPath = path.join(yield* tempDir("toolreader-t3-"), "state.sqlite");
+        yield* fs.writeFileString(dbPath, "");
+        const show = () =>
+          git(repo, ["show", `agent-ledger:commits/${sha}.json`]).pipe(Effect.map(decodeEntry));
+
+        yield* Effect.gen(function* () {
+          const ledger = yield* Ledger;
+          const synced = yield* ledger.sync(repo, null, { source: "t3" });
+          assert.deepStrictEqual(
+            synced.added.flatMap((a) => a.links.map((l) => [l.title, l.role, l.via])),
+            [
+              ["Write a", "coder", "trailer"],
+              ["Write b", "coder", "evidence"],
+            ],
+          );
+          let entry = yield* show();
+          assert.deepStrictEqual(
+            entry.links.map((l) => [l.thread.id, l.thread.parent, l.files]),
+            [
+              ["t-coder", null, ["a.ts"]],
+              ["t-sub", "t-coder", ["b.ts"]],
+            ],
+          );
+          assert.deepStrictEqual(entry.files, [
+            { path: "a.ts", bucket: "attributed" },
+            { path: "b.ts", bucket: "attributed" },
+          ]);
+
+          // The reviewer, as `ledger review` names it from CLAUDE_CODE_SESSION_ID.
+          const before = yield* git(repo, ["rev-parse", "agent-ledger"]);
+          const { linked } = yield* ledger.assert(repo, "HEAD", {
+            link: { session: "claude-code:R1", role: "reviewer", reviewed: true },
+          });
+          assert.deepStrictEqual(
+            [linked?.thread.id, linked?.via, linked?.reviewedSha, linked?.entries.map((e) => e.id)],
+            ["t-review", "asserted", sha, ["r1"]],
+          );
+          assert.strictEqual(
+            yield* git(repo, ["diff", "--name-only", before, "agent-ledger"]),
+            `commits/${sha}.json`,
+            "one entry changes, nothing else",
+          );
+          yield* ledger.assert(repo, sha, { note: { text: "b by hand", file: "b.ts" } });
+          const notInCommit = yield* Effect.flip(
+            ledger.assert(repo, sha, { note: { text: "x", file: "nope.ts" } }),
+          );
+          assert.include(notInCommit.message, "nope.ts");
+          const unknown = yield* Effect.flip(
+            ledger.assert(repo, sha, { link: { session: "codex:nobody", role: "coder" } }),
+          );
+          assert.include(unknown.message, "No session codex:nobody");
+
+          // Sync again: the asserted link and the note stay, and nothing is written.
+          const tip = yield* git(repo, ["rev-parse", "agent-ledger"]);
+          yield* ledger.sync(repo, null, { source: "t3" });
+          assert.strictEqual(yield* git(repo, ["rev-parse", "agent-ledger"]), tip);
+          entry = yield* show();
+          assert.deepStrictEqual(
+            entry.links.map((l) => [l.thread.id, l.role]),
+            [
+              ["t-coder", "coder"],
+              ["t-sub", "coder"],
+              ["t-review", "reviewer"],
+            ],
+          );
+          assert.deepStrictEqual(
+            entry.notes.map((n) => [n.text, n.file]),
+            [["b by hand", "b.ts"]],
+          );
+
+          yield* ledger.assert(repo, sha, { unlink: "t-sub" });
+          entry = yield* show();
+          assert.deepStrictEqual(
+            entry.links.map((l) => l.thread.id),
+            ["t-coder", "t-review"],
+          );
+          assert.deepStrictEqual(entry.files[1], { path: "b.ts", bucket: "untracked" });
+          const missing = yield* Effect.flip(ledger.assert(repo, sha, { unlink: "t-sub" }));
+          assert.include(missing.message, "no link");
+          // Sync finds t-sub again by its edits, and leaves it out; linking by hand brings it back.
+          yield* ledger.sync(repo, null, { source: "t3" });
+          assert.notInclude(
+            (yield* show()).links.map((l) => l.thread.id),
+            "t-sub",
+          );
+
+          // Pushed; then a note on a local branch that began on its own: the push keeps both.
+          yield* ledger.sync(repo, null, { source: "t3", push: true });
+          yield* git(repo, ["update-ref", "-d", "refs/heads/agent-ledger"]);
+          yield* ledger.assert(repo, sha, { note: { text: "after push", file: null } });
+          yield* ledger.sync(repo, null, { source: "t3", push: true });
+          const onOrigin = decodeEntry(
+            yield* git(repo, ["show", `origin/agent-ledger:commits/${sha}.json`]),
+          );
+          assert.deepStrictEqual(
+            [onOrigin.links.map((l) => l.thread.id), onOrigin.notes.map((n) => n.text)],
+            [
+              ["t-coder", "t-review"],
+              ["b by hand", "after push"],
+            ],
+          );
+          yield* ledger.assert(repo, sha, { link: { session: "t-sub", role: "coder" } });
+          assert.include(
+            (yield* show()).links.map((l) => l.thread.id),
+            "t-sub",
+          );
+
+          // A merge brings its branch's files, not its own: no evidence, nothing recorded.
+          yield* git(repo, ["switch", "-q", "-c", "side", "main"]);
+          yield* commitFile("c.ts", "c\n", "feat: c", "2026-01-01T10:35:00Z");
+          yield* git(repo, ["switch", "-q", "feat/x"]);
+          yield* git(
+            repo,
+            ["merge", "-q", "--no-ff", "-m", "merge side", "side"],
+            "2026-01-01T10:40:00Z",
+          );
+          const merge = yield* git(repo, ["rev-parse", "HEAD"]);
+          yield* ledger.sync(repo, null, { source: "t3" });
+          const merged = decodeEntry(
+            yield* git(repo, ["show", `agent-ledger:commits/${merge}.json`]),
+          );
+          assert.deepStrictEqual([merged.links, merged.files], [[], []]);
+
+          // Plumbing only: the code branch and working tree are untouched.
+          assert.strictEqual(yield* git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]), "feat/x");
+          assert.strictEqual(yield* git(repo, ["status", "--porcelain"]), "");
+        }).pipe(
+          Effect.provide(
+            ledgerLayer({
+              dbPath,
+              codexHome: "/nonexistent",
+              t3,
+              nativeIds: [
+                ["N1", "t-coder"],
+                ["R1", "t-review"],
+              ],
+              parents: [["t-sub", "t-coder"]],
+            }),
+          ),
+        );
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live(
+    "installs a commit hook that names the agent session once, and never stops a commit",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { repo } = yield* makeRepo;
+        const hookFile = path.join(repo, ".git", "hooks", "prepare-commit-msg");
+        const trailers = () =>
+          git(repo, ["log", "-1", "--format=%(trailers:key=Agent-Session,valueonly)"]);
+        const plain = { CODEX_THREAD_ID: "", CLAUDE_CODE_SESSION_ID: "" };
+
+        yield* Effect.gen(function* () {
+          const ledger = yield* Ledger;
+          yield* ledger.hook(repo, "install", "'/no/such/toolreader'");
+          assert.isFalse(yield* fs.exists(hookFile), "only with --commit");
+          assert.match(
+            yield* ledger.hook(repo, "install", "'/no/such/toolreader'", { commit: true }),
+            /Already installed: .*pre-push\.\nInstalled .*prepare-commit-msg\./,
+          );
+
+          const agent = { ...plain, CODEX_THREAD_ID: "01a0" };
+          assert.strictEqual(
+            (yield* gitRun(repo, ["commit", "-q", "--allow-empty", "-m", "by agent"], agent)).code,
+            0,
+          );
+          yield* gitRun(repo, ["commit", "-q", "--allow-empty", "--amend", "--no-edit"], agent);
+          assert.strictEqual(yield* trailers(), "codex:01a0", "once, even after an amend");
+
+          yield* gitRun(repo, ["commit", "-q", "--allow-empty", "-m", "by hand"], plain);
+          assert.strictEqual(yield* git(repo, ["log", "-1", "--format=%B"]), "by hand");
+
+          assert.match(
+            yield* ledger.hook(repo, "uninstall", "'/no/such/toolreader'"),
+            /Removed .*pre-push\.\nRemoved .*prepare-commit-msg\./,
+          );
+          assert.isFalse(yield* fs.exists(hookFile));
+        }).pipe(
+          Effect.provide(
+            ledgerLayer({ dbPath: "/nonexistent/state.sqlite", codexHome: "/nonexistent" }),
+          ),
+        );
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });
