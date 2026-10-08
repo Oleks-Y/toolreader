@@ -49,6 +49,7 @@ import {
 } from "../core/ledger.ts";
 import { ledgerSiteHtml, publicRange } from "../core/ledgerSite.ts";
 import type { SanitizeMode } from "../core/sanitize.ts";
+import { CLAUDE_ID_PREFIX, ClaudeTranscripts } from "./ClaudeTranscripts.ts";
 import { CodexRollouts, ROLLOUT_DIRS } from "./CodexRollouts.ts";
 import { CODEX_ID_PREFIX, CodexSessions } from "./CodexSessions.ts";
 import { Labeler } from "./Labeler.ts";
@@ -72,8 +73,14 @@ const encodePatchIds = Schema.encodeEffect(Schema.fromJsonString(PatchIds));
 /** Field separator for `git log --format`; never appears in subjects. */
 const US = "\u001f";
 
-/** Where sessions come from. `auto`: T3 if its database exists, plus Codex rollout files. */
-export const LEDGER_SOURCES = ["auto", "t3", "codex-app-server", "codex-rollouts"] as const;
+/** Where sessions come from. `auto`: T3 if its database exists, plus Codex rollout files and Claude Code transcripts. */
+export const LEDGER_SOURCES = [
+  "auto",
+  "t3",
+  "codex-app-server",
+  "codex-rollouts",
+  "claude-transcripts",
+] as const;
 export type LedgerSource = (typeof LEDGER_SOURCES)[number];
 
 export type SyncOptions = {
@@ -222,6 +229,7 @@ export class Ledger extends Context.Service<
       const store = yield* ThreadStore;
       const codex = yield* CodexSessions;
       const rollouts = yield* CodexRollouts;
+      const claude = yield* ClaudeTranscripts;
       const labeler = yield* Labeler;
       const sanitizer = yield* Sanitizer;
       const fs = yield* FileSystem.FileSystem;
@@ -420,8 +428,12 @@ export class Ledger extends Context.Service<
         const hasT3 = yield* exists(config.dbPath);
         const rolloutDirs = ROLLOUT_DIRS.map((dir) => path.join(config.codexHome, dir));
         const hasRollouts = (yield* Effect.forEach(rolloutDirs, exists)).some(Boolean);
+        const claudeDir = path.join(config.claudeHome, "projects");
+        const hasClaude = yield* exists(claudeDir);
         if (source === "t3" && !hasT3)
           return yield* new LedgerFailed({ message: `No T3 database at ${config.dbPath}` });
+        if (source === "claude-transcripts" && !hasClaude)
+          return yield* new LedgerFailed({ message: `No Claude Code sessions in ${claudeDir}` });
         if (source === "codex-rollouts" && !hasRollouts)
           return yield* new LedgerFailed({
             message: `No Codex sessions in ${rolloutDirs.join(" or ")}`,
@@ -449,6 +461,15 @@ export class Ledger extends Context.Service<
           sources.push("codex-rollouts");
           for (const s of yield* rollouts.list)
             found.push({ summary: s, load: (l) => rollouts.get(bare(s), l) });
+        }
+        // T3 runs Claude too; the transcript listing skips the sessions T3 owns.
+        if (source === "claude-transcripts" || (source === "auto" && hasClaude)) {
+          sources.push("claude-transcripts");
+          for (const s of yield* claude.list)
+            found.push({
+              summary: s,
+              load: (l) => claude.get(s.id.slice(CLAUDE_ID_PREFIX.length), l),
+            });
         }
         // The innermost worktree holding the session's directory (worktrees can nest).
         const rootOf = (dir: string | null) =>
@@ -673,7 +694,13 @@ export class Ledger extends Context.Service<
         // which T3 knows by its provider thread.
         const named = (name: string) => {
           const id = nativeId(name);
-          const ids = new Set([name, id, `${CODEX_ID_PREFIX}${id}`, nativeIds.get(id)]);
+          const ids = new Set([
+            name,
+            id,
+            `${CODEX_ID_PREFIX}${id}`,
+            `${CLAUDE_ID_PREFIX}${id}`,
+            nativeIds.get(id),
+          ]);
           return sessions.filter((s) => ids.has(s.thread.id));
         };
         return { sources, sessions, named, roots };

@@ -1,5 +1,5 @@
 // `toolreader ledger`:
-//   toolreader ledger sync [--repo PATH] [--range A..B] [--source auto|t3|codex-app-server|codex-rollouts]
+//   toolreader ledger sync [--repo PATH] [--range A..B] [--source auto|t3|codex-app-server|codex-rollouts|claude-transcripts]
 //                         [--codex-home DIR] [--max-output BYTES] [--no-outputs] [--push]
 //                         [--match-sessions | --session ID ...]
 //                         [--sanitize anonymize|remove|off] [--sanitize-agent on|off]
@@ -79,7 +79,7 @@ const sync = Command.make(
     range,
     source: Flag.choice("source", LEDGER_SOURCES).pipe(
       Flag.withDescription(
-        "Where sessions come from. auto: T3 if its database exists, plus Codex rollout files",
+        "Where sessions come from. auto: T3 if its database exists, plus Codex rollout files and Claude Code transcripts",
       ),
       Flag.withDefault(SYNC_DEFAULTS.source),
     ),

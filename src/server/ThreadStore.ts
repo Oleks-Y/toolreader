@@ -103,6 +103,8 @@ export type Lineage = {
   /** A subagent thread's parent thread. */
   readonly parents: ReadonlyMap<string, string>;
 };
+const idSet = (rows: ReadonlyArray<typeof CursorRow.Type>): ReadonlySet<string> =>
+  new Set(rows.flatMap((r) => (r.threadId ? [r.threadId] : [])));
 
 /** V1 session statuses and V2 run statuses. */
 const toStatus = (s: string | null): ThreadStatus =>
@@ -138,6 +140,8 @@ export class ThreadStore extends Context.Service<
     /** Codex thread ids T3 runs itself (from its resume cursors), so other sources can skip them. */
     readonly codexThreadIds: Effect.Effect<ReadonlySet<string>>;
     readonly lineage: Effect.Effect<Lineage>;
+    /** Claude Code session ids T3 runs itself, likewise. */
+    readonly claudeSessionIds: Effect.Effect<ReadonlySet<string>>;
     readonly projects: Effect.Effect<ReadonlyArray<T3Project>>;
   }
 >()("toolreader/server/ThreadStore") {
@@ -150,6 +154,7 @@ export class ThreadStore extends Context.Service<
       head: (id) => Effect.fail(new ThreadNotFound({ threadId: id })),
       codexThreadIds: Effect.succeed(new Set()),
       lineage: Effect.succeed({ nativeIds: new Map(), parents: new Map() }),
+      claudeSessionIds: Effect.succeed(new Set()),
       projects: Effect.succeed([]),
     }),
   );
@@ -321,11 +326,21 @@ export class ThreadStore extends Context.Service<
           : sql`
         select json_extract(resume_cursor_json, '$.threadId') threadId
         from provider_session_runtime where provider_name = 'codex'`
-      ).pipe(
-        Effect.flatMap(decodeCursorRows),
-        Effect.map((rows) => new Set(rows.flatMap((r) => (r.threadId ? [r.threadId] : [])))),
-        Effect.orDie,
-      );
+      ).pipe(Effect.flatMap(decodeCursorRows), Effect.map(idSet), Effect.orDie);
+
+      // Claude session ids T3 resumes: V1 cursors keep them in `resume` (`threadId` is T3's own).
+      const claudeSessionIds = (
+        v2
+          ? sql`
+        select json_extract(resume_cursor_json, '$.resume') threadId
+        from provider_session_runtime where provider_name = 'claudeAgent'
+        union
+        select json_extract(payload_json, '$.nativeThreadRef.nativeId') threadId
+        from orchestration_v2_projection_provider_threads where provider = 'claudeAgent'`
+          : sql`
+        select json_extract(resume_cursor_json, '$.resume') threadId
+        from provider_session_runtime where provider_name = 'claudeAgent'`
+      ).pipe(Effect.flatMap(decodeCursorRows), Effect.map(idSet), Effect.orDie);
 
       // Claude's V1 cursor keeps its session id in `resume`; Codex's in `threadId`.
       const pairs = <E>(rows: Effect.Effect<ReadonlyArray<unknown>, E>) =>
@@ -364,7 +379,15 @@ export class ThreadStore extends Context.Service<
       );
 
       yield* list; // warm the action-count cache
-      return ThreadStore.of({ list, get, head, codexThreadIds, lineage, projects });
+      return ThreadStore.of({
+        list,
+        get,
+        head,
+        codexThreadIds,
+        claudeSessionIds,
+        lineage,
+        projects,
+      });
     }),
   );
 }

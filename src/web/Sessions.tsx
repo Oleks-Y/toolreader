@@ -5,11 +5,23 @@ import { ThemePicker } from "./theme.tsx";
 import { since } from "./util.ts";
 
 /** Which sessions to show; scripted `codex exec` runs are hidden by default. */
-type Shown = { t3: boolean; codex: boolean; scripted: boolean; archived: boolean };
+type Shown = {
+  t3: boolean;
+  codex: boolean;
+  claude: boolean;
+  scripted: boolean;
+  archived: boolean;
+};
 const SHOWN_KEY = "toolreader.sessions";
 
 function loadShown(): Shown {
-  const defaults: Shown = { t3: true, codex: true, scripted: false, archived: false };
+  const defaults: Shown = {
+    t3: true,
+    codex: true,
+    claude: true,
+    scripted: false,
+    archived: false,
+  };
   try {
     return { ...defaults, ...JSON.parse(localStorage.getItem(SHOWN_KEY) ?? "{}") };
   } catch {
@@ -67,7 +79,7 @@ export function Sessions() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        {(["t3", "codex", "scripted", "archived"] as const).map((key) => (
+        {(["t3", "codex", "claude", "scripted", "archived"] as const).map((key) => (
           <label key={key} className="switch">
             <input
               type="checkbox"

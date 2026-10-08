@@ -58,6 +58,7 @@ describe("CodexRollouts", () => {
           dbPath: "",
           codexBin: bin,
           codexHome,
+          claudeHome: "/nonexistent",
           labelsPath: "",
           userConfigPath: "",
           distDir: "",

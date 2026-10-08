@@ -83,7 +83,7 @@ export type Entry = typeof Entry.Type;
 export const ThreadStatus = Schema.Literals(["running", "idle", "error"]);
 export type ThreadStatus = typeof ThreadStatus.Type;
 
-export const ThreadSource = Schema.Literals(["t3", "codex"]);
+export const ThreadSource = Schema.Literals(["t3", "codex", "claude"]);
 export type ThreadSource = typeof ThreadSource.Type;
 
 export const ThreadSummary = Schema.Struct({

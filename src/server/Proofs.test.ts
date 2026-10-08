@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import type { ThreadView } from "../core/domain.ts";
+import { ClaudeTranscripts } from "./ClaudeTranscripts.ts";
 import { CodexSessions } from "./CodexSessions.ts";
 import { Labeler } from "./Labeler.ts";
 import { Proofs } from "./Proofs.ts";
@@ -47,6 +48,7 @@ describe("Proofs", () => {
     }).pipe(
       Effect.provide(
         Proofs.layer.pipe(
+          Layer.provide(ClaudeTranscripts.layer),
           Layer.provide([
             Layer.succeed(
               ServerConfig,
@@ -56,6 +58,7 @@ describe("Proofs", () => {
                 dbPath: "",
                 codexBin: "codex",
                 codexHome: "/home/me/.codex",
+                claudeHome: "/nonexistent",
                 labelsPath: "",
                 userConfigPath: "",
                 distDir: "",
@@ -69,6 +72,7 @@ describe("Proofs", () => {
                 head: () => Effect.die("unused"),
                 codexThreadIds: Effect.succeed(new Set()),
                 lineage: Effect.succeed({ nativeIds: new Map(), parents: new Map() }),
+                claudeSessionIds: Effect.succeed(new Set()),
                 projects: Effect.succeed([]),
               }),
             ),

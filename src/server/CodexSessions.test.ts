@@ -80,6 +80,7 @@ const withSessions = <A, E>(
         dbPath: "",
         codexBin: bin,
         codexHome: "/home/me/.codex",
+        claudeHome: "/nonexistent",
         labelsPath: "",
         userConfigPath: "",
         distDir: "",
@@ -93,6 +94,7 @@ const withSessions = <A, E>(
         head: () => Effect.die("unused"),
         codexThreadIds: Effect.succeed(new Set(["owned-by-t3"])),
         lineage: Effect.succeed({ nativeIds: new Map(), parents: new Map() }),
+        claudeSessionIds: Effect.succeed(new Set()),
         projects: Effect.succeed([{ id: "p1", title: "repo", root: "/work/repo" }]),
       }),
     );

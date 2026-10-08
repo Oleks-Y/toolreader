@@ -10,6 +10,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import type { Action, Entry, ThreadSummary, ThreadView } from "../core/domain.ts";
 import { LedgerEntry, LedgerRange } from "../core/ledger.ts";
 import { SITE_DATA_MARKER } from "../core/ledgerSite.ts";
+import { ClaudeTranscripts } from "./ClaudeTranscripts.ts";
 import { CodexRollouts } from "./CodexRollouts.ts";
 import { CodexSessions } from "./CodexSessions.ts";
 import { Labeler } from "./Labeler.ts";
@@ -182,6 +183,7 @@ const command = (id: string, script: string, output = "", exitCode = 0) => ({
 const ledgerLayer = (options: {
   dbPath: string;
   codexHome: string;
+  claudeHome?: string;
   t3?: ReadonlyArray<ThreadView>;
   labels?: Record<string, string>;
   distDir?: string;
@@ -190,7 +192,7 @@ const ledgerLayer = (options: {
   parents?: ReadonlyArray<readonly [string, string]>;
 }) =>
   Ledger.layer.pipe(
-    Layer.provide(CodexRollouts.layer),
+    Layer.provide([CodexRollouts.layer, ClaudeTranscripts.layer]),
     Layer.provide([
       Layer.succeed(
         ServerConfig,
@@ -200,6 +202,7 @@ const ledgerLayer = (options: {
           dbPath: options.dbPath,
           codexBin: "codex",
           codexHome: options.codexHome,
+          claudeHome: options.claudeHome ?? "/nonexistent",
           labelsPath: "",
           userConfigPath: "",
           distDir: options.distDir ?? "",
@@ -217,6 +220,7 @@ const ledgerLayer = (options: {
                 nativeIds: new Map(options.nativeIds ?? []),
                 parents: new Map(options.parents ?? []),
               }),
+              claudeSessionIds: Effect.succeed(new Set()),
               projects: Effect.succeed([]),
             }),
           )
@@ -738,6 +742,7 @@ describe("Ledger", () => {
         const show = yield* runCli(["ledger", "show", "--repo", repo], {
           T3_DB: "/nonexistent/state.sqlite",
           CODEX_HOME: codexHome,
+          CLAUDE_CONFIG_DIR: "/nonexistent",
         });
         assert.strictEqual(show.code, 0, show.err);
         for (const secret of ["supersecret", "subjectsecret", "humansecret"])
@@ -1004,6 +1009,7 @@ describe("Ledger", () => {
       // The hook runs the real CLI, on this test's Codex home and no T3.
       const env = {
         CODEX_HOME: codexHome,
+        CLAUDE_CONFIG_DIR: "/nonexistent",
         T3_DB: "/nonexistent/state.sqlite",
         CODEX_BIN: "/nonexistent/codex",
         TOOLREADER_LABELS: path.join(codexHome, "labels.json"),

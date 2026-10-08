@@ -15,6 +15,8 @@ export class ServerConfig extends Context.Service<
     readonly codexBin: string;
     /** Codex's home: rollout files live in `sessions/` and `archived_sessions/` under it. */
     readonly codexHome: string;
+    /** Claude Code's home: session transcripts live in `projects/` under it. */
+    readonly claudeHome: string;
     readonly labelsPath: string;
     /** This machine's toolreader settings (`.toolreader.json` shape), e.g. names to keep private. */
     readonly userConfigPath: string;
@@ -41,6 +43,9 @@ export class ServerConfig extends Context.Service<
         codexBin: yield* Config.string("CODEX_BIN").pipe(Config.withDefault("codex")),
         codexHome: yield* Config.string("CODEX_HOME").pipe(
           Config.withDefault(path.join(home, ".codex")),
+        ),
+        claudeHome: yield* Config.string("CLAUDE_CONFIG_DIR").pipe(
+          Config.withDefault(path.join(home, ".claude")),
         ),
         labelsPath: yield* Config.string("TOOLREADER_LABELS").pipe(
           Config.withDefault(path.join(home, ".toolreader", "labels.json")),
