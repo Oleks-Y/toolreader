@@ -703,6 +703,9 @@ a.chip {
 .ledger-commit.empty .turn-head {
   cursor: default;
 }
+.ledger-entry {
+  padding: 0 14px 10px;
+}
 .ledger-link > summary {
   cursor: pointer;
   padding: 4px 0;

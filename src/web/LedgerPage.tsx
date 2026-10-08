@@ -181,7 +181,12 @@ function CommitCard({ item, remoteUrl }: { item: LedgerCommitView; remoteUrl: st
       {open && entry && (
         <div className="ledger-entry">
           {links.map((l) => (
-            <LinkRow key={l.thread.id} link={l} sha={commit.sha} committedAt={commit.committedAt} />
+            <LinkRow
+              key={`${l.thread.id}/${l.role}`}
+              link={l}
+              sha={commit.sha}
+              committedAt={commit.committedAt}
+            />
           ))}
           {entry.files.length > 0 && (
             <ul className="ledger-files">
@@ -210,7 +215,7 @@ function CommitCard({ item, remoteUrl }: { item: LedgerCommitView; remoteUrl: st
   );
 }
 
-/** One linked thread: role, how it was found, and its history (open when it is the only one). */
+/** One linked thread: role, how it was found, and its history (evidence links start closed). */
 function LinkRow({
   link,
   sha,
@@ -222,8 +227,10 @@ function LinkRow({
 }) {
   const view = useMemo(() => asView(link, committedAt), [link, committedAt]);
   const stale = isStale(link, sha);
+  // History mounts only while open: FileDiff measures against the window and renders blank hidden.
+  const [open, setOpen] = useState(link.via !== "evidence");
   return (
-    <details className="ledger-link" open={link.via !== "evidence"}>
+    <details className="ledger-link" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
       <summary>
         <span className={`role ${link.role}`}>{link.role}</span> {link.thread.title}{" "}
         <span className="dim" title={VIA_TEXT[link.via]}>
@@ -234,7 +241,7 @@ function LinkRow({
           )}
         </span>
       </summary>
-      {link.entries.length > 0 ? (
+      {!open ? null : link.entries.length > 0 ? (
         <ActionView view={view} embedded />
       ) : (
         <p className="dim">no history recorded for this thread yet</p>

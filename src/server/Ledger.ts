@@ -143,6 +143,8 @@ export type SanitizeBranchResult = SanitizeSummary & {
 type Session = {
   /** Worked in the synced worktree itself, not another worktree of the repo. */
   readonly here: boolean;
+  /** The worktree it worked in. */
+  readonly root: string;
   readonly edited: boolean;
   readonly entries: ReadonlyArray<Entry>;
   readonly actions: CommitAction[];
@@ -336,9 +338,18 @@ export class Ledger extends Context.Service<
 
       /** Files a commit changed (against its first parent). */
       const changedPaths = (repo: string, sha: string) =>
-        git(repo, ["log", "-1", "-m", "--first-parent", "--format=", "--name-only", sha]).pipe(
-          Effect.map((out) => out.split("\n").filter(Boolean)),
-        );
+        // Unquoted, so a path with non-ASCII characters reads as itself.
+        git(repo, [
+          "-c",
+          "core.quotePath=false",
+          "log",
+          "-1",
+          "-m",
+          "--first-parent",
+          "--format=",
+          "--name-only",
+          sha,
+        ]).pipe(Effect.map((out) => out.split("\n").filter(Boolean)));
 
       /** Each file of a ledger commit's tree, with its blob. */
       const blobsIn = (repo: string, commit: string) =>
@@ -375,13 +386,22 @@ export class Ledger extends Context.Service<
           ),
         );
 
+      /**
+       * The entry for `sha` on `ref`. One that doesn't decode (a newer toolreader wrote it) fails:
+       * read as missing, a write would replace it and lose its links.
+       */
       const readEntry = (repo: string, sha: string, ref: string = LEDGER_REF) =>
         gitOption(repo, ["show", `${ref}:${ledgerPath(sha)}`]).pipe(
           Effect.flatMap((o) =>
             Option.isSome(o)
               ? decodeEntry(o.value).pipe(
                   Effect.map(Option.some),
-                  Effect.orElseSucceed(Option.none),
+                  Effect.mapError(
+                    (e) =>
+                      new LedgerFailed({
+                        message: `${ref}:${ledgerPath(sha)} doesn't read (written by a newer toolreader?): ${e.message}`,
+                      }),
+                  ),
                 )
               : Effect.succeed(Option.none<LedgerEntry>()),
           ),
@@ -541,6 +561,12 @@ export class Ledger extends Context.Service<
           // Diverged (another job pushed, or the local branch began on its own): the tree starts as
           // origin's, so local entries that differ from origin's (`ledger link`, `note`) join ours.
           const pending = new Map(writes.map((w) => [w.commit.sha, w]));
+          // The local branch may have moved since sync read it (a `ledger note` meanwhile).
+          if (local)
+            for (const w of writes) {
+              const mine = Option.getOrNull(yield* readEntry(repo, w.commit.sha, local));
+              if (mine) pending.set(w.commit.sha, { ...w, entry: mergeEntries(mine, w.entry) });
+            }
           if (remote && local && bases.length === 2) {
             const [theirs, ours] = [yield* blobsIn(repo, remote), yield* blobsIn(repo, local)];
             for (const [file, blob] of ours) {
@@ -627,6 +653,7 @@ export class Ledger extends Context.Service<
           if (!entries.some((e) => e.type === "action")) continue;
           sessions.push({
             here: root === repo,
+            root,
             edited: madeEdits(entries),
             entries,
             actions: findCommitActions(entries),
@@ -700,7 +727,8 @@ export class Ledger extends Context.Service<
           const found: FoundLink[] = [];
           // Strongest first; a thread found again keeps its first (strongest) link.
           const add = (s: Session, via: LinkVia, segment: ReadonlyArray<Entry>) => {
-            if (!segment.some((e) => e.type === "action")) return;
+            // A trailer names the thread even when its history here shows no action.
+            if (via !== "trailer" && !segment.some((e) => e.type === "action")) return;
             if (found.some((f) => f.thread.id === s.thread.id)) return;
             found.push({
               thread: s.thread,
@@ -709,16 +737,14 @@ export class Ledger extends Context.Service<
               reviewedSha: null,
               segment,
               labels: s.labels,
+              root: s.root,
             });
           };
-          const ownSegment = (s: Session) => {
-            const m = matchCommit(commit, s.actions);
-            return m
-              ? segmentFor(s.entries, m.action, s.actions)
-              : segmentByTime(s.entries, before, commit.committedAt);
-          };
+          // A trailer's thread: everything since the commit's parent (an amend or an earlier
+          // `git commit` of the same change must not cut its history short).
           for (const name of trailers.get(commit.sha) ?? [])
-            for (const s of named(name)) add(s, "trailer", ownSegment(s));
+            for (const s of named(name))
+              add(s, "trailer", segmentByTime(s.entries, before, commit.committedAt));
           // A printed SHA, in any session; else the latest `git commit` action just before it.
           const candidates = sessions.flatMap((s) => {
             const m = matchCommit(commit, s.actions);
@@ -837,7 +863,14 @@ export class Ledger extends Context.Service<
         const local = yield* resolve(repo, LEDGER_REF);
         const current =
           Option.getOrNull(yield* readEntry(repo, sha)) ??
-          buildEntry({ commit, links: [], paths: files, outputs: true, maxOutput: 0 });
+          buildEntry({
+            commit,
+            links: [],
+            paths: files,
+            outputs: true,
+            maxOutput: 0,
+            home: config.home,
+          });
 
         let entry: LedgerEntry;
         let linked: LedgerLink | null = null;
@@ -858,6 +891,7 @@ export class Ledger extends Context.Service<
           };
         } else {
           let fresh: LedgerEntry;
+          let relink: string[] = [];
           if ("note" in change) {
             const { file } = change.note;
             if (file !== null && !files.includes(file))
@@ -882,8 +916,14 @@ export class Ledger extends Context.Service<
               return yield* new LedgerFailed({
                 message: `No session ${change.link.session} in ${sources.join(" + ") || "any source"} for ${repo}`,
               });
-            // Its history since the commit's parent, through now: a review comes after the commit.
+            // A review comes after the commit: its history from the commit through now. Any
+            // other role: from the commit's parent through the commit.
             const now = DateTime.formatIso(yield* DateTime.now);
+            const segment =
+              change.link.role === "reviewer"
+                ? segmentByTime(s.entries, commit.committedAt, now)
+                : segmentByTime(s.entries, previousAt.get(sha) ?? null, commit.committedAt);
+            relink = [s.thread.id];
             fresh = buildEntry({
               commit,
               links: [
@@ -892,8 +932,9 @@ export class Ledger extends Context.Service<
                   role: change.link.role,
                   via: "asserted",
                   reviewedSha: change.link.reviewed ? sha : null,
-                  segment: segmentByTime(s.entries, previousAt.get(sha) ?? null, now),
+                  segment,
                   labels: s.labels,
+                  root: s.root,
                 },
               ],
               paths: files,
@@ -902,11 +943,15 @@ export class Ledger extends Context.Service<
               home: config.home,
             });
           }
-          const sanitized = (yield* sanitizeAll(repo, [fresh], { mode: null, agent: null }))
-            .entries[0]!;
-          entry = mergeEntries(current, sanitized);
-          const id = sanitized.links[0]?.thread.id;
-          linked = entry.links.find((l) => l.thread.id === id) ?? null;
+          // The whole entry, so a subject first stored here leaves sanitized too.
+          entry = (yield* sanitizeAll(repo, [mergeEntries(current, fresh, relink)], {
+            mode: null,
+            agent: null,
+          })).entries[0]!;
+          const made = fresh.links[0];
+          linked =
+            entry.links.find((l) => l.thread.id === made?.thread.id && l.role === made.role) ??
+            null;
         }
         if (!sameEntry(entry, current)) {
           const head = yield* writeTree(
@@ -996,14 +1041,21 @@ export class Ledger extends Context.Service<
         const patchIds = head ? yield* readPatchIds(repo, head) : {};
         const views: LedgerCommitView[] = [];
         for (const commit of commits) {
-          const direct = yield* readEntry(repo, commit.sha);
+          // Viewing skips an entry it can't read; only writes must stop on one.
+          const direct = yield* readEntry(repo, commit.sha).pipe(
+            Effect.orElseSucceed(() => Option.none<LedgerEntry>()),
+          );
           if (Option.isSome(direct)) {
             views.push({ commit, entry: direct.value, matchedBy: "sha" });
             continue;
           }
           // Rebased or amended: same diff, new SHA.
           const original = commit.patchId ? patchIds[commit.patchId] : undefined;
-          const moved = original ? yield* readEntry(repo, original) : Option.none<LedgerEntry>();
+          const moved = original
+            ? yield* readEntry(repo, original).pipe(
+                Effect.orElseSucceed(() => Option.none<LedgerEntry>()),
+              )
+            : Option.none<LedgerEntry>();
           views.push({
             commit,
             entry: Option.getOrNull(moved),
@@ -1070,7 +1122,7 @@ export class Ledger extends Context.Service<
         const lines = [yield* hookFile(repo, "pre-push", prePushHook(command), action)];
         // Uninstall removes the commit hook too, when it is ours.
         if (options.commit || action === "uninstall") {
-          const commitHook = hookFile(repo, "prepare-commit-msg", commitMsgHook(), action);
+          const commitHook = hookFile(repo, "commit-msg", commitMsgHook(), action);
           lines.push(
             options.commit
               ? yield* commitHook
@@ -1078,7 +1130,7 @@ export class Ledger extends Context.Service<
           );
         }
         return lines
-          .filter((l) => l && !(action === "uninstall" && l.startsWith("No prepare-commit-msg")))
+          .filter((l) => l && !(action === "uninstall" && l.startsWith("No commit-msg")))
           .join("\n");
       });
 

@@ -1250,6 +1250,15 @@ describe("Ledger", () => {
             "t-sub",
           );
 
+          // The coder reviews its own commit: both links stay.
+          const self = yield* ledger.assert(repo, sha, {
+            link: { session: "codex:N1", role: "reviewer", reviewed: true },
+          });
+          assert.deepStrictEqual(
+            self.entry.links.filter((l) => l.thread.id === "t-coder").map((l) => l.role),
+            ["coder", "reviewer"],
+          );
+
           // A merge brings its branch's files, not its own: no evidence, nothing recorded.
           yield* git(repo, ["switch", "-q", "-c", "side", "main"]);
           yield* commitFile("c.ts", "c\n", "feat: c", "2026-01-01T10:35:00Z");
@@ -1293,7 +1302,7 @@ describe("Ledger", () => {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const { repo } = yield* makeRepo;
-        const hookFile = path.join(repo, ".git", "hooks", "prepare-commit-msg");
+        const hookFile = path.join(repo, ".git", "hooks", "commit-msg");
         const trailers = () =>
           git(repo, ["log", "-1", "--format=%(trailers:key=Agent-Session,valueonly)"]);
         const plain = { CODEX_THREAD_ID: "", CLAUDE_CODE_SESSION_ID: "" };
@@ -1304,7 +1313,7 @@ describe("Ledger", () => {
           assert.isFalse(yield* fs.exists(hookFile), "only with --commit");
           assert.match(
             yield* ledger.hook(repo, "install", "'/no/such/toolreader'", { commit: true }),
-            /Already installed: .*pre-push\.\nInstalled .*prepare-commit-msg\./,
+            /Already installed: .*pre-push\.\nInstalled .*commit-msg\./,
           );
 
           const agent = { ...plain, CODEX_THREAD_ID: "01a0" };
@@ -1318,9 +1327,21 @@ describe("Ledger", () => {
           yield* gitRun(repo, ["commit", "-q", "--allow-empty", "-m", "by hand"], plain);
           assert.strictEqual(yield* git(repo, ["log", "-1", "--format=%B"]), "by hand");
 
+          // An editor run that leaves only comments still aborts the commit.
+          const editor = path.join(yield* tempDir("toolreader-editor-"), "empty.sh");
+          yield* fs.writeFileString(editor, `#!/bin/sh\nprintf '# nothing\\n' > "$1"\n`);
+          yield* fs.chmod(editor, 0o755);
+          const head = yield* git(repo, ["rev-parse", "HEAD"]);
+          const aborted = yield* gitRun(repo, ["commit", "--allow-empty"], {
+            ...agent,
+            GIT_EDITOR: editor,
+          });
+          assert.notStrictEqual(aborted.code, 0);
+          assert.strictEqual(yield* git(repo, ["rev-parse", "HEAD"]), head);
+
           assert.match(
             yield* ledger.hook(repo, "uninstall", "'/no/such/toolreader'"),
-            /Removed .*pre-push\.\nRemoved .*prepare-commit-msg\./,
+            /Removed .*pre-push\.\nRemoved .*commit-msg\./,
           );
           assert.isFalse(yield* fs.exists(hookFile));
         }).pipe(

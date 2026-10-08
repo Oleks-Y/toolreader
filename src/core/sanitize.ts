@@ -176,20 +176,28 @@ export function sanitizeEntry(
   };
   // Commit subjects and thread titles can't be dropped; they are anonymized in either mode.
   const subject = field(entry.commit.subject).text;
+  // Repo paths are the commit's own, but a name can still be private (`clients/acme/…`); like
+  // titles they are anonymized in either mode, the same way everywhere they appear.
+  const path = (p: string) => field(p).text;
   const links = entry.links.map((l) => ({
     ...l,
     thread: { ...l.thread, title: field(l.thread.title).text },
+    files: l.files.map(path),
     ...history(l.entries, l.labels),
   }));
   const notes = entry.notes.flatMap((n) => {
     const text = field(n.text);
-    return mode === "remove" && text.hit ? [] : [{ ...n, text: text.text }];
+    return mode === "remove" && text.hit
+      ? []
+      : [{ ...n, text: text.text, file: n.file === null ? null : path(n.file) }];
   });
+  const files = entry.files.map((f) => ({ ...f, path: path(f.path) }));
   return {
     entry: {
       ...entry,
       commit: { ...entry.commit, subject },
       links,
+      files,
       notes,
       redactions: entry.redactions + total,
     },
@@ -204,6 +212,7 @@ export function entryTexts(entries: ReadonlyArray<LedgerEntry>): string[] {
   for (const e of entries) {
     add(e.commit.subject);
     for (const n of e.notes) add(n.text);
+    for (const f of e.files) add(f.path);
     for (const l of e.links) {
       add(l.thread.title);
       for (const label of Object.values(l.labels)) add(label);

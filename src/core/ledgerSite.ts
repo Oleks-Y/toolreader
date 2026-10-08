@@ -58,10 +58,16 @@ export function publicRange(local: LedgerRange, home?: string): LedgerRange {
         links: c.entry.links.map((l) => ({
           ...l,
           thread: { ...l.thread, title: clean(l.thread.title) },
+          files: l.files.map(clean),
           entries: redactEntries(l.entries, { outputs: true, home }).entries,
           labels: redactLabels(l.labels, clean),
         })),
-        notes: c.entry.notes.map((n) => ({ ...n, text: clean(n.text) })),
+        files: c.entry.files.map((f) => ({ ...f, path: clean(f.path) })),
+        notes: c.entry.notes.map((n) => ({
+          ...n,
+          text: clean(n.text),
+          file: n.file === null ? null : clean(n.file),
+        })),
       },
     })),
   };

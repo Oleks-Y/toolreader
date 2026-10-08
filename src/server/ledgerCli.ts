@@ -170,7 +170,7 @@ const sync = Command.make(
       );
     }
     if (result.pushed) yield* Console.log(`Pushed ${LEDGER_BRANCH} ${result.pushed.slice(0, 8)}`);
-    else if (!push && result.added.length > 0)
+    else if (!push && result.added.length + result.unmatched.length > 0)
       yield* Console.log(`Push it with: git push origin ${LEDGER_BRANCH}`);
   }),
 ).pipe(Command.withDescription("Write ledger entries for agent-made commits in a range"));
@@ -264,7 +264,7 @@ const hook = Command.make(
     repo,
     commit: Flag.boolean("commit").pipe(
       Flag.withDescription(
-        "Also install a prepare-commit-msg hook: a commit made inside an agent session gets an Agent-Session trailer",
+        "Also install a commit-msg hook: a commit made inside an agent session gets an Agent-Session trailer",
       ),
     ),
   },
@@ -329,6 +329,7 @@ const explain = Command.make(
   }),
 ).pipe(Command.withDescription("Show one commit's threads, files and notes"));
 
+const LOCAL_ONLY = `Local ${LEDGER_BRANCH} only; share it with git push origin ${LEDGER_BRANCH} (or the next sync --push).`;
 const runAssert = (repo: string, rev: string, change: Assertion) =>
   Effect.flatMap(Ledger, (ledger) => ledger.assert(repo, rev, change)).pipe(
     Effect.provide(offline),
@@ -351,7 +352,7 @@ const link = Command.make(
     const result = yield* runAssert(repo, rev, {
       link: { session, role, reviewed: role === "reviewer" },
     });
-    yield* Console.log(linkedLine(result));
+    yield* Console.log(`${linkedLine(result)}\n${LOCAL_ONLY}`);
   }),
 ).pipe(Command.withDescription("Record that a thread worked on a commit (sync keeps it)"));
 
@@ -360,7 +361,9 @@ const unlink = Command.make(
   { repo, rev, session: sessionFlag },
   Effect.fn(function* ({ repo, rev, session }) {
     const { entry } = yield* runAssert(repo, rev, { unlink: session });
-    yield* Console.log(`${entry.commit.sha.slice(0, 8)}: ${entry.links.length} threads left`);
+    yield* Console.log(
+      `${entry.commit.sha.slice(0, 8)}: ${entry.links.length} threads left\n${LOCAL_ONLY}`,
+    );
   }),
 ).pipe(Command.withDescription("Remove a thread from a commit's entry"));
 
@@ -379,7 +382,9 @@ const note = Command.make(
     const { entry } = yield* runAssert(repo, rev, {
       note: { text, file: Option.getOrNull(file) },
     });
-    yield* Console.log(`${entry.commit.sha.slice(0, 8)}: ${entry.notes.length} notes`);
+    yield* Console.log(
+      `${entry.commit.sha.slice(0, 8)}: ${entry.notes.length} notes\n${LOCAL_ONLY}`,
+    );
   }),
 ).pipe(Command.withDescription("Add a note to a commit, e.g. what was changed by hand"));
 
@@ -402,7 +407,7 @@ const review = Command.make(
     const result = yield* runAssert(repo, rev, {
       link: { session, role: "reviewer", reviewed: true },
     });
-    yield* Console.log(linkedLine(result));
+    yield* Console.log(`${linkedLine(result)}\n${LOCAL_ONLY}`);
   }),
 ).pipe(
   Command.withDescription(

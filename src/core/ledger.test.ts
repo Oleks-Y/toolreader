@@ -287,25 +287,49 @@ describe("ledger", () => {
 });
 
 describe("several threads per commit", () => {
-  it("keeps one link per thread: the stronger via wins, and an asserted link is never dropped", () => {
-    const asserted = link("s1", { via: "asserted", role: "reviewer", entries: [] });
+  it("keeps one link per thread and role: the stronger via wins, an asserted link stays", () => {
+    const asserted = link("s1", { via: "asserted", entries: [] });
     const merged = mergeLinks(
       [asserted],
       [link("s1", { via: "sha" }), link("s2", { via: "evidence" })],
     );
     assert.deepStrictEqual(
-      merged.map((l) => [l.thread.id, l.via, l.role]),
+      merged.map((l) => [l.thread.id, l.via, l.entries.length]),
       [
-        ["s1", "asserted", "reviewer"],
-        ["s2", "evidence", "coder"],
+        ["s1", "asserted", 1],
+        ["s2", "evidence", 1],
       ],
-    );
-    assert.strictEqual(
-      merged[0]!.entries.length,
-      1,
       "an asserted link takes the history sync found",
     );
     assert.strictEqual(mergeLinks([link("s1", { via: "evidence" })], [link("s1")])[0]!.via, "time");
+    // A coder reviewing its own commit keeps both links.
+    const self = mergeLinks(
+      [link("s1", { via: "sha" })],
+      [link("s1", { via: "asserted", role: "reviewer", reviewedSha: "a1" })],
+    );
+    assert.deepStrictEqual(
+      self.map((l) => l.role),
+      ["coder", "reviewer"],
+    );
+    // A repeated `ledger review` replaces its link only when it is the one just asserted.
+    const again = link("s1", { via: "asserted", role: "reviewer", reviewedSha: "b2", entries: [] });
+    assert.strictEqual(mergeLinks(self, [again])[1]!.reviewedSha, "a1");
+    assert.strictEqual(mergeLinks(self, [again], true)[1]!.reviewedSha, "b2");
+  });
+
+  it("keeps an unlinked thread out unless it is linked again by hand", () => {
+    const c = commit("a".repeat(40), "2026-01-01T10:00:00Z");
+    const base = buildEntry({ commit: c, links: [], paths: [], outputs: true, maxOutput: 0 });
+    const removed = { ...base, unlinked: ["s1"] };
+    // An older copy that still has the asserted link must not undo the unlink.
+    const stale = { ...base, links: [link("s1", { via: "asserted" })] };
+    assert.deepStrictEqual(mergeEntries(removed, stale).links, []);
+    assert.deepStrictEqual(mergeEntries(stale, removed).links, []);
+    const relinked = mergeEntries(removed, stale, ["s1"]);
+    assert.deepStrictEqual(
+      [relinked.links.map((l) => l.thread.id), relinked.unlinked],
+      [["s1"], []],
+    );
   });
 
   it("puts each changed file in exactly one bucket", () => {
@@ -344,6 +368,11 @@ describe("several threads per commit", () => {
       files: [{ path: "/w/repo/src/a.ts", added: 1, removed: 0, isNew: false, isDeleted: false }],
     };
     assert.deepStrictEqual([...editedPaths([edit], ["src/a.ts", "a.ts"])], ["src/a.ts"]);
+    // Absolute paths count only inside the thread's worktree.
+    assert.deepStrictEqual([...editedPaths([edit], ["src/a.ts"], "/w/repo")], ["src/a.ts"]);
+    const elsewhere = action("t", "2026-01-01T09:00:00Z", "echo x > /tmp/a.ts");
+    assert.strictEqual(editedPaths([elsewhere], ["a.ts"], "/w/repo").size, 0);
+    assert.strictEqual(editedPaths([edit], ["src/a.ts"], "/w/other").size, 0);
     assert.strictEqual(editedPaths([{ ...edit, status: "failed" }], ["src/a.ts"]).size, 0);
   });
 

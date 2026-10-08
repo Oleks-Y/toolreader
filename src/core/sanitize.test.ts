@@ -149,6 +149,20 @@ describe("sanitizeEntry", () => {
     );
     assert.strictEqual(only(out).labels.m2, "compared with <private>");
     assert.strictEqual(out.notes[0]!.text, "fixed on <private> by hand");
+    const withPaths = sanitizeEntry(
+      {
+        ...entry(entries, labels),
+        files: [{ path: "customers/alice@private.org.txt", bucket: "attributed" }],
+        links: [
+          { ...entry(entries, labels).links[0]!, files: ["customers/alice@private.org.txt"] },
+        ],
+        notes: [{ text: "by hand", file: "customers/alice@private.org.txt", at: "t" }],
+      },
+      rules,
+      "remove",
+    ).entry;
+    assert.notInclude(JSON.stringify(withPaths), "alice@private.org", "paths are sanitized too");
+    assert.strictEqual(withPaths.files[0]!.path, only(withPaths).files[0]);
     assert.strictEqual(hits, 9);
     assert.strictEqual(out.redactions, 10);
   });

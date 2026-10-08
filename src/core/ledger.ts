@@ -321,6 +321,8 @@ export type FoundLink = {
   readonly reviewedSha: string | null;
   readonly segment: ReadonlyArray<Entry>;
   readonly labels: Labels;
+  /** The worktree the thread worked in: absolute paths outside it are not the commit's. */
+  readonly root?: string | null;
 };
 
 /**
@@ -350,7 +352,9 @@ export function buildEntry(input: {
       role: found.role,
       via: found.via,
       reviewedSha: found.reviewedSha,
-      files: [...editedPaths(found.segment, input.paths)],
+      // A review comes after the commit: what it edits is not the commit's.
+      files:
+        found.role === "reviewer" ? [] : [...editedPaths(found.segment, input.paths, found.root)],
       entries,
       labels: redactLabels(
         Object.fromEntries(
@@ -378,24 +382,28 @@ const STRENGTH: Record<LinkVia, number> = Object.fromEntries(
 ) as Record<LinkVia, number>;
 export const strongerVia = (a: LinkVia, b: LinkVia) => STRENGTH[a] > STRENGTH[b];
 
+const linkKey = (l: LedgerLink) => `${l.thread.id}\u0000${l.role}`;
+
 /**
- * `found` added to `current`, one link per thread: the stronger `via` wins, and a link with no
- * history yet (asserted before sync) takes the other's. Nothing is dropped; `unlink` removes.
+ * `found` added to `current`, one link per thread and role (a coder can review its own commit):
+ * the stronger `via` wins, and a link with no history yet takes the other's. `explicit` (what
+ * `ledger link`/`review` just asserted) replaces its link outright. Nothing is dropped.
  */
 export function mergeLinks(
   current: ReadonlyArray<LedgerLink>,
   found: ReadonlyArray<LedgerLink>,
+  explicit = false,
 ): LedgerLink[] {
-  const out = new Map(current.map((l) => [l.thread.id, l]));
+  const out = new Map(current.map((l) => [linkKey(l), l]));
   for (const link of found) {
-    const old = out.get(link.thread.id);
-    if (!old) {
-      out.set(link.thread.id, link);
+    const old = out.get(linkKey(link));
+    if (!old || (explicit && link.via === "asserted")) {
+      out.set(linkKey(link), link);
       continue;
     }
     const [keep, other] = strongerVia(link.via, old.via) ? [link, old] : [old, link];
     out.set(
-      link.thread.id,
+      linkKey(link),
       keep.entries.length > 0
         ? keep
         : { ...keep, entries: other.entries, labels: other.labels, files: other.files },
@@ -406,16 +414,23 @@ export function mergeLinks(
 
 /**
  * `fresh` merged into `current` (same commit): links merged, notes added, files recounted. A
- * thread either side unlinked stays out, unless `fresh` links it by hand again.
+ * thread either side unlinked stays out; only `relink` (what `ledger link` just named) brings it
+ * back, so an older copy of a link never undoes a later unlink.
  */
-export function mergeEntries(current: LedgerEntry, fresh: LedgerEntry): LedgerEntry {
-  const relinked = new Set(fresh.links.filter((l) => l.via === "asserted").map((l) => l.thread.id));
+export function mergeEntries(
+  current: LedgerEntry,
+  fresh: LedgerEntry,
+  relink: ReadonlyArray<string> = [],
+): LedgerEntry {
   const unlinked = [...new Set([...current.unlinked, ...fresh.unlinked])].filter(
-    (id) => !relinked.has(id),
+    (id) => !relink.includes(id),
   );
   const out = new Set(unlinked);
-  const links = mergeLinks(current.links, fresh.links).filter((l) => !out.has(l.thread.id));
-  const paths = current.files.length > 0 ? current.files : fresh.files;
+  const links = mergeLinks(current.links, fresh.links, relink.length > 0).filter(
+    (l) => !out.has(l.thread.id),
+  );
+  // An entry read from format 1 has links but no file list: its coverage stays unknown.
+  const paths = current.files.length > 0 || current.links.length > 0 ? current.files : fresh.files;
   const seen = new Set(current.notes.map((n) => JSON.stringify(n)));
   const added = fresh.notes.filter((n) => !seen.has(JSON.stringify(n)));
   const changed = added.length > 0 || JSON.stringify(links) !== JSON.stringify(current.links);
@@ -455,12 +470,18 @@ export const isStale = (link: LedgerLink, sha: string) =>
 export function editedPaths(
   entries: ReadonlyArray<Entry>,
   paths: ReadonlyArray<string>,
+  root: string | null = null,
 ): Set<string> {
   // ponytail: tool paths are absolute or relative to an unknown cwd, so a path matches by
   // whole trailing segments, the longest commit path winning; a relative path written from a
   // subdirectory can still name the wrong one of two same-named files.
   const sameFile = (written: string, path: string) => {
-    const w = written.replace(/^\.\//, "");
+    let w = written.replace(/^\.\//, "");
+    // An absolute path counts only inside the session's worktree (never /tmp, another checkout).
+    if (w.startsWith("/") && root) {
+      if (!w.startsWith(`${root}/`)) return false;
+      w = w.slice(root.length + 1);
+    }
     return w === path || w.endsWith(`/${path}`) || path.endsWith(`/${w}`);
   };
   const hit = new Set<string>();
@@ -555,14 +576,17 @@ exit 0
 }
 
 /**
- * The `prepare-commit-msg` hook (`ledger hook install --commit`): a commit made inside an agent
- * session gets an `Agent-Session` trailer naming it, once. Plain shell, so it adds no Node start
- * to a commit; outside an agent it does nothing, and it never stops a commit.
+ * The `commit-msg` hook (`ledger hook install --commit`): a commit made inside an agent session
+ * gets an `Agent-Session` trailer naming it, once. It runs on the final message, after any editor.
+ * Plain shell, so it adds no Node start to a commit; outside an agent it does nothing, and it
+ * never stops a commit.
  */
 export function commitMsgHook(): string {
   return `#!/bin/sh
 ${HOOK_MARKER}: names the agent session a commit comes from, for ${LEDGER_BRANCH}.
 # Remove it with \`ledger hook uninstall\`. It never stops a commit.
+# An emptied message aborts the commit; a trailer would turn it into one.
+grep -q '^[[:space:]]*[^#[:space:]]' "$1" || exit 0
 if [ -n "$CODEX_THREAD_ID" ]; then session="codex:$CODEX_THREAD_ID"
 elif [ -n "$CLAUDE_CODE_SESSION_ID" ]; then session="claude-code:$CLAUDE_CODE_SESSION_ID"
 else exit 0
