@@ -146,7 +146,8 @@ function proofLink(view: ThreadView, scope: ProofScope) {
 
 /**
  * A live thread (`threadId`, fetched and polled), a proof-of-work file (`artifact`), or a given
- * `view` (ledger entries). Without `threadId` it is read-only: no polling, labeling or export.
+ * `view` (ledger entries). Only a standalone `threadId` is live; snapshots and embedded
+ * histories are read-only: no polling, labeling or export.
  * `embedded` renders only the turn tree, for pages that show several histories.
  */
 export function ActionView({
@@ -160,7 +161,8 @@ export function ActionView({
   view?: ThreadView;
   embedded?: boolean;
 }) {
-  const readOnly = threadId === undefined;
+  const readOnly =
+    threadId === undefined || artifact !== undefined || givenView !== undefined || embedded;
   const [view, setView] = useState<ThreadView | null>(artifact?.view ?? givenView ?? null);
   const [error, setError] = useState<string | null>(null);
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
@@ -171,12 +173,12 @@ export function ActionView({
 
   const load = useCallback(
     () =>
-      threadId === undefined
+      readOnly
         ? Promise.resolve()
         : call((api) => api.threads.get({ params: { id: threadId } })).then(setView, (e: unknown) =>
             setError(errorMessage(e)),
           ),
-    [threadId],
+    [threadId, readOnly],
   );
   useEffect(() => void load(), [load]);
   useEffect(() => localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)), [prefs]);
@@ -184,19 +186,19 @@ export function ActionView({
     if (view && !embedded) document.title = `${view.thread.title} · toolreader`;
   }, [view?.thread.title]);
 
-  // ponytail: polls a cheap head marker while running; switch to a push stream if this ever matters.
-  const running = view?.thread.status === "running";
+  // Keep watching idle threads so later interactive turns appear too.
+  const status = view?.thread.status;
   const head = view?.thread.head;
   useEffect(() => {
-    if (!running || threadId === undefined) return;
+    if (readOnly || threadId === undefined) return;
     const timer = setInterval(async () => {
       const h = await call((api) => api.threads.head({ params: { id: threadId } })).catch(
         () => null,
       );
-      if (h && h.head !== head) load();
+      if (h && (h.head !== head || h.status !== status)) load();
     }, 3000);
     return () => clearInterval(timer);
-  }, [running, head, threadId, load]);
+  }, [readOnly, status, head, threadId, load]);
 
   const actions = useMemo(
     () => (view?.entries ?? []).filter((e): e is Action => e.type === "action"),
@@ -240,7 +242,7 @@ export function ActionView({
   };
 
   const labelTurn = async (turn: Turn) => {
-    if (!view || threadId === undefined) return;
+    if (!view || readOnly || threadId === undefined) return;
     const items = turn.phases
       .flatMap((p) => p.items)
       .flatMap((item) => labelItem(item, view.labels))
@@ -332,11 +334,11 @@ export function ActionView({
             {artifact.git?.head && `@${artifact.git.head.slice(0, 8)}`} · outputs {artifact.outputs}
             {artifact.redactions > 0 && ` · ${artifact.redactions} redacted`}
           </span>
-        ) : (
+        ) : !readOnly ? (
           <a className="chip" {...proofLink(view, { turns: null, range: null })}>
             ⇩ export
           </a>
-        )}
+        ) : null}
       </header>
 
       <div className="toolbar">
@@ -383,7 +385,7 @@ export function ActionView({
             {fmtTime(range.from)}–{fmtTime(range.to)} ✕
           </button>
         )}
-        {range && !artifact && (
+        {range && !readOnly && (
           <a className="chip on range-chip" {...proofLink(view, { turns: null, range })}>
             ⇩ export range
           </a>
