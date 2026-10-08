@@ -2,13 +2,14 @@
 // that produced it. Entries live on a separate `agent-ledger` branch as `commits/<sha>.json`, so a
 // repo alone can show "what the agent did for each commit". Pure, so server and browser share it.
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { Entry, Labels, ThreadSource, type Action } from "./domain.ts";
 import { redactEntries, redactLabels, redactor } from "./proof.ts";
-import { unwrapShell } from "./shell.ts";
+import { humanizeCommand, unwrapShell } from "./shell.ts";
 import { splitTurns } from "./tree.ts";
 
-export const LEDGER_FORMAT_VERSION = 1;
+export const LEDGER_FORMAT_VERSION = 2;
 export const LEDGER_BRANCH = "agent-ledger";
 
 export const LedgerCommit = Schema.Struct({
@@ -20,28 +21,136 @@ export const LedgerCommit = Schema.Struct({
 });
 export type LedgerCommit = typeof LedgerCommit.Type;
 
-export const LedgerEntry = Schema.Struct({
-  formatVersion: Schema.Literal(LEDGER_FORMAT_VERSION),
-  commit: LedgerCommit,
-  thread: Schema.Struct({
-    id: Schema.String,
-    title: Schema.String,
-    source: ThreadSource,
-    provider: Schema.NullOr(Schema.String),
-    origin: Schema.NullOr(Schema.String),
-  }),
-  /**
-   * How the commit was tied to the session: its SHA in `git commit` output, the time of a
-   * `git commit` action, or (no commit action anywhere) a session that ended before the commit.
-   */
-  match: Schema.Literals(["sha", "time", "session"]),
-  outputs: Schema.Literals(["included", "omitted"]),
-  redactions: Schema.Number,
-  /** History since the agent's previous commit in that thread (or the thread start), up to this commit. */
+const ThreadFields = {
+  id: Schema.String,
+  title: Schema.String,
+  source: ThreadSource,
+  provider: Schema.NullOr(Schema.String),
+  origin: Schema.NullOr(Schema.String),
+};
+
+export const LedgerThread = Schema.Struct({
+  ...ThreadFields,
+  /** The thread that delegated this one, for a subagent. */
+  parent: Schema.NullOr(Schema.String),
+});
+export type LedgerThread = typeof LedgerThread.Type;
+
+export const LINK_ROLES = ["coder", "reviewer", "committer"] as const;
+export type LinkRole = (typeof LINK_ROLES)[number];
+/**
+ * How a thread was tied to a commit, strongest first: a person said so (`ledger link`/`review`),
+ * an `Agent-Session` trailer, its SHA in `git commit` output, `sync --session`, the time of a
+ * `git commit` action, or edits to the commit's files.
+ */
+export const LINK_VIA = ["asserted", "trailer", "sha", "session", "time", "evidence"] as const;
+export type LinkVia = (typeof LINK_VIA)[number];
+
+export const LedgerLink = Schema.Struct({
+  thread: LedgerThread,
+  role: Schema.Literals(LINK_ROLES),
+  via: Schema.Literals(LINK_VIA),
+  /** For a reviewer: the commit it reviewed. On any other SHA the review is stale. */
+  reviewedSha: Schema.NullOr(Schema.String),
+  /** The commit's files this thread edited. */
+  files: Schema.Array(Schema.String),
+  /** History since the thread's previous commit (or its start), up to this commit; empty until sync finds it. */
   entries: Schema.Array(Entry),
   labels: Labels,
 });
-export type LedgerEntry = typeof LedgerEntry.Type;
+export type LedgerLink = typeof LedgerLink.Type;
+
+/** Each file of the commit, once: edited by one linked thread, by several, or by none. */
+export const FILE_BUCKETS = ["attributed", "shared", "untracked"] as const;
+export const FileCoverage = Schema.Struct({
+  path: Schema.String,
+  bucket: Schema.Literals(FILE_BUCKETS),
+});
+export type FileCoverage = typeof FileCoverage.Type;
+
+export const LedgerNote = Schema.Struct({
+  text: Schema.String,
+  /** A file of the commit, or null for the commit as a whole. */
+  file: Schema.NullOr(Schema.String),
+  at: Schema.String,
+});
+export type LedgerNote = typeof LedgerNote.Type;
+
+const LedgerEntryV2 = Schema.Struct({
+  formatVersion: Schema.Literal(LEDGER_FORMAT_VERSION),
+  commit: LedgerCommit,
+  links: Schema.Array(LedgerLink),
+  /** Threads `ledger unlink` removed: sync and merges never add them back; `link` does. */
+  unlinked: Schema.Array(Schema.String),
+  files: Schema.Array(FileCoverage),
+  notes: Schema.Array(LedgerNote),
+  outputs: Schema.Literals(["included", "omitted"]),
+  redactions: Schema.Number,
+});
+
+/** Entries written before several threads per commit: one thread, its match, its history. */
+const LedgerEntryV1 = Schema.Struct({
+  formatVersion: Schema.Literal(1),
+  commit: LedgerCommit,
+  thread: Schema.Struct(ThreadFields),
+  match: Schema.Literals(["sha", "time", "session"]),
+  outputs: Schema.Literals(["included", "omitted"]),
+  redactions: Schema.Number,
+  entries: Schema.Array(Entry),
+  labels: Labels,
+});
+
+/** A v1 entry reads as one coder link; the branch is never rewritten for it. */
+const fromV1 = LedgerEntryV1.pipe(
+  Schema.decodeTo(
+    LedgerEntryV2,
+    SchemaTransformation.transform({
+      decode: (v1): typeof LedgerEntryV2.Encoded => ({
+        formatVersion: LEDGER_FORMAT_VERSION,
+        commit: v1.commit,
+        links: [
+          {
+            thread: { ...v1.thread, parent: null },
+            role: "coder" as const,
+            via: v1.match,
+            reviewedSha: null,
+            files: [],
+            entries: v1.entries,
+            labels: v1.labels,
+          },
+        ],
+        unlinked: [],
+        files: [],
+        notes: [],
+        outputs: v1.outputs,
+        redactions: v1.redactions,
+      }),
+      // Never used: encoding picks the v2 member first.
+      encode: (v2): typeof LedgerEntryV1.Type => {
+        const link = v2.links[0];
+        return {
+          formatVersion: 1 as const,
+          commit: v2.commit,
+          thread: link?.thread ?? {
+            id: "",
+            title: "",
+            source: "t3" as const,
+            provider: null,
+            origin: null,
+          },
+          match: link?.via === "sha" || link?.via === "time" ? link.via : ("session" as const),
+          outputs: v2.outputs,
+          redactions: v2.redactions,
+          entries: link?.entries ?? [],
+          labels: link?.labels ?? {},
+        };
+      },
+    }),
+  ),
+);
+
+export const LedgerEntry = Schema.Union([LedgerEntryV2, fromV1]);
+export type LedgerEntry = typeof LedgerEntryV2.Type;
 
 /** One commit of a range, with its ledger entry when the ledger has one. */
 export const LedgerCommitView = Schema.Struct({
@@ -204,43 +313,237 @@ export function clipOutputs(entries: ReadonlyArray<Entry>, maxBytes: number): En
   });
 }
 
+/** A thread found for a commit, before redaction. */
+export type FoundLink = {
+  readonly thread: LedgerThread;
+  readonly role: LinkRole;
+  readonly via: LinkVia;
+  readonly reviewedSha: string | null;
+  readonly segment: ReadonlyArray<Entry>;
+  readonly labels: Labels;
+};
+
 /**
- * The entry for `commit`: the segment's entries, the commit subject, the thread's title and the labels redacted like
- * every other free-text field (the title is the first prompt line), and outputs clipped. Labels
- * are kept for the segment's entries and fold groups.
+ * The entry for `commit`: each link's segment, the commit subject, thread titles, labels and
+ * notes redacted like every other free-text field (a title is the first prompt line), and outputs
+ * clipped. Labels are kept for the segment's entries and fold groups. `paths` are the files the
+ * commit changed.
  */
 export function buildEntry(input: {
   readonly commit: LedgerCommit;
-  readonly thread: LedgerEntry["thread"];
-  readonly match: LedgerEntry["match"];
-  readonly segment: ReadonlyArray<Entry>;
-  readonly labels: Labels;
+  readonly links: ReadonlyArray<FoundLink>;
+  readonly paths: ReadonlyArray<string>;
+  /** The repo's worktrees: absolute paths outside them are not the commit's. */
+  readonly roots?: ReadonlyArray<string> | undefined;
+  readonly notes?: ReadonlyArray<LedgerNote>;
   readonly outputs: boolean;
   readonly maxOutput: number;
   readonly home?: string | undefined;
 }): LedgerEntry {
-  const redacted = redactEntries(input.segment, { outputs: input.outputs, home: input.home });
-  const entries = clipOutputs(redacted.entries, input.maxOutput);
-  const ids = new Set(entries.map((e) => e.id));
   const { clean, count } = redactor(input.home);
-  const thread = { ...input.thread, title: clean(input.thread.title) };
-  const labels = redactLabels(
-    Object.fromEntries(
-      Object.entries(input.labels).filter(([id]) => ids.has(id) || id.startsWith("fold:")),
-    ),
-    clean,
-  );
+  let redactions = 0;
+  const links = input.links.map((found): LedgerLink => {
+    const redacted = redactEntries(found.segment, { outputs: input.outputs, home: input.home });
+    redactions += redacted.redactions;
+    const entries = clipOutputs(redacted.entries, input.maxOutput);
+    const ids = new Set(entries.map((e) => e.id));
+    return {
+      thread: { ...found.thread, title: clean(found.thread.title) },
+      role: found.role,
+      via: found.via,
+      reviewedSha: found.reviewedSha,
+      // A review comes after the commit: what it edits is not the commit's.
+      files:
+        found.role === "reviewer"
+          ? []
+          : [...editedPaths(found.segment, input.paths, { roots: input.roots, home: input.home })],
+      entries,
+      labels: redactLabels(
+        Object.fromEntries(
+          Object.entries(found.labels).filter(([id]) => ids.has(id) || id.startsWith("fold:")),
+        ),
+        clean,
+      ),
+    };
+  });
+  const notes = (input.notes ?? []).map((n) => ({ ...n, text: clean(n.text) }));
   return {
     formatVersion: LEDGER_FORMAT_VERSION,
     commit: { ...input.commit, subject: clean(input.commit.subject) },
-    thread,
-    match: input.match,
+    links,
+    unlinked: [],
+    files: fileCoverage(input.paths, links),
+    notes,
     outputs: input.outputs ? "included" : "omitted",
-    redactions: redacted.redactions + count(),
-    entries,
-    labels,
+    redactions: redactions + count(),
   };
 }
+
+const STRENGTH: Record<LinkVia, number> = Object.fromEntries(
+  LINK_VIA.map((via, i) => [via, LINK_VIA.length - i]),
+) as Record<LinkVia, number>;
+export const strongerVia = (a: LinkVia, b: LinkVia) => STRENGTH[a] > STRENGTH[b];
+
+const linkKey = (l: LedgerLink) => `${l.thread.id}\u0000${l.role}`;
+
+/**
+ * `found` added to `current`, one link per thread and role (a coder can review its own commit):
+ * the stronger `via` wins (at equal strength the found one, unless asserted), and a link with no
+ * history yet takes the other's. `explicit` (what
+ * `ledger link`/`review` just asserted) replaces its link outright. Nothing is dropped.
+ */
+export function mergeLinks(
+  current: ReadonlyArray<LedgerLink>,
+  found: ReadonlyArray<LedgerLink>,
+  explicit = false,
+): LedgerLink[] {
+  const out = new Map(current.map((l) => [linkKey(l), l]));
+  for (const link of found) {
+    const old = out.get(linkKey(link));
+    if (!old || (explicit && link.via === "asserted")) {
+      out.set(linkKey(link), link);
+      continue;
+    }
+    // Sync's own finding at the same strength is newer: it may hold history the old one lacks.
+    const newer = link.via !== "asserted" && !strongerVia(old.via, link.via);
+    const [keep, other] = newer ? [link, old] : [old, link];
+    out.set(
+      linkKey(link),
+      keep.entries.length > 0
+        ? keep
+        : { ...keep, entries: other.entries, labels: other.labels, files: other.files },
+    );
+  }
+  return [...out.values()];
+}
+
+/**
+ * `fresh` merged into `current` (same commit): links merged, notes added, files recounted. A
+ * thread either side unlinked stays out; only `relink` (what `ledger link` just named) brings it
+ * back, so an older copy of a link never undoes a later unlink.
+ */
+export function mergeEntries(
+  current: LedgerEntry,
+  fresh: LedgerEntry,
+  relink: ReadonlyArray<string> = [],
+): LedgerEntry {
+  const unlinked = [...new Set([...current.unlinked, ...fresh.unlinked])].filter(
+    (id) => !relink.includes(id),
+  );
+  const out = new Set(unlinked);
+  const links = mergeLinks(current.links, fresh.links, relink.length > 0).filter(
+    (l) => !out.has(l.thread.id),
+  );
+  // An entry read from format 1 has links but no file list: its coverage stays unknown.
+  const paths = current.files.length > 0 || current.links.length > 0 ? current.files : fresh.files;
+  const seen = new Set(current.notes.map((n) => JSON.stringify(n)));
+  const added = fresh.notes.filter((n) => !seen.has(JSON.stringify(n)));
+  const changed = added.length > 0 || JSON.stringify(links) !== JSON.stringify(current.links);
+  return {
+    ...current,
+    formatVersion: LEDGER_FORMAT_VERSION,
+    links,
+    unlinked,
+    files: fileCoverage(
+      paths.map((f) => f.path),
+      links,
+    ),
+    notes: [...current.notes, ...added],
+    redactions: current.redactions + (changed ? fresh.redactions : 0),
+  };
+}
+
+/** Each of `paths` once, by how many links edited it. */
+export function fileCoverage(
+  paths: ReadonlyArray<string>,
+  links: ReadonlyArray<Pick<LedgerLink, "files">>,
+): FileCoverage[] {
+  return paths.map((path) => {
+    const n = links.filter((l) => l.files.includes(path)).length;
+    return { path, bucket: n === 0 ? "untracked" : n === 1 ? "attributed" : "shared" };
+  });
+}
+
+/** A reviewer link counts only on the commit it reviewed. */
+export const isStale = (link: LedgerLink, sha: string) =>
+  link.role === "reviewer" && !!link.reviewedSha && link.reviewedSha !== sha;
+
+/**
+ * The commit `paths` (repo-relative) that `entries` wrote: edit tools' files, and shell commands
+ * that write (`>`, heredoc, `sed -i`, `cp`, `mv`, `rm`). Reads and `git add` don't count.
+ */
+export function editedPaths(
+  entries: ReadonlyArray<Entry>,
+  paths: ReadonlyArray<string>,
+  where: {
+    readonly roots?: ReadonlyArray<string> | undefined;
+    readonly home?: string | undefined;
+  } = {},
+): Set<string> {
+  const roots = [...(where.roots ?? [])].sort((x, y) => y.length - x.length);
+  // Entries write paths outside the thread's own worktree as `~/…` (normalize); those and absolute
+  // paths count only inside a worktree of this repo, compared exactly (never /tmp, another repo).
+  // ponytail: a relative path's cwd is unknown, so it matches by whole trailing segments, the
+  // longest commit path winning; written from a subdirectory it can name the wrong one of two
+  // same-named files.
+  const sameFile = (written: string, path: string) => {
+    let w = written.replace(/^\.\//, "");
+    if (where.home && (w === "~" || w.startsWith("~/"))) w = `${where.home}${w.slice(1)}`;
+    if (w.startsWith("/") || w.startsWith("~")) {
+      const root = roots.find((r) => w.startsWith(`${r}/`));
+      return !!root && w.slice(root.length + 1) === path;
+    }
+    return w === path || w.endsWith(`/${path}`) || path.endsWith(`/${w}`);
+  };
+  const hit = new Set<string>();
+  for (const e of entries) {
+    if (e.type !== "action" || e.status === "failed") continue;
+    const written = [
+      ...(e.files ?? []).map((f) => f.path),
+      ...(e.command
+        ? humanizeCommand(e.command).flatMap((p) => (p.kind === "edit" ? (p.targets ?? []) : []))
+        : []),
+    ];
+    for (const w of written) {
+      const best = paths.filter((p) => sameFile(w, p)).sort((x, y) => y.length - x.length)[0];
+      if (best) hit.add(best);
+    }
+  }
+  return hit;
+}
+
+/**
+ * History `from`..`to` (ISO times, `from` exclusive), for a thread tied by trailer or evidence
+ * rather than by its own `git commit` action.
+ */
+export function segmentByTime(
+  entries: ReadonlyArray<Entry>,
+  from: string | null,
+  to: string,
+): Entry[] {
+  const since = from ? Date.parse(from) : -Infinity;
+  const until = Date.parse(to) + CLOCK_SKEW_MS;
+  const start = entries.findIndex((e) => Date.parse(e.at) > since);
+  if (start < 0) return [];
+  const end = entries.findIndex((e, i) => i >= start && Date.parse(e.at) > until);
+  return segmentBetween(entries, start, end < 0 ? entries.length : end);
+}
+
+/** Trailer that names the agent session a commit came from (`ledger stamp`, the commit hook). */
+export const SESSION_TRAILER = "Agent-Session";
+
+/**
+ * The agent session this process runs in, from the variables agents export to their commands
+ * (`codex:<id>`, `claude-code:<id>`), or null outside an agent.
+ */
+export function sessionFromEnv(env: Readonly<Record<string, string | undefined>>): string | null {
+  if (env.CODEX_THREAD_ID) return `codex:${env.CODEX_THREAD_ID}`;
+  if (env.CLAUDE_CODE_SESSION_ID) return `claude-code:${env.CLAUDE_CODE_SESSION_ID}`;
+  return null;
+}
+
+/** The provider's own session id of a session name: `codex:<id>` / `claude-code:<id>` → `<id>`. */
+export const nativeId = (session: string) => session.replace(/^(?:codex|claude-code):/, "");
 
 /** First line of the hook `ledger hook install` writes; marks the file as ours. */
 export const HOOK_MARKER = "# toolreader ledger hook";
@@ -279,6 +582,28 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 done <<EOF
 $refs
 EOF
+exit 0
+`;
+}
+
+/**
+ * The `commit-msg` hook (`ledger hook install --commit`): a commit made inside an agent session
+ * gets an `Agent-Session` trailer naming it, once. It runs on the final message, after any editor.
+ * Plain shell, so it adds no Node start to a commit; outside an agent it does nothing, and it
+ * never stops a commit.
+ */
+export function commitMsgHook(): string {
+  return `#!/bin/sh
+${HOOK_MARKER}: names the agent session a commit comes from, for ${LEDGER_BRANCH}.
+# Remove it with \`ledger hook uninstall\`. It never stops a commit.
+# An emptied message aborts the commit; a trailer would turn it into one.
+grep -q '^[[:space:]]*[^#[:space:]]' "$1" || exit 0
+if [ -n "$CODEX_THREAD_ID" ]; then session="codex:$CODEX_THREAD_ID"
+elif [ -n "$CLAUDE_CODE_SESSION_ID" ]; then session="claude-code:$CLAUDE_CODE_SESSION_ID"
+else exit 0
+fi
+git interpret-trailers --in-place --if-exists addIfDifferent \\
+  --trailer "${SESSION_TRAILER}: $session" "$1" 2>/dev/null
 exit 0
 `;
 }

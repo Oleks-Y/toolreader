@@ -13,7 +13,7 @@ vp run typecheck  # tsgo with the Effect language service
 vp run build      # dist/client (viewer), dist/site (ledger page template), dist/bin.mjs (CLI)
 ```
 
-Everything runs through one `toolreader` bin: `serve`, `ledger sync|show|site|sanitize|hook`, `export`. In this repo, `node src/server/bin.ts <command>` (or `vp run ledger -- …`, `vp run export -- …`).
+Everything runs through one `toolreader` bin: `serve`, `ledger sync|show|explain|link|unlink|note|review|site|sanitize|hook`, `export`. In this repo, `node src/server/bin.ts <command>` (or `vp run ledger -- …`, `vp run export -- …`).
 
 To use it in another repo, pack it (the package is private; nothing is published) and install the tarball. All dependencies are bundled, so it installs nothing else:
 
@@ -44,9 +44,18 @@ toolreader ledger sync [--repo .] [--range main..HEAD] [--no-outputs]   # add en
 git push origin agent-ledger                                            # share it
 toolreader ledger show [--repo .] [--range main..HEAD]                  # list commits and their entries
 toolreader ledger site [--repo .] [--range main..HEAD] [--out DIR]      # static page of the range (DIR/index.html)
-toolreader ledger hook install [--repo .]                               # pre-push hook: sync what you push, --push
+toolreader ledger hook install [--repo .] [--commit]                    # pre-push hook: sync what you push, --push
 toolreader ledger sanitize [--repo .] [--agent on] [--push]             # rewrite agent-ledger as one sanitized commit
+toolreader ledger explain [REV]                                         # one commit: its threads, files and notes
+toolreader ledger link REV --session ID [--role coder|reviewer|committer]   # say which thread worked on a commit
+toolreader ledger unlink REV --session ID
+toolreader ledger note REV "fixed by hand" [--file PATH]
+toolreader ledger review [REV]                                          # from an agent: link itself as reviewer
 ```
+
+A commit can have several threads: coders, reviewers, a committer. Sync links each thread it finds and says how (`via`), strongest first: `asserted` (`link`/`review`), `trailer` (an `Agent-Session: codex:<id>` or `claude-code:<id>` line in the commit message), `sha` (its `git commit` printed the SHA), `session` (`--session`), `time` (its `git commit` ran just before), `evidence` (it edited the commit's files in this worktree since the previous commit). A later sync adds links and never removes one; `unlink` does. Each changed file is `attributed` (one thread edited it), `shared` (several) or `untracked` (none: a hand edit, say; add a `note`). A commit with no thread is recorded too, all its files untracked. A review counts for the SHA it reviewed; on any other commit (a rebase, a fix) it shows as stale.
+
+`hook install --commit` also writes a `commit-msg` hook: a commit made inside an agent session (`CODEX_THREAD_ID` or `CLAUDE_CODE_SESSION_ID` set) gets an `Agent-Session` trailer, once. It is plain shell, does nothing outside an agent, and never stops a commit. Agents' session ids map to T3 threads through T3's provider threads; a Claude Code session outside T3 can't be linked.
 
 `sync` options: `--source auto|t3|codex-app-server|codex-rollouts` (`auto`: T3 if its database exists, plus Codex rollout files), `--codex-home DIR` (default `$CODEX_HOME` or `~/.codex`), `--max-output BYTES` (per output, head and tail; default 8192, `0` keeps it), `--push` (build on origin's `agent-ledger` and push, retrying if another push wins), `--session ID` / `--match-sessions` (for commits a later step made; see below).
 

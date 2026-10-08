@@ -94,6 +94,15 @@ const ProjectRow = Schema.Struct({ id: Schema.String, title: Schema.String, root
 const decodeProjectRows = Schema.decodeUnknownEffect(Schema.Array(ProjectRow));
 const CursorRow = Schema.Struct({ threadId: Schema.NullOr(Schema.String) });
 const decodeCursorRows = Schema.decodeUnknownEffect(Schema.Array(CursorRow));
+const PairRow = Schema.Struct({ key: Schema.NullOr(Schema.String), threadId: Schema.String });
+const decodePairRows = Schema.decodeUnknownEffect(Schema.Array(PairRow));
+
+export type Lineage = {
+  /** T3 thread by the provider's own session id (what agents export: CODEX_THREAD_ID, CLAUDE_CODE_SESSION_ID). */
+  readonly nativeIds: ReadonlyMap<string, string>;
+  /** A subagent thread's parent thread. */
+  readonly parents: ReadonlyMap<string, string>;
+};
 const idSet = (rows: ReadonlyArray<typeof CursorRow.Type>): ReadonlySet<string> =>
   new Set(rows.flatMap((r) => (r.threadId ? [r.threadId] : [])));
 
@@ -130,6 +139,7 @@ export class ThreadStore extends Context.Service<
     readonly head: (id: string) => Effect.Effect<ThreadHead, ThreadNotFound>;
     /** Codex thread ids T3 runs itself (from its resume cursors), so other sources can skip them. */
     readonly codexThreadIds: Effect.Effect<ReadonlySet<string>>;
+    readonly lineage: Effect.Effect<Lineage>;
     /** Claude Code session ids T3 runs itself, likewise. */
     readonly claudeSessionIds: Effect.Effect<ReadonlySet<string>>;
     readonly projects: Effect.Effect<ReadonlyArray<T3Project>>;
@@ -143,6 +153,7 @@ export class ThreadStore extends Context.Service<
       get: (id) => Effect.fail(new ThreadNotFound({ threadId: id })),
       head: (id) => Effect.fail(new ThreadNotFound({ threadId: id })),
       codexThreadIds: Effect.succeed(new Set()),
+      lineage: Effect.succeed({ nativeIds: new Map(), parents: new Map() }),
       claudeSessionIds: Effect.succeed(new Set()),
       projects: Effect.succeed([]),
     }),
@@ -331,6 +342,36 @@ export class ThreadStore extends Context.Service<
         from provider_session_runtime where provider_name = 'claudeAgent'`
       ).pipe(Effect.flatMap(decodeCursorRows), Effect.map(idSet), Effect.orDie);
 
+      // Claude's V1 cursor keeps its session id in `resume`; Codex's in `threadId`.
+      const pairs = <E>(rows: Effect.Effect<ReadonlyArray<unknown>, E>) =>
+        rows.pipe(
+          Effect.flatMap(decodePairRows),
+          Effect.map(
+            (r) => new Map(r.flatMap((p) => (p.key ? [[p.key, p.threadId] as const] : []))),
+          ),
+          Effect.orDie,
+        );
+      const lineage = Effect.all({
+        nativeIds: pairs(
+          v2
+            ? sql`
+        select coalesce(json_extract(resume_cursor_json, '$.resume'), json_extract(resume_cursor_json, '$.threadId')) key, thread_id threadId
+        from provider_session_runtime
+        union
+        select json_extract(payload_json, '$.nativeThreadRef.nativeId') key, thread_id threadId
+        from orchestration_v2_projection_provider_threads where thread_id is not null`
+            : sql`
+        select coalesce(json_extract(resume_cursor_json, '$.resume'), json_extract(resume_cursor_json, '$.threadId')) key, thread_id threadId
+        from provider_session_runtime`,
+        ),
+        parents: v2
+          ? pairs(sql`
+        select thread_id key, json_extract(payload_json, '$.lineage.parentThreadId') threadId
+        from orchestration_v2_projection_threads
+        where json_extract(payload_json, '$.lineage.parentThreadId') is not null`)
+          : Effect.succeed(new Map<string, string>()),
+      });
+
       const projects = sql`
         select project_id id, title, workspace_root root from projection_projects where deleted_at is null`.pipe(
         Effect.flatMap(decodeProjectRows),
@@ -338,7 +379,15 @@ export class ThreadStore extends Context.Service<
       );
 
       yield* list; // warm the action-count cache
-      return ThreadStore.of({ list, get, head, codexThreadIds, claudeSessionIds, projects });
+      return ThreadStore.of({
+        list,
+        get,
+        head,
+        codexThreadIds,
+        claudeSessionIds,
+        lineage,
+        projects,
+      });
     }),
   );
 }

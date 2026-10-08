@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" />
+  <title>Commit Mapping Plan</title>
+  <link
+    rel="stylesheet"
+    href="/Users/alex/.claude/plugins/cache/claude-community/html-plan/1.0.0/skills/html-plan/runtime/htmlplan.css"
+  />
+  <script
+    src="/Users/alex/.claude/plugins/cache/claude-community/html-plan/1.0.0/skills/html-plan/runtime/htmlplan.js"
+    defer
+  ></script>
+  <style data-mock-shared>
+    .ui {
+      font:
+        14px/1.4 -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+      color: #1c1b19;
+      background: #fff;
+      border: 1px solid #ddd8cc;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .ui .hd {
+      padding: 9px 14px;
+      border-bottom: 1px solid #eee9dd;
+      font-weight: 650;
+      display: flex;
+      gap: 8px;
+      align-items: baseline;
+    }
+    .ui .hd small {
+      color: #8a8578;
+      font-weight: 400;
+      font-family: ui-monospace, Menlo, monospace;
+    }
+    .ui .row {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 2px 10px;
+      padding: 8px 14px;
+      border-bottom: 1px solid #f3efe6;
+      align-items: baseline;
+    }
+    .ui .role {
+      font-size: 11.5px;
+      font-weight: 650;
+      padding: 1px 7px;
+      border-radius: 9px;
+      background: #eef2fb;
+      color: #2d5bd8;
+    }
+    .ui .role.rev {
+      background: #f6ede9;
+      color: #b4541f;
+    }
+    .ui .role.com {
+      background: #eef6f0;
+      color: #1f7a52;
+    }
+    .ui .via {
+      font-size: 12px;
+      color: #8a8578;
+    }
+    .ui .files {
+      padding: 8px 14px;
+      font:
+        12.5px/1.6 ui-monospace,
+        Menlo,
+        monospace;
+      color: #5f5a4f;
+    }
+    .ui .b {
+      display: inline-block;
+      width: 86px;
+      font-family: -apple-system, sans-serif;
+      font-size: 11.5px;
+      font-weight: 600;
+    }
+    .ui .ok {
+      color: #1f7a52;
+    }
+    .ui .warn {
+      color: #b07a12;
+    }
+    .ui .bad {
+      color: #b42318;
+    }
+    .ui .dim {
+      color: #8a8578;
+    }
+    .ui .note {
+      padding: 8px 14px;
+      background: #faf8f3;
+      color: #5f5a4f;
+      font-size: 13px;
+    }
+  </style>
+  <body>
+    <header>
+      <h1>Several Threads per Commit in the Ledger</h1>
+      <doc-changes new="1" changed="7"></doc-changes>
+      <details class="thread">
+        <summary>Why · 4 requests</summary>
+        <doc-quote via="prompt" from="the user"
+          >how the agents are mapped to commit history and how the commits mapped to ledger and
+          scenarios like mapping multiple agent threads or, for example, like coder and reviewer
+          thread</doc-quote
+        >
+        <doc-quote via="prompt" from="the user"
+          >how it would work if I would run commit just like outside of a agent thread, just. In a
+          terminal.</doc-quote
+        >
+        <doc-quote via="prompt" from="the user"
+          >finding the hand edits … could be deferred</doc-quote
+        >
+        <doc-quote via="prompt" from="the user"
+          >make it use only current structure, and make sure to use branch that has orhestratorv2
+          fixes.</doc-quote
+        >
+      </details>
+    </header>
+
+    <main>
+      <doc-plan>
+        <!-- ═════ 1 ═════ -->
+        <doc-claim>
+          <p>A commit page shows each linked thread with its role and evidence.</p>
+          <doc-mock frame="none" w="460"
+            ><template>
+              <div class="ui">
+                <div class="hd">feat(ledger): several links per commit <small>a1b2c3d</small></div>
+                <div class="row" data-ref="coder">
+                  <span class="role">coder</span><span>Codex · ledger v2 schema</span
+                  ><span class="via">trailer</span>
+                </div>
+                <div class="row">
+                  <span class="role">coder</span><span>Claude Code · viewer links</span
+                  ><span class="via">edited 2 files</span>
+                </div>
+                <div class="row" data-ref="rev">
+                  <span class="role rev">reviewer</span><span>Codex · review PR #14</span
+                  ><span class="via">asserted · this SHA</span>
+                </div>
+                <div class="row">
+                  <span class="role com">committer</span><span>you, in a terminal</span
+                  ><span class="via">no trailer</span>
+                </div>
+                <div class="files" data-ref="files">
+                  <div><span class="b ok">verified</span>src/core/ledger.ts</div>
+                  <div><span class="b warn">shared</span>src/server/Ledger.ts</div>
+                  <div><span class="b bad">untracked</span>src/web/style.css</div>
+                </div>
+                <div class="note">Note: “renamed the class by hand” · style.css</div>
+              </div></template
+            >
+            <doc-pin ref="coder" anchor="tr" title="One row for each link"
+              >A link has a role and the reason for the match.</doc-pin
+            >
+            <doc-pin ref="rev" anchor="r" title="Review of this exact SHA"></doc-pin>
+            <doc-pin ref="files" anchor="tr" title="Each changed file in one bucket"
+              >Untracked files show their diff.</doc-pin
+            >
+          </doc-mock>
+
+          <doc-claim>
+            <p>An entry holds a list of links, not one thread.</p>
+            <doc-schema
+              id="links"
+              lang="ts"
+              diff
+              title="LedgerEntry (core/ledger.ts)"
+              caption="Green is proposed. Red goes away. The full shape is in Shared."
+            >
+              <script type="text/plain">
+                 export const LedgerEntry = Schema.Struct({
+                -  formatVersion: Schema.Literal(1),
+                +  formatVersion: Schema.Literal(2),
+                   commit: LedgerCommit,
+                -  thread: Schema.Struct({ id, title, source, provider, origin }),
+                -  match: Schema.Literals(["sha", "time", "session"]),
+                -  entries: Schema.Array(Entry),
+                +  links: Schema.Array(LedgerLink),      // one per thread, see Shared
+                +  files: Schema.Array(FileCoverage),    // each changed file, once
+                +  notes: Schema.Array(LedgerNote),
+                   outputs: Schema.Literals(["included", "omitted"]),
+                   redactions: Schema.Number,
+                   labels: Labels,
+                 });
+              </script>
+            </doc-schema>
+            <doc-ask id="v1">
+              <p>What happens to the v1 entries on agent-ledger?</p>
+              <label
+                ><input type="radio" name="v1" value="read" checked /> Read them as one link
+                <small>no rewrite of the branch</small></label
+              >
+              <label
+                ><input type="radio" name="v1" value="migrate" /> Rewrite the branch as v2
+                <small>like <code>ledger sanitize</code>, one commit</small></label
+              >
+            </doc-ask>
+            <doc-claim at="src/core/ledger.ts:23">
+              <p><b>ledger.ts:23</b> · LedgerEntry</p>
+              <doc-code src="src/core/ledger.ts" lines="23-43" hl="26-34"></doc-code>
+            </doc-claim>
+          </doc-claim>
+
+          <doc-claim>
+            <p>Sync merges links. Sync does not keep only the first match.</p>
+            <doc-code title="core/ledger.ts · sketch" lang="ts">
+              <script type="text/plain">
+                const STRENGTH = { asserted: 4, trailer: 3, sha: 2, time: 1, evidence: 0 } as const
+
+                /** Adds `found` to `current`. A stronger `via` wins for one session. Asserted links stay. */
+                export function mergeLinks(current: readonly LedgerLink[], found: readonly LedgerLink[]) {
+                  const out = new Map(current.map((l) => [l.session, l]))
+                  for (const l of found) {
+                    const old = out.get(l.session)
+                    if (!old || STRENGTH[l.via] > STRENGTH[old.via]) out.set(l.session, l)
+                  }
+                  return [...out.values()]
+                }
+              </script>
+              <doc-pin line="3" tone="ok" title="Only unlink removes an asserted link"></doc-pin>
+            </doc-code>
+            <doc-claim at="src/server/Ledger.ts:531">
+              <p><b>Ledger.ts:531</b> · sync skips commits that have an entry</p>
+              <doc-code src="src/server/Ledger.ts" lines="527-532" hl="531">
+                <doc-pin line="531" tone="warn" title="Today: an existing entry is never read again"
+                  >Sync must read it and merge.</doc-pin
+                >
+              </doc-code>
+            </doc-claim>
+          </doc-claim>
+
+          <doc-claim>
+            <p>The viewer and the static site draw each link as a row.</p>
+            <doc-calls title="Viewer" caption="Both pages use the same component.">
+              <script type="text/plain">
+                ~ <LedgerPage/>                                @ src/web/LedgerPage.tsx:157   -- shows entry.thread today
+                +   <**LinkRows**/>                            @ src/web/LedgerPage.tsx:150
+                +   <**FileCoverage**/>                        @ src/web/LedgerPage.tsx:150
+                ~ publicRange()                                @ src/core/ledgerSite.ts:1     -- redacts each link title and note
+              </script>
+            </doc-calls>
+          </doc-claim>
+        </doc-claim>
+
+        <!-- ═════ 2 ═════ -->
+        <doc-claim>
+          <p>A person can link threads to any commit from a terminal.</p>
+          <doc-mock frame="terminal" title="toolreader" w="480"
+            ><template
+              ><span class="dim">$</span> git commit -m "fix: wrap long lines"
+              <span class="dim">$</span> toolreader ledger link HEAD --session 01a0fbfe --role coder
+              <span class="g">✓</span> a1b2c3d ← <b>Codex · wrap long lines</b> (coder, asserted)
+              <span class="dim">$</span> toolreader ledger note HEAD --file src/web/style.css "fixed
+              by hand" <span class="g">✓</span> a1b2c3d: 1 note
+              <span class="dim">$</span> toolreader ledger explain HEAD a1b2c3d fix: wrap long lines
+              <span class="b">coder</span> Codex · wrap long lines asserted
+              <span class="y">?</span> Claude Code · css pass edited style.css
+              <span class="g">verified</span> src/web/ActionView.tsx
+              <span class="r">untracked</span> src/web/style.css (note: fixed by hand)</template
+            ></doc-mock
+          >
+
+          <doc-claim>
+            <p>Four new commands write and read assertions.</p>
+            <doc-calls
+              title="ledger subcommands"
+              caption="Each write uses the plumbing that sync uses."
+            >
+              <script type="text/plain">
+                ~ ledgerCommand                                @ src/server/ledgerCli.ts:257
+                +   **link** sha --session ID --role R [--turns a..b]   @ src/server/ledgerCli.ts:236
+                +   **unlink** sha --session ID                @ src/server/ledgerCli.ts:236
+                +   **note** sha [--file P] text               @ src/server/ledgerCli.ts:236
+                +   **explain** sha                            @ src/server/ledgerCli.ts:156   -- links, candidates, file buckets
+                + Ledger.**assert**(repo, sha, change)         @ src/server/Ledger.ts:829
+                +   writeTree(repo, parents, writes)           @ src/server/Ledger.ts:653
+                +   update-ref agent-ledger new old            @ src/server/Ledger.ts:654
+              </script>
+            </doc-calls>
+            <doc-ask id="store">
+              <p>Where does a link live before sync writes the entry?</p>
+              <label
+                ><input type="radio" name="store" value="branch" checked /> On agent-ledger, as a v2
+                entry with links only <small>sync fills in the history later</small></label
+              >
+              <label
+                ><input type="radio" name="store" value="notes" /> In
+                <code>refs/notes/toolreader</code>
+                <small>a second ref to push and fetch</small></label
+              >
+            </doc-ask>
+          </doc-claim>
+
+          <doc-claim>
+            <p><code>--session</code> and <code>--match-sessions</code> on sync become links.</p>
+            <doc-code src="src/server/Ledger.ts" lines="563-574" hl="568-573">
+              <doc-pin line="569" title="Today: names candidates for one commit"></doc-pin>
+            </doc-code>
+          </doc-claim>
+        </doc-claim>
+
+        <!-- ═════ 3 ═════ -->
+        <doc-claim>
+          <p>A reviewer thread links itself to the exact commit it reviewed.</p>
+          <doc-mock frame="terminal" title="codex · reviewer" w="480"
+            ><template
+              ><span class="dim"># AGENTS.md: after a review, run toolreader ledger review</span>
+              <span class="dim">$</span> toolreader ledger review a1b2c3d
+              <span class="g">✓</span> a1b2c3d ← <b>Codex · review PR #14</b> (reviewer) session
+              from <b>CODEX_THREAD_ID</b>
+
+              <span class="dim"># later, the coder pushes a fix: e4f5a6b</span>
+              <span class="dim">$</span> toolreader ledger explain e4f5a6b
+              <span class="y">reviewer</span> Codex · review PR #14
+              <span class="y">stale: reviewed a1b2c3d</span></template
+            ></doc-mock
+          >
+
+          <doc-claim>
+            <p><code>review</code> gets the session from the agent environment.</p>
+            <doc-code title="ledgerCli.ts · sketch" lang="ts">
+              <script type="text/plain">
+                // Codex exports CODEX_THREAD_ID; Claude Code exports CLAUDE_CODE_SESSION_ID.
+                const fromEnv = (env: NodeJS.ProcessEnv) =>
+                  env.CODEX_THREAD_ID ? `codex:${env.CODEX_THREAD_ID}`
+                  : env.CLAUDE_CODE_SESSION_ID ? `claude-code:${env.CLAUDE_CODE_SESSION_ID}`
+                  : null   // not in an agent: fail and ask for --session
+
+                ledger.assert(repo, sha ?? "HEAD", {
+                  link: { session, role: "reviewer", via: "asserted", reviewedSha: sha },
+                })
+              </script>
+              <doc-pin line="5" tone="warn" title="A human must name the session"></doc-pin>
+            </doc-code>
+          </doc-claim>
+
+          <doc-claim>
+            <p>A review does not move to a later commit.</p>
+            <doc-code title="core/ledger.ts · sketch" lang="ts">
+              <script type="text/plain">
+                /** A reviewer link is current only on the SHA it reviewed. */
+                export const isStale = (link: LedgerLink, sha: string) =>
+                  link.role === "reviewer" && link.reviewedSha !== sha
+              </script>
+            </doc-code>
+            <doc-ask id="stale">
+              <p>A later commit has the same patch-id. Does the review carry?</p>
+              <label
+                ><input type="radio" name="stale" value="no" checked /> No, show it as stale
+                <small>the reviewer saw other code</small></label
+              >
+              <label
+                ><input type="radio" name="stale" value="patch" /> Yes, if the patch-id is the same
+                <small>survives a clean rebase</small></label
+              >
+            </doc-ask>
+          </doc-claim>
+        </doc-claim>
+
+        <!-- ═════ 4 ═════ -->
+        <doc-claim>
+          <p>An agent commit carries its session id in a trailer.</p>
+          <doc-mock frame="terminal" title="git log" w="480"
+            ><template
+              ><span class="y">commit a1b2c3d</span>
+              feat(ledger): several links per commit Agent-Session:
+              codex:01a0fbfe-f4bc-7bb2-aee9-2f19afca79c9 Agent-Parent-Session: claude-code:7c2e41d0
+
+              <span class="dim"># a terminal commit with an editor: the hook adds candidates</span>
+              <span class="dim"
+                ># toolreader: sessions that edited these files. Uncomment to link:</span
+              >
+              <span class="dim"
+                ># Agent-Session: codex:01a0fbfe (style.css, 4 min ago)</span
+              ></template
+            ></doc-mock
+          >
+
+          <doc-claim>
+            <p>A <code>prepare-commit-msg</code> hook adds the trailers.</p>
+            <doc-calls
+              title="Commit time"
+              caption="Sync reads the trailers. The hook writes nothing else."
+            >
+              <script type="text/plain">
+                ~ hook install [--commit]                      @ src/server/ledgerCli.ts:236
+                +   **prepareCommitMsgHook**(command)          @ src/core/ledger.ts:255
+                + ledger **stamp** msgfile [source]            @ src/server/ledgerCli.ts:236
+                +   **sessionTrailers**(env)                   @ src/core/trailers.ts:1
+                +   git interpret-trailers --if-exists addIfDifferent   @ src/server/Ledger.ts:760
+                ? if source is empty: **candidateComments**(repo)       @ src/server/Ledger.ts:760   -- the editor case
+
+                ~ sync                                         @ src/server/Ledger.ts:516
+                +   %(trailers:key=Agent-Session) → links via "trailer"   @ src/server/Ledger.ts:525
+              </script>
+            </doc-calls>
+            <doc-ask id="hookdefault">
+              <p>Does <code>hook install</code> add the trailer hook?</p>
+              <label
+                ><input type="radio" name="hookdefault" value="flag" checked /> Only with
+                <code>--commit</code> <small>trailers change every commit message</small></label
+              >
+              <label
+                ><input type="radio" name="hookdefault" value="always" /> Always, with the pre-push
+                hook</label
+              >
+            </doc-ask>
+            <doc-claim at="src/core/ledger.ts:255">
+              <p><b>ledger.ts:255</b> · prePushHook(), the model for the new hook</p>
+              <doc-code src="src/core/ledger.ts" lines="245-262"></doc-code>
+            </doc-claim>
+          </doc-claim>
+
+          <doc-claim>
+            <p>A provider session id resolves to its T3 thread.</p>
+            <doc-code src="src/server/ThreadStore.ts" lines="301-311" hl="308-309">
+              <doc-pin line="309" title="V2 maps native ids, for Codex only today"
+                >The same query must take claudeAgent and return thread_id.</doc-pin
+              >
+            </doc-code>
+            <doc-note tone="warn"
+              ><strong>Risk</strong> A human who commits from the shell of an agent gets the trailer
+              of that agent. <code>unlink</code> removes the link.</doc-note
+            >
+          </doc-claim>
+        </doc-claim>
+
+        <!-- ═════ 5 ═════ -->
+        <doc-claim>
+          <p>Sync finds every thread that edited the files of a commit.</p>
+          <doc-calls title="Evidence" caption="This replaces the one-best-candidate pick.">
+            <script type="text/plain">
+              ~ sync                                         @ src/server/Ledger.ts:516
+              ~   candidates = sessions.flatMap(matchCommit) @ src/server/Ledger.ts:580   -- keep all, not best
+              +   **editEvidence**(session, files, since)    @ src/core/ledger.ts:140     -- edit tools, shell write targets
+              +   **fileCoverage**(commit, links)            @ src/core/ledger.ts:140
+              ~   buildEntry({ links, files, … })            @ src/server/Ledger.ts:612
+              ~ threadRows(id)                               @ src/server/ThreadStore.ts:162    -- adds the V2 parent
+              ~ sessionsFor(repo, source)                    @ src/server/CodexRollouts.ts:92   -- keep subagents, with parent
+            </script>
+          </doc-calls>
+          <doc-ask id="evidence">
+            <p>What does sync do with an evidence match?</p>
+            <label
+              ><input type="radio" name="evidence" value="link" checked /> Write it as a link with
+              <code>via: evidence</code> <small>the page marks it as weaker</small></label
+            >
+            <label
+              ><input type="radio" name="evidence" value="suggest" /> Show it in
+              <code>explain</code> only <small>a person runs link</small></label
+            >
+          </doc-ask>
+
+          <doc-claim>
+            <p>A path in a read command is not evidence.</p>
+            <doc-code title="core/ledger.ts · sketch" lang="ts" wrap>
+              <script type="text/plain">
+                // Counts: edit tool files, and shell writes that target the path (sed -i, > file, cp … file).
+                // Does not count: git add, cat, grep, rg. They name a path but do not write it.
+                export function editEvidence(entries: readonly Entry[], paths: ReadonlySet<string>): Set<string> {
+                  const hit = new Set<string>()
+                  for (const e of entries) {
+                    if (e.type !== "action" || e.status === "failed") continue
+                    for (const f of e.files ?? []) if (paths.has(f.path)) hit.add(f.path)
+                    for (const p of shellWriteTargets(unwrapShell(e.command ?? ""))) if (paths.has(p)) hit.add(p)
+                  }
+                  return hit
+                }
+              </script>
+            </doc-code>
+          </doc-claim>
+
+          <doc-claim>
+            <p>Sync keeps subagent sessions and records their parent.</p>
+            <doc-code src="src/server/ThreadStore.ts" lines="162-173" hl="170">
+              <doc-pin line="170" title="lineage.parentThreadId is in payload_json"
+                >Select it as the parent of a subagent.</doc-pin
+              >
+            </doc-code>
+          </doc-claim>
+        </doc-claim>
+
+        <!-- ═════ aux ═════ -->
+        <doc-claim aux="shared">
+          <p>Shared: the link, the file bucket and the note.</p>
+          <doc-schema id="shared" lang="ts" title="core/ledger.ts · new types">
+            <script type="text/plain">
+              export const LedgerLink = Schema.Struct({
+                session: Schema.String,                      // T3 thread id; a native id resolves through V2 provider threads
+                title: Schema.String,
+                source: ThreadSource,
+                provider: Schema.NullOr(Schema.String),
+                parent: Schema.NullOr(Schema.String),        // the delegating thread of a subagent
+                role: Schema.Literals(["coder", "reviewer", "committer"]),
+                via: Schema.Literals(["asserted", "trailer", "sha", "time", "evidence"]),
+                reviewedSha: Schema.NullOr(Schema.String),   // reviewers only
+                files: Schema.Array(Schema.String),          // paths this link edited
+                entries: Schema.Array(Entry),                // the segment; empty until sync fills it
+              });
+
+              export const FileCoverage = Schema.Struct({
+                path: Schema.String,
+                bucket: Schema.Literals(["verified", "attributed", "shared", "seen", "untracked"]),
+              });
+
+              export const LedgerNote = Schema.Struct({ text: Schema.String, file: Schema.NullOr(Schema.String) });
+            </script>
+          </doc-schema>
+        </doc-claim>
+
+        <doc-claim aux="scope">
+          <p>
+            Not changing: detection of hand edits at hunk level, live agent hooks, the hosted
+            service.
+          </p>
+          <ul>
+            <li>
+              Hunk-level attribution of hand edits. The <code>untracked</code> bucket and
+              <code>note</code> cover it for the preview.
+            </li>
+            <li>
+              Turn-end snapshots from Claude Code or Codex hooks (option D). The plan recommends one
+              worktree for each agent.
+            </li>
+            <li>
+              Blob matches against T3 checkpoints. <code>verified</code> uses the edit diffs only
+              until a later step.
+            </li>
+            <li>
+              The pre-push hook, the sanitizer and <code>ledger site</code> security. Each link goes
+              through the same redaction.
+            </li>
+            <li>
+              No new session reader. Base: <code>master</code> 297d537 (T3 orchestration V2) with PR
+              #16.
+            </li>
+          </ul>
+        </doc-claim>
+      </doc-plan>
+    </main>
+  </body>
+</html>

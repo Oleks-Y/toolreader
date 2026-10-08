@@ -82,6 +82,7 @@ describe("ClaudeTranscripts", () => {
               head: () => Effect.die("unused"),
               codexThreadIds: Effect.succeed(new Set()),
               claudeSessionIds: Effect.succeed(new Set(["owned"])),
+              lineage: Effect.succeed({ nativeIds: new Map(), parents: new Map() }),
               projects: Effect.succeed([]),
             }),
           ),

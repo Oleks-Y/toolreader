@@ -3,6 +3,7 @@
 // top of origin's copy and pushed; `range` reads them back; `hook` installs the pre-push hook.
 // Every entry is written as Sanitizer.ts leaves it; `sanitize` rewrites the whole branch that way.
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -16,6 +17,9 @@ import { LedgerFailed, type ThreadNotFound } from "../core/api.ts";
 import type { Entry, Labels, ThreadSummary, ThreadView } from "../core/domain.ts";
 import {
   buildEntry,
+  commitMsgHook,
+  editedPaths,
+  fileCoverage,
   findCommitActions,
   HOOK_MARKER,
   LEDGER_BRANCH,
@@ -23,15 +27,25 @@ import {
   ledgerPath,
   matchCommit,
   madeEdits,
+  mergeEntries,
+  nativeId,
   prePushHook,
   remoteWebUrl,
+  segmentByTime,
   segmentFor,
+  SESSION_TRAILER,
   sessionSegment,
   sessionsBetween,
+  strongerVia,
   type CommitAction,
+  type FoundLink,
   type LedgerCommit,
   type LedgerCommitView,
+  type LedgerLink,
   type LedgerRange,
+  type LedgerThread,
+  type LinkRole,
+  type LinkVia,
 } from "../core/ledger.ts";
 import { ledgerSiteHtml, publicRange } from "../core/ledgerSite.ts";
 import type { SanitizeMode } from "../core/sanitize.ts";
@@ -54,6 +68,7 @@ const PatchIds = Schema.Record(Schema.String, Schema.String);
 const decodeEntry = Schema.decodeUnknownEffect(Schema.fromJsonString(LedgerEntry));
 const encodeEntry = Schema.encodeEffect(Schema.fromJsonString(LedgerEntry));
 const decodePatchIds = Schema.decodeUnknownOption(Schema.fromJsonString(PatchIds));
+const sameEntry = (a: LedgerEntry, b: LedgerEntry) => JSON.stringify(a) === JSON.stringify(b);
 const encodePatchIds = Schema.encodeEffect(Schema.fromJsonString(PatchIds));
 /** Field separator for `git log --format`; never appears in subjects. */
 const US = "\u001f";
@@ -103,12 +118,12 @@ export const SYNC_DEFAULTS: SyncOptions = {
 export type SyncResult = {
   readonly range: string;
   readonly sources: ReadonlyArray<string>;
+  /** Threads newly linked to a commit. */
   readonly added: ReadonlyArray<{
     commit: LedgerCommit;
-    thread: string;
-    match: LedgerEntry["match"];
-    actions: number;
+    links: ReadonlyArray<{ title: string; role: LinkRole; via: LinkVia; actions: number }>;
   }>;
+  /** Commits with no thread: recorded with every file untracked. */
   readonly unmatched: ReadonlyArray<LedgerCommit>;
   /** Commits several sessions could have produced: left without an entry rather than guessed. */
   readonly ambiguous: ReadonlyArray<{ commit: LedgerCommit; sessions: ReadonlyArray<string> }>;
@@ -135,13 +150,28 @@ export type SanitizeBranchResult = SanitizeSummary & {
 type Session = {
   /** Worked in the synced worktree itself, not another worktree of the repo. */
   readonly here: boolean;
+  /** The worktree it worked in. */
+  readonly root: string;
   readonly edited: boolean;
   readonly entries: ReadonlyArray<Entry>;
   readonly actions: CommitAction[];
   readonly labels: Labels;
-  readonly thread: LedgerEntry["thread"];
+  readonly thread: LedgerThread;
 };
-type Write = { readonly commit: LedgerCommit; readonly json: string };
+type Write = { readonly commit: LedgerCommit; readonly entry: LedgerEntry };
+
+/** What `ledger link`, `unlink`, `note` and `review` change on one commit's entry. */
+export type Assertion =
+  | {
+      readonly link: {
+        readonly session: string;
+        readonly role: LinkRole;
+        /** Reviewers: the commit reviewed (the commit itself by default). */
+        readonly reviewed?: boolean;
+      };
+    }
+  | { readonly unlink: string }
+  | { readonly note: { readonly text: string; readonly file: string | null } };
 
 export class Ledger extends Context.Service<
   Ledger,
@@ -171,12 +201,25 @@ export class Ledger extends Context.Service<
       repo: string,
       choice: SanitizeChoice & { readonly push: boolean },
     ) => Effect.Effect<SanitizeBranchResult, LedgerFailed>;
-    /** Installs or removes the pre-push hook that runs `<command> sync … --push`; returns what it did. */
+    /**
+     * Installs or removes the pre-push hook that runs `<command> sync … --push` and, with
+     * `commit`, the hook that adds an `Agent-Session` trailer; returns what it did.
+     */
     readonly hook: (
       repo: string,
       action: "install" | "uninstall",
       command: string,
+      options?: { readonly commit?: boolean },
     ) => Effect.Effect<string, LedgerFailed>;
+    /** Links or unlinks a thread, or adds a note, on one commit's entry (local agent-ledger only). */
+    readonly assert: (
+      repo: string,
+      sha: string,
+      change: Assertion,
+    ) => Effect.Effect<
+      { readonly entry: LedgerEntry; readonly linked: LedgerLink | null },
+      LedgerFailed
+    >;
   }
 >()("toolreader/server/Ledger") {
   static readonly layer = Layer.effect(
@@ -270,15 +313,21 @@ export class Ledger extends Context.Service<
         const out = yield* git(repo, [
           "log",
           "--reverse",
-          `--format=%H${US}%s${US}%cI${US}%P`,
+          `--format=%H${US}%s${US}%cI${US}%P${US}%(trailers:key=${SESSION_TRAILER},valueonly,separator=%x1e)`,
           ...range.split(/\s+/).filter(Boolean),
         ]);
         const commits: LedgerCommit[] = [];
         const parents = new Map<string, string | undefined>();
+        const trailers = new Map<string, string[]>();
+        const paths = new Map<string, string[]>();
         for (const line of out.split("\n").filter(Boolean)) {
-          const [sha = "", subject = "", committedAt = "", parentList = ""] = line.split(US);
+          const [sha = "", subject = "", committedAt = "", parentList = "", sessions = ""] =
+            line.split(US);
           commits.push({ sha, subject, committedAt, patchId: yield* patchId(repo, sha) });
           parents.set(sha, parentList.split(" ")[0] || undefined);
+          trailers.set(sha, sessions.split("\u001e").filter(Boolean));
+          // A merge's diff is its whole branch, whose own commits carry their threads.
+          paths.set(sha, parentList.includes(" ") ? [] : yield* changedPaths(repo, sha));
         }
         const times = new Map(commits.map((c) => [c.sha, c.committedAt]));
         const previousAt = new Map<string, string | null>();
@@ -292,8 +341,37 @@ export class Ledger extends Context.Service<
                   Option.getOrNull(yield* gitOption(repo, ["log", "-1", "--format=%cI", parent]))),
           );
         }
-        return { commits, previousAt };
+        return { commits, previousAt, trailers, paths };
       });
+
+      /** Files a commit changed (against its first parent). */
+      const changedPaths = (repo: string, sha: string) =>
+        // Unquoted, so a path with non-ASCII characters reads as itself.
+        git(repo, [
+          "-c",
+          "core.quotePath=false",
+          "log",
+          "-1",
+          "-m",
+          "--first-parent",
+          "--format=",
+          "--name-only",
+          sha,
+        ]).pipe(Effect.map((out) => out.split("\n").filter(Boolean)));
+
+      /** Each file of a ledger commit's tree, with its blob. */
+      const blobsIn = (repo: string, commit: string) =>
+        git(repo, ["ls-tree", "-r", commit]).pipe(
+          Effect.map(
+            (out) =>
+              new Map(
+                out
+                  .split("\n")
+                  .filter(Boolean)
+                  .map((l) => [l.slice(l.indexOf("\t") + 1), l.split(/\s/)[2]] as const),
+              ),
+          ),
+        );
 
       const resolve = (repo: string, ref: string) =>
         gitOption(repo, ["rev-parse", "--verify", "-q", ref]).pipe(
@@ -316,13 +394,22 @@ export class Ledger extends Context.Service<
           ),
         );
 
-      const readEntry = (repo: string, sha: string) =>
-        gitOption(repo, ["show", `${LEDGER_REF}:${ledgerPath(sha)}`]).pipe(
+      /**
+       * The entry for `sha` on `ref`. One that doesn't decode (a newer toolreader wrote it) fails:
+       * read as missing, a write would replace it and lose its links.
+       */
+      const readEntry = (repo: string, sha: string, ref: string = LEDGER_REF) =>
+        gitOption(repo, ["show", `${ref}:${ledgerPath(sha)}`]).pipe(
           Effect.flatMap((o) =>
             Option.isSome(o)
               ? decodeEntry(o.value).pipe(
                   Effect.map(Option.some),
-                  Effect.orElseSucceed(Option.none),
+                  Effect.mapError(
+                    (e) =>
+                      new LedgerFailed({
+                        message: `${ref}:${ledgerPath(sha)} doesn't read (written by a newer toolreader?): ${e.message}`,
+                      }),
+                  ),
                 )
               : Effect.succeed(Option.none<LedgerEntry>()),
           ),
@@ -391,6 +478,7 @@ export class Ledger extends Context.Service<
             .sort((a, b) => b.length - a.length)[0];
         return {
           sources,
+          roots,
           found: found.flatMap((f) => {
             const root = rootOf(f.summary.worktree);
             return root ? [{ ...f, root }] : [];
@@ -438,7 +526,7 @@ export class Ledger extends Context.Service<
             });
           });
           for (const w of writes) {
-            yield* add(ledgerPath(w.commit.sha), w.json);
+            yield* add(ledgerPath(w.commit.sha), yield* encodeEntry(w.entry).pipe(Effect.orDie));
             if (w.commit.patchId) patchIds[w.commit.patchId] = w.commit.sha;
           }
           yield* add("patch-ids.json", `${yield* encodePatchIds(patchIds).pipe(Effect.orDie)}\n`);
@@ -492,8 +580,45 @@ export class Ledger extends Context.Service<
           const local = yield* resolve(repo, LEDGER_REF);
           const bases = yield* independent(repo, [remote, local]);
           const onRemote = yield* filesIn(repo, remote);
-          // Another job may have recorded the same commit meanwhile; its entry stays.
-          const fresh = writes.filter((w) => !onRemote.has(ledgerPath(w.commit.sha)));
+          // Diverged (another job pushed, or the local branch began on its own): the tree starts as
+          // origin's, so local entries that differ from origin's (`ledger link`, `note`) join ours.
+          const pending = new Map(writes.map((w) => [w.commit.sha, w]));
+          // The local branch may have moved since sync read it (a `ledger note` meanwhile).
+          if (local)
+            for (const w of writes) {
+              const mine = Option.getOrNull(yield* readEntry(repo, w.commit.sha, local));
+              if (mine) pending.set(w.commit.sha, { ...w, entry: mergeEntries(mine, w.entry) });
+            }
+          if (remote && local && bases.length === 2) {
+            const [theirs, ours] = [yield* blobsIn(repo, remote), yield* blobsIn(repo, local)];
+            for (const [file, blob] of ours) {
+              if (!file.startsWith("commits/") || !theirs.has(file) || theirs.get(file) === blob)
+                continue;
+              const entry = Option.getOrNull(
+                yield* readEntry(repo, file.slice("commits/".length, -".json".length), local),
+              );
+              if (!entry) continue;
+              const w = pending.get(entry.commit.sha);
+              pending.set(entry.commit.sha, {
+                commit: entry.commit,
+                entry: w ? mergeEntries(entry, w.entry) : entry,
+              });
+            }
+          }
+          // Another job may have recorded the same commit meanwhile: its links stay, ours join them.
+          const fresh: Write[] = [];
+          for (const w of pending.values()) {
+            const theirs =
+              remote && onRemote.has(ledgerPath(w.commit.sha))
+                ? Option.getOrNull(yield* readEntry(repo, w.commit.sha, remote))
+                : null;
+            if (!theirs) {
+              fresh.push(w);
+              continue;
+            }
+            const merged = mergeEntries(theirs, w.entry);
+            if (!sameEntry(merged, theirs)) fresh.push({ commit: w.commit, entry: merged });
+          }
           const head =
             fresh.length === 0 && bases.length === 1
               ? bases[0]!
@@ -534,6 +659,53 @@ export class Ledger extends Context.Service<
           });
       });
 
+      /** Each session that worked here, loaded once, with its subagent parent from T3. */
+      const loadSessions = Effect.fn("Ledger.loadSessions")(function* (
+        repo: string,
+        source: LedgerSource,
+      ) {
+        const { sources, found, roots } = yield* sessionsFor(repo, source);
+        const { nativeIds, parents } = yield* store.lineage;
+        const sessions: Session[] = [];
+        for (const { summary, load, root } of found) {
+          const labels = yield* labeler.forThread(summary.id);
+          const view = yield* load(labels).pipe(Effect.option);
+          if (Option.isNone(view)) continue;
+          const { entries, thread: t } = view.value;
+          if (!entries.some((e) => e.type === "action")) continue;
+          sessions.push({
+            here: root === repo,
+            root,
+            edited: madeEdits(entries),
+            entries,
+            actions: findCommitActions(entries),
+            labels: { ...view.value.labels },
+            thread: {
+              id: t.id,
+              title: t.title,
+              source: t.source,
+              provider: t.provider,
+              origin: t.origin,
+              parent: parents.get(t.id) ?? null,
+            },
+          });
+        }
+        // A name is a thread id, `codex:<id>`, or what an agent exports (`claude-code:<id>`),
+        // which T3 knows by its provider thread.
+        const named = (name: string) => {
+          const id = nativeId(name);
+          const ids = new Set([
+            name,
+            id,
+            `${CODEX_ID_PREFIX}${id}`,
+            `${CLAUDE_ID_PREFIX}${id}`,
+            nativeIds.get(id),
+          ]);
+          return sessions.filter((s) => ids.has(s.thread.id));
+        };
+        return { sources, sessions, named, roots };
+      });
+
       const sync = Effect.fn("Ledger.sync")(function* (
         repoArg: string,
         rangeArg: string | null,
@@ -543,55 +715,24 @@ export class Ledger extends Context.Service<
         const repo = (yield* git(repoArg, ["rev-parse", "--show-toplevel"])).trim();
         yield* ensureNotCheckedOut(repo);
         const range = rangeArg ?? (yield* defaultRange(repo));
-        const { commits, previousAt } = yield* commitsIn(repo, range);
+        const { commits, previousAt, trailers, paths } = yield* commitsIn(repo, range);
         const remote = options.push ? yield* fetchRemote(repo) : null;
-        const existing = new Set([
-          ...(yield* filesIn(repo, yield* resolve(repo, LEDGER_REF))),
-          ...(yield* filesIn(repo, remote)),
-        ]);
-        const todo = commits.filter((c) => !existing.has(ledgerPath(c.sha)));
-        const { sources, found } = yield* sessionsFor(repo, options.source);
-
-        // Load each session that worked here once.
-        const sessions: Session[] = [];
-        if (todo.length > 0) {
-          for (const { summary, load, root } of found) {
-            const labels = yield* labeler.forThread(summary.id);
-            const view = yield* load(labels).pipe(Effect.option);
-            if (Option.isNone(view)) continue;
-            const { entries, thread: t } = view.value;
-            if (!entries.some((e) => e.type === "action")) continue;
-            sessions.push({
-              here: root === repo,
-              edited: madeEdits(entries),
-              entries,
-              actions: findCommitActions(entries),
-              labels: { ...view.value.labels },
-              thread: {
-                id: t.id,
-                title: t.title,
-                source: t.source,
-                provider: t.provider,
-                origin: t.origin,
-              },
-            });
-          }
-        }
+        const local = yield* resolve(repo, LEDGER_REF);
+        const { sources, sessions, named, roots } =
+          commits.length > 0
+            ? yield* loadSessions(repo, options.source)
+            : { sources: [], sessions: [], named: () => [], roots: [] };
 
         // Who may take a commit no `git commit` action made: the sessions named, or (when asked)
         // the ones that edited this worktree.
-        const isNamed = (s: Session, name: string) =>
-          s.thread.id === name ||
-          s.thread.id === `${CODEX_ID_PREFIX}${name}` ||
-          s.thread.id === `${CLAUDE_ID_PREFIX}${name}`;
-        const missing = options.sessions.filter((name) => !sessions.some((s) => isNamed(s, name)));
-        if (todo.length > 0 && missing.length > 0)
+        const missing = options.sessions.filter((name) => named(name).length === 0);
+        if (commits.length > 0 && missing.length > 0)
           return yield* new LedgerFailed({
             message: `No session ${missing.join(", ")} in ${sources.join(" + ") || "any source"} for ${repo}`,
           });
         const eligible =
           options.sessions.length > 0
-            ? sessions.filter((s) => options.sessions.some((name) => isNamed(s, name)))
+            ? [...new Set(options.sessions.flatMap(named))]
             : options.matchSessions
               ? sessions.filter((s) => s.here && s.edited)
               : [];
@@ -599,52 +740,101 @@ export class Ledger extends Context.Service<
         const added: Array<SyncResult["added"][number]> = [];
         const unmatched: LedgerCommit[] = [];
         const ambiguous: Array<SyncResult["ambiguous"][number]> = [];
-        const built: Array<{ commit: LedgerCommit; entry: LedgerEntry }> = [];
-        for (const commit of todo) {
-          // A printed SHA anywhere wins; then the latest time match; then the one eligible session
-          // that ended between the previous commit and this one.
+        const built: Array<{
+          commit: LedgerCommit;
+          entry: LedgerEntry;
+          current: LedgerEntry | null;
+        }> = [];
+        let existing = 0;
+        for (const commit of commits) {
+          const before = previousAt.get(commit.sha) ?? null;
+          const files = paths.get(commit.sha) ?? [];
+          const current =
+            Option.getOrNull(yield* readEntry(repo, commit.sha)) ??
+            (remote ? Option.getOrNull(yield* readEntry(repo, commit.sha, remote)) : null);
+          const found: FoundLink[] = [];
+          // Strongest first; a thread found again keeps its first (strongest) link.
+          const add = (s: Session, via: LinkVia, segment: ReadonlyArray<Entry>) => {
+            // A trailer names the thread even when its history here shows no action.
+            if (via !== "trailer" && !segment.some((e) => e.type === "action")) return;
+            if (found.some((f) => f.thread.id === s.thread.id)) return;
+            found.push({
+              thread: s.thread,
+              role: "coder",
+              via,
+              reviewedSha: null,
+              segment,
+              labels: s.labels,
+            });
+          };
+          // A trailer's thread: everything since the commit's parent (an amend or an earlier
+          // `git commit` of the same change must not cut its history short).
+          for (const name of trailers.get(commit.sha) ?? [])
+            for (const s of named(name))
+              add(s, "trailer", segmentByTime(s.entries, before, commit.committedAt));
+          // A printed SHA, in any session; else the latest `git commit` action just before it.
           const candidates = sessions.flatMap((s) => {
             const m = matchCommit(commit, s.actions);
             return m ? [{ session: s, ...m }] : [];
           });
-          const best =
-            candidates.find((c) => c.match === "sha") ??
-            candidates.sort((a, b) => (a.action.action.at < b.action.action.at ? 1 : -1))[0];
-          const before = previousAt.get(commit.sha) ?? null;
-          const between = best ? [] : sessionsBetween(commit, before, eligible);
-          if (between.length > 1) {
-            ambiguous.push({ commit, sessions: between.map((s) => s.thread.id) });
-            continue;
+          for (const c of candidates.filter((c) => c.match === "sha"))
+            add(c.session, "sha", segmentFor(c.session.entries, c.action, c.session.actions));
+          const byTime = candidates
+            .filter((c) => c.match === "time")
+            .sort((a, b) => (a.action.action.at < b.action.action.at ? 1 : -1))[0];
+          if (byTime && found.length === 0)
+            add(
+              byTime.session,
+              "time",
+              segmentFor(byTime.session.entries, byTime.action, byTime.session.actions),
+            );
+          if (found.length === 0 && eligible.length > 0) {
+            const between = sessionsBetween(commit, before, eligible);
+            if (between.length > 1) {
+              ambiguous.push({ commit, sessions: between.map((s) => s.thread.id) });
+              continue;
+            }
+            const s = between[0];
+            if (s) add(s, "session", sessionSegment(s.entries, s.actions, before));
           }
-          const fallback = between[0];
-          const picked = best
-            ? {
-                session: best.session,
-                match: best.match,
-                segment: segmentFor(best.session.entries, best.action, best.session.actions),
-              }
-            : fallback
-              ? {
-                  session: fallback,
-                  match: "session" as const,
-                  segment: sessionSegment(fallback.entries, fallback.actions, before),
-                }
-              : null;
-          if (!picked || !picked.segment.some((e) => e.type === "action")) {
-            unmatched.push(commit);
-            continue;
+          // Every other thread that edited the commit's files in this worktree since the
+          // previous commit (another worktree's edits never reach this commit).
+          for (const s of sessions.filter((s) => s.here)) {
+            const segment = segmentByTime(s.entries, before, commit.committedAt);
+            if (editedPaths(segment, files, { roots, home: config.home }).size > 0)
+              add(s, "evidence", segment);
           }
-          const entry = buildEntry({
-            commit,
-            thread: picked.session.thread,
-            match: picked.match,
-            segment: picked.segment,
-            labels: picked.session.labels,
-            outputs: options.outputs,
-            maxOutput: options.maxOutput,
-            home: config.home,
+
+          // Only what the entry doesn't already hold as strongly (or holds with less history),
+          // nor had unlinked.
+          const fresh = found.filter((f) => {
+            if (current?.unlinked.includes(f.thread.id)) return false;
+            const old = current?.links.find(
+              (l) => l.thread.id === f.thread.id && l.role === f.role,
+            );
+            if (!old || old.entries.length === 0 || strongerVia(f.via, old.via)) return true;
+            if (strongerVia(old.via, f.via)) return false;
+            const have = new Set(old.entries.map((e) => e.id));
+            return f.segment.some((e) => !have.has(e.id));
           });
-          built.push({ commit, entry });
+          if (current && fresh.length === 0) {
+            existing++;
+            continue;
+          }
+          if (!current && found.length === 0) unmatched.push(commit);
+          built.push({
+            commit,
+            current,
+            entry: buildEntry({
+              commit,
+              links: fresh,
+              paths: files,
+              roots,
+              outputs: options.outputs,
+              maxOutput: options.maxOutput,
+              home: config.home,
+            }),
+          });
         }
 
         const sanitized = yield* sanitizeAll(
@@ -653,15 +843,24 @@ export class Ledger extends Context.Service<
           { mode: options.sanitize, agent: options.sanitizeAgent },
         );
         const writes: Write[] = [];
-        for (const [i, { commit }] of built.entries()) {
-          const entry = sanitized.entries[i]!;
-          writes.push({ commit, json: yield* encodeEntry(entry).pipe(Effect.orDie) });
-          added.push({
-            commit,
-            thread: entry.thread.title,
-            match: entry.match,
-            actions: entry.entries.filter((e) => e.type === "action").length,
-          });
+        for (const [i, { commit, current }] of built.entries()) {
+          const fresh = sanitized.entries[i]!;
+          const entry = current ? mergeEntries(current, fresh) : fresh;
+          if (current && sameEntry(entry, current)) {
+            existing++;
+            continue;
+          }
+          writes.push({ commit, entry });
+          if (fresh.links.length > 0)
+            added.push({
+              commit,
+              links: fresh.links.map((l) => ({
+                title: l.thread.title,
+                role: l.role,
+                via: l.via,
+                actions: l.entries.filter((e) => e.type === "action").length,
+              })),
+            });
         }
 
         const message = `ledger: ${writes.length} commit${writes.length === 1 ? "" : "s"} from ${range}`;
@@ -669,7 +868,6 @@ export class Ledger extends Context.Service<
         if (options.push) {
           pushed = yield* publish(repo, writes, message);
         } else if (writes.length > 0) {
-          const local = yield* resolve(repo, LEDGER_REF);
           const head = yield* writeTree(repo, local ? [local] : [], writes, message);
           yield* git(repo, ["update-ref", LEDGER_REF, head, local ?? ""]);
         }
@@ -679,10 +877,127 @@ export class Ledger extends Context.Service<
           added,
           unmatched,
           ambiguous,
-          existing: commits.length - todo.length,
+          existing,
           pushed,
           sanitized: summary(sanitized),
         };
+      });
+
+      const assert = Effect.fn("Ledger.assert")(function* (
+        repoArg: string,
+        rev: string,
+        change: Assertion,
+      ) {
+        const repo = (yield* git(repoArg, ["rev-parse", "--show-toplevel"])).trim();
+        yield* ensureNotCheckedOut(repo);
+        const sha = yield* resolve(repo, `${rev}^{commit}`);
+        if (!sha) return yield* new LedgerFailed({ message: `No commit ${rev}` });
+        const { commits, previousAt, paths } = yield* commitsIn(repo, `-1 ${sha}`);
+        const commit = commits[0]!;
+        const files = paths.get(sha) ?? [];
+        const local = yield* resolve(repo, LEDGER_REF);
+        const current =
+          Option.getOrNull(yield* readEntry(repo, sha)) ??
+          buildEntry({
+            commit,
+            links: [],
+            paths: files,
+            outputs: true,
+            maxOutput: 0,
+            home: config.home,
+          });
+
+        let entry: LedgerEntry;
+        let linked: LedgerLink | null = null;
+        if ("unlink" in change) {
+          const { named } = yield* loadSessions(repo, "auto");
+          const ids = new Set([change.unlink, ...named(change.unlink).map((s) => s.thread.id)]);
+          const links = current.links.filter((l) => !ids.has(l.thread.id));
+          if (links.length === current.links.length)
+            return yield* new LedgerFailed({
+              message: `${sha.slice(0, 8)} has no link to ${change.unlink}`,
+            });
+          const gone = current.links.filter((l) => ids.has(l.thread.id)).map((l) => l.thread.id);
+          entry = {
+            ...current,
+            links,
+            unlinked: [...new Set([...current.unlinked, ...gone])],
+            files: fileCoverage(files, links),
+          };
+        } else {
+          let fresh: LedgerEntry;
+          let relink: string[] = [];
+          if ("note" in change) {
+            const { file } = change.note;
+            if (file !== null && !files.includes(file))
+              return yield* new LedgerFailed({
+                message: `${file} is not among the files ${sha.slice(0, 8)} changed`,
+              });
+            fresh = buildEntry({
+              commit,
+              links: [],
+              paths: files,
+              notes: [
+                { text: change.note.text, file, at: DateTime.formatIso(yield* DateTime.now) },
+              ],
+              outputs: true,
+              maxOutput: 0,
+              home: config.home,
+            });
+          } else {
+            const { sources, named, roots } = yield* loadSessions(repo, "auto");
+            const s = named(change.link.session)[0];
+            if (!s)
+              return yield* new LedgerFailed({
+                message: `No session ${change.link.session} in ${sources.join(" + ") || "any source"} for ${repo}`,
+              });
+            // A review comes after the commit: its history from the commit through now. Any
+            // other role: from the commit's parent through the commit.
+            const now = DateTime.formatIso(yield* DateTime.now);
+            const segment =
+              change.link.role === "reviewer"
+                ? segmentByTime(s.entries, commit.committedAt, now)
+                : segmentByTime(s.entries, previousAt.get(sha) ?? null, commit.committedAt);
+            relink = [s.thread.id];
+            fresh = buildEntry({
+              commit,
+              links: [
+                {
+                  thread: s.thread,
+                  role: change.link.role,
+                  via: "asserted",
+                  reviewedSha: change.link.reviewed ? sha : null,
+                  segment,
+                  labels: s.labels,
+                },
+              ],
+              paths: files,
+              roots,
+              outputs: SYNC_DEFAULTS.outputs,
+              maxOutput: SYNC_DEFAULTS.maxOutput,
+              home: config.home,
+            });
+          }
+          // The whole entry, so a subject first stored here leaves sanitized too.
+          entry = (yield* sanitizeAll(repo, [mergeEntries(current, fresh, relink)], {
+            mode: null,
+            agent: null,
+          })).entries[0]!;
+          const made = fresh.links[0];
+          linked =
+            entry.links.find((l) => l.thread.id === made?.thread.id && l.role === made.role) ??
+            null;
+        }
+        if (!sameEntry(entry, current)) {
+          const head = yield* writeTree(
+            repo,
+            local ? [local] : [],
+            [{ commit, entry }],
+            `ledger: ${Object.keys(change)[0]} ${sha.slice(0, 8)}`,
+          );
+          yield* git(repo, ["update-ref", LEDGER_REF, head, local ?? ""]);
+        }
+        return { entry, linked };
       });
 
       const sanitizeAll = (
@@ -730,8 +1045,7 @@ export class Ledger extends Context.Service<
         if (entries.length === 0)
           return { ...summary(result), entries: 0, head: local, pushed: null };
         const writes: Write[] = [];
-        for (const entry of result.entries)
-          writes.push({ commit: entry.commit, json: yield* encodeEntry(entry).pipe(Effect.orDie) });
+        for (const entry of result.entries) writes.push({ commit: entry.commit, entry });
         const head = yield* writeTree(
           repo,
           [],
@@ -762,14 +1076,21 @@ export class Ledger extends Context.Service<
         const patchIds = head ? yield* readPatchIds(repo, head) : {};
         const views: LedgerCommitView[] = [];
         for (const commit of commits) {
-          const direct = yield* readEntry(repo, commit.sha);
+          // Viewing skips an entry it can't read; only writes must stop on one.
+          const direct = yield* readEntry(repo, commit.sha).pipe(
+            Effect.orElseSucceed(() => Option.none<LedgerEntry>()),
+          );
           if (Option.isSome(direct)) {
             views.push({ commit, entry: direct.value, matchedBy: "sha" });
             continue;
           }
           // Rebased or amended: same diff, new SHA.
           const original = commit.patchId ? patchIds[commit.patchId] : undefined;
-          const moved = original ? yield* readEntry(repo, original) : Option.none<LedgerEntry>();
+          const moved = original
+            ? yield* readEntry(repo, original).pipe(
+                Effect.orElseSucceed(() => Option.none<LedgerEntry>()),
+              )
+            : Option.none<LedgerEntry>();
           views.push({
             commit,
             entry: Option.getOrNull(moved),
@@ -780,15 +1101,15 @@ export class Ledger extends Context.Service<
         return { repo, range, remoteUrl: remoteWebUrl(Option.getOrNull(remote)), commits: views };
       });
 
-      const hook = Effect.fn("Ledger.hook")(
-        function* (repo: string, action: "install" | "uninstall", command: string) {
+      /** Installs or removes one hook file; ours means exactly what we write. */
+      const hookFile = Effect.fn("Ledger.hookFile")(
+        function* (repo: string, name: string, script: string, action: "install" | "uninstall") {
           const file = path.resolve(
             repo,
-            (yield* git(repo, ["rev-parse", "--git-path", "hooks/pre-push"])).trim(),
+            (yield* git(repo, ["rev-parse", "--git-path", `hooks/${name}`])).trim(),
           );
           const current = (yield* exists(file)) ? yield* fs.readFileString(file) : null;
-          const script = prePushHook(command);
-          // Ours means exactly what we write: a marked hook someone edited is theirs now.
+          // A marked hook someone edited is theirs now.
           const changed = current !== null && current !== script && current.includes(HOOK_MARKER);
           const foreign = current !== null && current !== script && !changed;
           if (changed)
@@ -796,7 +1117,7 @@ export class Ledger extends Context.Service<
               message: `${file} has changed since toolreader wrote it; leaving it alone. Edit or remove it by hand.`,
             });
           if (action === "uninstall") {
-            if (current === null) return `No pre-push hook at ${file}.`;
+            if (current === null) return `No ${name} hook at ${file}.`;
             if (foreign)
               return yield* new LedgerFailed({
                 message: `${file} is not toolreader's hook; leaving it alone.`,
@@ -808,7 +1129,7 @@ export class Ledger extends Context.Service<
             return yield* new LedgerFailed({
               message: [
                 `${file} already exists and is not toolreader's; leaving it alone.`,
-                "To chain the ledger, run this from it with the push's stdin (a copy, if your hook reads it too):",
+                `To chain the ledger, run this from it${name === "pre-push" ? " with the push's stdin (a copy, if your hook reads it too)" : ', with "$@"'}:`,
                 // A subshell, so its `exit 0`s end only the ledger part.
                 `(\n${script
                   .split("\n")
@@ -826,6 +1147,27 @@ export class Ledger extends Context.Service<
           Effect.fail(new LedgerFailed({ message: e.message })),
         ),
       );
+
+      const hook = Effect.fn("Ledger.hook")(function* (
+        repo: string,
+        action: "install" | "uninstall",
+        command: string,
+        options: { readonly commit?: boolean } = {},
+      ) {
+        const lines = [yield* hookFile(repo, "pre-push", prePushHook(command), action)];
+        // Uninstall removes the commit hook too, when it is ours.
+        if (options.commit || action === "uninstall") {
+          const commitHook = hookFile(repo, "commit-msg", commitMsgHook(), action);
+          lines.push(
+            options.commit
+              ? yield* commitHook
+              : yield* commitHook.pipe(Effect.orElseSucceed(() => "")),
+          );
+        }
+        return lines
+          .filter((l) => l && !(action === "uninstall" && l.startsWith("No commit-msg")))
+          .join("\n");
+      });
 
       const site = Effect.fn("Ledger.site")(
         function* (repo: string, rangeArg: string | null, out: string) {
@@ -849,7 +1191,7 @@ export class Ledger extends Context.Service<
         ),
       );
 
-      return Ledger.of({ sync, range, site, hook, sanitize: sanitizeBranch });
+      return Ledger.of({ sync, range, site, hook, assert, sanitize: sanitizeBranch });
     }),
   );
 }
