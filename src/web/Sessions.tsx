@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ThreadSummary } from "../core/domain.ts";
 import { call, errorMessage } from "./client.ts";
 import { ThemePicker } from "./theme.tsx";
@@ -36,6 +36,7 @@ export function Sessions() {
   const [threads, setThreads] = useState<ReadonlyArray<ThreadSummary> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const filterInput = useRef<HTMLInputElement>(null);
   const [shown, setShown] = useState<Shown>(loadShown);
   useEffect(() => localStorage.setItem(SHOWN_KEY, JSON.stringify(shown)), [shown]);
 
@@ -74,11 +75,30 @@ export function Sessions() {
         <a href="#/file">open proof file</a>
         <a href="#/ledger">commit ledger</a>
         <input
+          ref={filterInput}
           autoFocus
+          aria-label="Filter sessions"
           placeholder="Filter threads…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape" && !e.nativeEvent.isComposing) {
+              setQuery("");
+            }
+          }}
         />
+        {query !== "" && (
+          <button
+            type="button"
+            className="chip"
+            onClick={() => {
+              setQuery("");
+              filterInput.current?.focus();
+            }}
+          >
+            Clear
+          </button>
+        )}
         {(["t3", "codex", "claude", "scripted", "archived"] as const).map((key) => (
           <label key={key} className="switch">
             <input
