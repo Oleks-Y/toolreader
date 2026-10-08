@@ -57,6 +57,7 @@ describe("Proofs", () => {
                 codexBin: "codex",
                 codexHome: "/home/me/.codex",
                 labelsPath: "",
+                userConfigPath: "",
                 distDir: "",
               }),
             ),

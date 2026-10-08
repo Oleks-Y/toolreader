@@ -81,6 +81,7 @@ const withSessions = <A, E>(
         codexBin: bin,
         codexHome: "/home/me/.codex",
         labelsPath: "",
+        userConfigPath: "",
         distDir: "",
       }),
     );

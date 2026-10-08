@@ -13,7 +13,7 @@ vp run typecheck  # tsgo with the Effect language service
 vp run build      # dist/client (viewer), dist/site (ledger page template), dist/bin.mjs (CLI)
 ```
 
-Everything runs through one `toolreader` bin: `serve`, `ledger sync|show|site|hook`, `export`. In this repo, `node src/server/bin.ts <command>` (or `vp run ledger -- …`, `vp run export -- …`).
+Everything runs through one `toolreader` bin: `serve`, `ledger sync|show|site|sanitize|hook`, `export`. In this repo, `node src/server/bin.ts <command>` (or `vp run ledger -- …`, `vp run export -- …`).
 
 To use it in another repo, pack it (the package is private; nothing is published) and install the tarball. All dependencies are bundled, so it installs nothing else:
 
@@ -45,6 +45,7 @@ git push origin agent-ledger                                            # share 
 toolreader ledger show [--repo .] [--range main..HEAD]                  # list commits and their entries
 toolreader ledger site [--repo .] [--range main..HEAD] [--out DIR]      # static page of the range (DIR/index.html)
 toolreader ledger hook install [--repo .]                               # pre-push hook: sync what you push, --push
+toolreader ledger sanitize [--repo .] [--agent on] [--push]             # rewrite agent-ledger as one sanitized commit
 ```
 
 `sync` options: `--source auto|t3|codex-app-server|codex-rollouts` (`auto`: T3 if its database exists, plus Codex rollout files), `--codex-home DIR` (default `$CODEX_HOME` or `~/.codex`), `--max-output BYTES` (per output, head and tail; default 8192, `0` keeps it), `--push` (build on origin's `agent-ledger` and push, retrying if another push wins), `--session ID` / `--match-sessions` (for commits a later step made; see below).
@@ -56,6 +57,42 @@ toolreader ledger sync --source codex-rollouts --codex-home "$CODEX_HOME" --rang
 ```
 
 A commit a later step made (Codex's sandbox blocks `git commit`) has no session by default. `--session ID` names it; `--match-sessions` takes the one session that edited this worktree and ended before the commit, and reports the commit as ambiguous if several did. Use `--match-sessions` only with a `CODEX_HOME` holding just that job's sessions.
+
+### What leaves the machine
+
+Session text is about the whole machine: an agent lists `~/proj`, reads other repos, names clients. `sync` therefore sanitizes every entry before it writes it, after redacting secrets:
+
+- the repo's path reads `.`, and home `~`;
+- paths in home directories outside the repo become `<path>`, emails `<email>` (except `noreply@…`, `@example.*`, `*.test`);
+- this machine's names become `<private>`: user, hostname, git identity, the repo's sibling directories and skill names (ordinary English words are skipped), even inside compounds like `acme-api-db-1`.
+
+`--sanitize anonymize` (default) keeps the structure with those placeholders; `--sanitize remove` drops what carries a hit: the output, file, message or the whole action when its command names something private. `--sanitize off` writes entries as they are.
+
+`--sanitize-agent on` also has an ACP agent read the entries first (by default `codex-acp`, which must be installed, running `gpt-6-luna` with low effort, in an empty directory with its tools turned off and a Codex home holding only your login, so no config, MCP servers, skills or memories; every permission it asks for is refused). It names what else is private (other projects, clients, people, internal hosts); those spans are hidden everywhere like the rest. A reply that doesn't parse fails the sync rather than writing unchecked text, and the error never quotes it. The agent sees the text, so it goes to that model's provider.
+
+`ledger sanitize` applies the same to every entry already on the branch (local and origin's) and writes them as one commit with no history, so no earlier version survives; `--push` replaces origin's copy unless it moved meanwhile. Rewriting entries never adds back what was hidden.
+
+Settings come from `~/.toolreader/config.json` (this machine; `$TOOLREADER_CONFIG` moves it) and `.toolreader.json` at the repo root, in that order: lists add up, instructions too, and the repo's single values win; flags override both. Put private names in the machine's file, never in the repo's, which is published with the code.
+
+```json
+{
+  "sanitize": {
+    "mode": "anonymize",
+    "allow": ["~/.codex", "t3code"],
+    "private": ["acme"],
+    "agent": {
+      "enabled": false,
+      "command": "codex-acp",
+      "args": [],
+      "model": "gpt-6-luna",
+      "effort": "low",
+      "instructions": "The client Acme and anything about its billing system are private."
+    }
+  }
+}
+```
+
+`allow` lists path prefixes and names that may stay (the remote's owner and name always may); `private` adds names to hide; `instructions` is added to the agent's prompt. Whatever the agent names, text the project itself shows (its files at HEAD, branch names, commit messages) stays, and so do bare numbers, hex ids and loopback URLs. What the agent hid last is in `$(git rev-parse --git-path toolreader-sanitize.json)` for review; it is never printed, since CI logs are public. Any ACP agent works as `command`; `codex-acp` gets `CODEX_PATH` set to the `codex` on `PATH` (or `$CODEX_BIN`), since the Codex it bundles may not know the newer models.
 
 `#/ledger?repo=<path>&range=main..HEAD` shows each commit of the range with the actions that produced it. Entries are redacted like proof-of-work exports and found again by patch-id after a rebase or amend.
 

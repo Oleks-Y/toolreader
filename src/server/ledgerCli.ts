@@ -2,10 +2,14 @@
 //   toolreader ledger sync [--repo PATH] [--range A..B] [--source auto|t3|codex-app-server|codex-rollouts]
 //                         [--codex-home DIR] [--max-output BYTES] [--no-outputs] [--push]
 //                         [--match-sessions | --session ID ...]
+//                         [--sanitize anonymize|remove|off] [--sanitize-agent on|off]
+//   toolreader ledger sanitize [--repo PATH] [--mode anonymize|remove] [--agent on|off] [--push]
+//                                                               rewrite agent-ledger as one sanitized commit
 //   toolreader ledger show [--repo PATH] [--range A..B]          list commits and their history
 //   toolreader ledger site [--repo PATH] [--range A..B] [--out DIR]  static page of the range
 //   toolreader ledger hook install|uninstall [--repo PATH]       pre-push hook: sync pushed commits, --push
 // The range defaults to <default branch>..HEAD. Without --push, share it with `git push origin agent-ledger`.
+// Sanitizing (Sanitizer.ts) follows the repo's .toolreader.json unless a flag says otherwise.
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -13,10 +17,11 @@ import * as Path from "effect/Path";
 import { Argument, Command, Flag } from "effect/unstable/cli";
 
 import { LEDGER_BRANCH } from "../core/ledger.ts";
+import { SANITIZE_MODES } from "../core/sanitize.ts";
 import { publicRange } from "../core/ledgerSite.ts";
 import { redactText } from "../core/proof.ts";
 import { LedgerApp } from "./app.ts";
-import { Ledger, LEDGER_SOURCES, SYNC_DEFAULTS } from "./Ledger.ts";
+import { Ledger, LEDGER_SOURCES, SYNC_DEFAULTS, type SanitizeSummary } from "./Ledger.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 
 const repo = Flag.string("repo").pipe(
@@ -30,6 +35,19 @@ const range = Flag.string("range").pipe(
   Flag.optional,
 );
 const offline = LedgerApp({ appServer: false, codexHome: null });
+const agentFlag = (name: string) =>
+  Flag.choice(name, ["on", "off"]).pipe(
+    Flag.withDescription(
+      "Have an ACP agent (default: codex-acp with gpt-6-luna) find what else is private first (default: the config's, else off)",
+    ),
+    Flag.optional,
+  );
+const onOff = (o: Option.Option<"on" | "off">) =>
+  Option.getOrNull(Option.map(o, (v) => v === "on"));
+const sanitizedLine = (s: SanitizeSummary) =>
+  s.mode === "off"
+    ? "not sanitized"
+    : `sanitized (${s.mode}): ${s.hits} hidden${s.spans === null ? "" : `, ${s.spans} found by the agent`}`;
 /** Commit subjects come straight from git; CI logs are as public as the page. */
 const subject = (s: string) => redactText(s).text;
 
@@ -69,6 +87,13 @@ const sync = Command.make(
         "Write on top of origin's agent-ledger and push it, retrying if another push wins",
       ),
     ),
+    sanitize: Flag.choice("sanitize", [...SANITIZE_MODES, "off"]).pipe(
+      Flag.withDescription(
+        "Hide what belongs to this machine, not the project: anonymize (placeholders) or remove (default: the config's, else anonymize)",
+      ),
+      Flag.optional,
+    ),
+    sanitizeAgent: agentFlag("sanitize-agent"),
   },
   Effect.fn(function* ({
     repo,
@@ -80,6 +105,8 @@ const sync = Command.make(
     push,
     matchSessions,
     session,
+    sanitize,
+    sanitizeAgent,
   }) {
     const path = yield* Path.Path;
     const result = yield* Effect.flatMap(Ledger, (ledger) =>
@@ -90,6 +117,8 @@ const sync = Command.make(
         push,
         matchSessions,
         sessions: session,
+        sanitize: Option.getOrNull(sanitize),
+        sanitizeAgent: onOff(sanitizeAgent),
       }),
     ).pipe(
       Effect.provide(
@@ -102,6 +131,7 @@ const sync = Command.make(
     yield* Console.log(
       `${result.range} (${result.sources.join(" + ") || "no sources"}): ${result.added.length} added, ${result.existing} already in the ledger`,
     );
+    if (result.added.length > 0) yield* Console.log(`  ${sanitizedLine(result.sanitized)}`);
     for (const a of result.added) {
       yield* Console.log(
         `  + ${a.commit.sha.slice(0, 8)} ${subject(a.commit.subject)}  ← ${a.thread} (${a.actions} actions, by ${a.match})`,
@@ -169,6 +199,40 @@ const site = Command.make(
   ),
 );
 
+const sanitize = Command.make(
+  "sanitize",
+  {
+    repo,
+    mode: Flag.choice("mode", SANITIZE_MODES).pipe(
+      Flag.withDescription(
+        "anonymize (placeholders) or remove (default: the config's, else anonymize)",
+      ),
+      Flag.optional,
+    ),
+    agent: agentFlag("agent"),
+    push: Flag.boolean("push").pipe(
+      Flag.withDescription("Replace origin's agent-ledger too, unless it moved since it was read"),
+    ),
+  },
+  Effect.fn(function* ({ repo, mode, agent, push }) {
+    const result = yield* Effect.flatMap(Ledger, (ledger) =>
+      ledger.sanitize(repo, { mode: Option.getOrNull(mode), agent: onOff(agent), push }),
+    ).pipe(Effect.provide(offline));
+    yield* Console.log(
+      `${result.entries} entries, ${sanitizedLine(result)}; ${LEDGER_BRANCH} is now ${result.head?.slice(0, 8) ?? "empty"}, one commit`,
+    );
+    if (result.pushed) yield* Console.log(`Pushed ${LEDGER_BRANCH} ${result.pushed.slice(0, 8)}`);
+    else if (result.entries > 0)
+      yield* Console.log(
+        `Replace origin's with: git push --force-with-lease origin ${LEDGER_BRANCH}`,
+      );
+  }),
+).pipe(
+  Command.withDescription(
+    "Rewrite agent-ledger as one commit of its entries sanitized, leaving no earlier version in its history",
+  ),
+);
+
 const hook = Command.make(
   "hook",
   { action: Argument.choice("action", ["install", "uninstall"]), repo },
@@ -192,5 +256,5 @@ const hook = Command.make(
 
 export const ledgerCommand = Command.make("ledger").pipe(
   Command.withDescription("Agent history per commit, kept on the agent-ledger branch"),
-  Command.withSubcommands([sync, show, site, hook]),
+  Command.withSubcommands([sync, show, site, sanitize, hook]),
 );

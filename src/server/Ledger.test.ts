@@ -14,6 +14,7 @@ import { CodexRollouts } from "./CodexRollouts.ts";
 import { CodexSessions } from "./CodexSessions.ts";
 import { Labeler } from "./Labeler.ts";
 import { Ledger } from "./Ledger.ts";
+import { Sanitizer } from "./Sanitizer.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 import { ThreadStore } from "./ThreadStore.ts";
 import * as Schema from "effect/Schema";
@@ -184,6 +185,7 @@ const ledgerLayer = (options: {
   t3?: ReadonlyArray<ThreadView>;
   labels?: Record<string, string>;
   distDir?: string;
+  sanitizer?: Layer.Layer<Sanitizer>;
 }) =>
   Ledger.layer.pipe(
     Layer.provide(CodexRollouts.layer),
@@ -197,6 +199,7 @@ const ledgerLayer = (options: {
           codexBin: "codex",
           codexHome: options.codexHome,
           labelsPath: "",
+          userConfigPath: "",
           distDir: options.distDir ?? "",
         }),
       ),
@@ -213,6 +216,7 @@ const ledgerLayer = (options: {
           )
         : ThreadStore.empty,
       CodexSessions.disabled,
+      options.sanitizer ?? Sanitizer.off,
       Layer.succeed(
         Labeler,
         Labeler.of({
@@ -790,6 +794,112 @@ describe("Ledger", () => {
             [[ci2, "session", "Review again"]],
           );
         }).pipe(Effect.provide(ledgerLayer({ dbPath: "/nonexistent/state.sqlite", codexHome })));
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live(
+    "writes entries as the sanitizer leaves them; sanitize rewrites the branch as one commit",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { repo, origin, commitFile } = yield* makeRepo;
+        const codexHome = yield* tempDir("toolreader-codex-home-");
+        yield* git(repo, ["push", "-q", "origin", "main"]);
+        yield* git(repo, ["switch", "-q", "-c", "feat/x"]);
+        const agentCommit = (n: number, minute: number) =>
+          Effect.gen(function* () {
+            const sha = yield* commitFile(
+              `f${n}.ts`,
+              `${n}\n`,
+              `feat: ${n}`,
+              `2026-01-01T10:${minute}:30Z`,
+            );
+            yield* writeRollout(codexHome, `s${n}`, repo, [
+              { at: `2026-01-01T10:${minute - 1}:00.000Z`, item: userMessage(`u${n}`, `Add ${n}`) },
+              {
+                at: `2026-01-01T10:${minute}:00.000Z`,
+                item: command(
+                  `c${n}`,
+                  `git commit -m 'feat: ${n}'`,
+                  `[feat/x ${sha.slice(0, 7)}] feat: ${n}\n`,
+                ),
+              },
+            ]);
+            return sha;
+          });
+        // Marks what it saw: the title says which mode it ran in.
+        const fake = Layer.succeed(
+          Sanitizer,
+          Sanitizer.of({
+            config: () => Effect.succeed({}),
+            sanitize: (_, entries, choice) =>
+              Effect.succeed({
+                entries: entries.map((e) => ({
+                  ...e,
+                  thread: { ...e.thread, title: `clean:${choice.mode}:${choice.agent}` },
+                })),
+                mode: choice.mode ?? "anonymize",
+                hits: entries.length,
+                spans: choice.agent ? [] : null,
+              }),
+          }),
+        );
+        const titleOn = (ref: string, sha: string) =>
+          git(repo, ["show", `${ref}:commits/${sha}.json`]).pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(LedgerEntry))),
+            Effect.map((e) => e.thread.title),
+          );
+
+        yield* Effect.gen(function* () {
+          const ledger = yield* Ledger;
+          const one = yield* agentCommit(1, 10);
+          const first = yield* ledger.sync(repo, null, { push: true, sanitize: "remove" });
+          assert.deepStrictEqual(first.sanitized, { mode: "remove", hits: 1, spans: null });
+          assert.strictEqual(yield* titleOn("agent-ledger", one), "clean:remove:null");
+
+          // An entry only origin has (another machine's), and one only this clone has.
+          const other = yield* tempDir("toolreader-ledger-other-");
+          yield* git(other, ["clone", "-q", "--branch", "agent-ledger", origin, "."]);
+          const theirs = "e".repeat(40);
+          const copy = yield* fs.readFileString(path.join(other, "commits", `${one}.json`));
+          yield* fs.writeFileString(
+            path.join(other, "commits", `${theirs}.json`),
+            copy.replaceAll(one, theirs),
+          );
+          yield* git(other, ["add", "-A"]);
+          yield* git(other, ["commit", "-q", "-m", "ledger: other machine"]);
+          yield* git(other, ["push", "-q", "origin", "HEAD:agent-ledger"]);
+          const two = yield* agentCommit(2, 20);
+          yield* ledger.sync(repo, null);
+
+          const result = yield* ledger.sanitize(repo, {
+            mode: "anonymize",
+            agent: true,
+            push: true,
+          });
+          assert.deepStrictEqual(
+            { entries: result.entries, mode: result.mode, hits: result.hits, spans: result.spans },
+            { entries: 3, mode: "anonymize", hits: 3, spans: 0 },
+          );
+          const tip = (yield* git(repo, ["ls-remote", "origin", "refs/heads/agent-ledger"])).split(
+            /\s/,
+          )[0];
+          assert.strictEqual(result.pushed, tip);
+          assert.strictEqual(yield* git(repo, ["rev-parse", "agent-ledger"]), tip);
+          assert.strictEqual(
+            yield* git(repo, ["rev-list", "--count", "agent-ledger"]),
+            "1",
+            "no history",
+          );
+          for (const sha of [one, two, theirs])
+            assert.strictEqual(yield* titleOn("agent-ledger", sha), "clean:anonymize:true");
+          assert.include(yield* git(repo, ["show", "agent-ledger:patch-ids.json"]), two);
+        }).pipe(
+          Effect.provide(
+            ledgerLayer({ dbPath: "/nonexistent/state.sqlite", codexHome, sanitizer: fake }),
+          ),
+        );
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 

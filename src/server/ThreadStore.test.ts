@@ -44,6 +44,7 @@ const ConfigLive = Layer.succeed(
     codexBin: "codex",
     codexHome: "/home/me/.codex",
     labelsPath: "/dev/null",
+    userConfigPath: "",
     distDir: "dist",
   }),
 );
