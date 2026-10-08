@@ -457,6 +457,7 @@ export class Ledger extends Context.Service<
             .sort((a, b) => b.length - a.length)[0];
         return {
           sources,
+          roots,
           found: found.flatMap((f) => {
             const root = rootOf(f.summary.worktree);
             return root ? [{ ...f, root }] : [];
@@ -642,7 +643,7 @@ export class Ledger extends Context.Service<
         repo: string,
         source: LedgerSource,
       ) {
-        const { sources, found } = yield* sessionsFor(repo, source);
+        const { sources, found, roots } = yield* sessionsFor(repo, source);
         const { nativeIds, parents } = yield* store.lineage;
         const sessions: Session[] = [];
         for (const { summary, load, root } of found) {
@@ -675,7 +676,7 @@ export class Ledger extends Context.Service<
           const ids = new Set([name, id, `${CODEX_ID_PREFIX}${id}`, nativeIds.get(id)]);
           return sessions.filter((s) => ids.has(s.thread.id));
         };
-        return { sources, sessions, named };
+        return { sources, sessions, named, roots };
       });
 
       const sync = Effect.fn("Ledger.sync")(function* (
@@ -690,10 +691,10 @@ export class Ledger extends Context.Service<
         const { commits, previousAt, trailers, paths } = yield* commitsIn(repo, range);
         const remote = options.push ? yield* fetchRemote(repo) : null;
         const local = yield* resolve(repo, LEDGER_REF);
-        const { sources, sessions, named } =
+        const { sources, sessions, named, roots } =
           commits.length > 0
             ? yield* loadSessions(repo, options.source)
-            : { sources: [], sessions: [], named: () => [] };
+            : { sources: [], sessions: [], named: () => [], roots: [] };
 
         // Who may take a commit no `git commit` action made: the sessions named, or (when asked)
         // the ones that edited this worktree.
@@ -737,7 +738,6 @@ export class Ledger extends Context.Service<
               reviewedSha: null,
               segment,
               labels: s.labels,
-              root: s.root,
             });
           };
           // A trailer's thread: everything since the commit's parent (an amend or an earlier
@@ -774,7 +774,8 @@ export class Ledger extends Context.Service<
           // previous commit (another worktree's edits never reach this commit).
           for (const s of sessions.filter((s) => s.here)) {
             const segment = segmentByTime(s.entries, before, commit.committedAt);
-            if (editedPaths(segment, files).size > 0) add(s, "evidence", segment);
+            if (editedPaths(segment, files, { roots, home: config.home }).size > 0)
+              add(s, "evidence", segment);
           }
 
           // Only what the entry doesn't already hold as strongly (or holds with less history),
@@ -801,6 +802,7 @@ export class Ledger extends Context.Service<
               commit,
               links: fresh,
               paths: files,
+              roots,
               outputs: options.outputs,
               maxOutput: options.maxOutput,
               home: config.home,
@@ -916,7 +918,7 @@ export class Ledger extends Context.Service<
               home: config.home,
             });
           } else {
-            const { sources, named } = yield* loadSessions(repo, "auto");
+            const { sources, named, roots } = yield* loadSessions(repo, "auto");
             const s = named(change.link.session)[0];
             if (!s)
               return yield* new LedgerFailed({
@@ -940,10 +942,10 @@ export class Ledger extends Context.Service<
                   reviewedSha: change.link.reviewed ? sha : null,
                   segment,
                   labels: s.labels,
-                  root: s.root,
                 },
               ],
               paths: files,
+              roots,
               outputs: SYNC_DEFAULTS.outputs,
               maxOutput: SYNC_DEFAULTS.maxOutput,
               home: config.home,

@@ -321,8 +321,6 @@ export type FoundLink = {
   readonly reviewedSha: string | null;
   readonly segment: ReadonlyArray<Entry>;
   readonly labels: Labels;
-  /** The worktree the thread worked in: absolute paths outside it are not the commit's. */
-  readonly root?: string | null;
 };
 
 /**
@@ -335,6 +333,8 @@ export function buildEntry(input: {
   readonly commit: LedgerCommit;
   readonly links: ReadonlyArray<FoundLink>;
   readonly paths: ReadonlyArray<string>;
+  /** The repo's worktrees: absolute paths outside them are not the commit's. */
+  readonly roots?: ReadonlyArray<string> | undefined;
   readonly notes?: ReadonlyArray<LedgerNote>;
   readonly outputs: boolean;
   readonly maxOutput: number;
@@ -354,7 +354,9 @@ export function buildEntry(input: {
       reviewedSha: found.reviewedSha,
       // A review comes after the commit: what it edits is not the commit's.
       files:
-        found.role === "reviewer" ? [] : [...editedPaths(found.segment, input.paths, found.root)],
+        found.role === "reviewer"
+          ? []
+          : [...editedPaths(found.segment, input.paths, { roots: input.roots, home: input.home })],
       entries,
       labels: redactLabels(
         Object.fromEntries(
@@ -473,17 +475,23 @@ export const isStale = (link: LedgerLink, sha: string) =>
 export function editedPaths(
   entries: ReadonlyArray<Entry>,
   paths: ReadonlyArray<string>,
-  root: string | null = null,
+  where: {
+    readonly roots?: ReadonlyArray<string> | undefined;
+    readonly home?: string | undefined;
+  } = {},
 ): Set<string> {
-  // ponytail: tool paths are absolute or relative to an unknown cwd, so a path matches by
-  // whole trailing segments, the longest commit path winning; a relative path written from a
-  // subdirectory can still name the wrong one of two same-named files.
+  const roots = [...(where.roots ?? [])].sort((x, y) => y.length - x.length);
+  // Entries write paths outside the thread's own worktree as `~/…` (normalize); those and absolute
+  // paths count only inside a worktree of this repo, compared exactly (never /tmp, another repo).
+  // ponytail: a relative path's cwd is unknown, so it matches by whole trailing segments, the
+  // longest commit path winning; written from a subdirectory it can name the wrong one of two
+  // same-named files.
   const sameFile = (written: string, path: string) => {
     let w = written.replace(/^\.\//, "");
-    // An absolute path counts only inside the session's worktree (never /tmp, another checkout).
-    if (w.startsWith("/") && root) {
-      if (!w.startsWith(`${root}/`)) return false;
-      w = w.slice(root.length + 1);
+    if (where.home && (w === "~" || w.startsWith("~/"))) w = `${where.home}${w.slice(1)}`;
+    if (w.startsWith("/") || w.startsWith("~")) {
+      const root = roots.find((r) => w.startsWith(`${r}/`));
+      return !!root && w.slice(root.length + 1) === path;
     }
     return w === path || w.endsWith(`/${path}`) || path.endsWith(`/${w}`);
   };

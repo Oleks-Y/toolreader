@@ -369,13 +369,21 @@ describe("several threads per commit", () => {
       kind: "edit",
       files: [{ path: "/w/repo/src/a.ts", added: 1, removed: 0, isNew: false, isDeleted: false }],
     };
-    assert.deepStrictEqual([...editedPaths([edit], ["src/a.ts", "a.ts"])], ["src/a.ts"]);
-    // Absolute paths count only inside the thread's worktree.
-    assert.deepStrictEqual([...editedPaths([edit], ["src/a.ts"], "/w/repo")], ["src/a.ts"]);
-    const elsewhere = action("t", "2026-01-01T09:00:00Z", "echo x > /tmp/a.ts");
-    assert.strictEqual(editedPaths([elsewhere], ["a.ts"], "/w/repo").size, 0);
-    assert.strictEqual(editedPaths([edit], ["src/a.ts"], "/w/other").size, 0);
-    assert.strictEqual(editedPaths([{ ...edit, status: "failed" }], ["src/a.ts"]).size, 0);
+    // Absolute and `~/` paths count only inside a worktree of the repo, compared exactly.
+    const roots = { roots: ["/w/repo", "/w/repo-wt"], home: "/w" };
+    assert.deepStrictEqual([...editedPaths([edit], ["src/a.ts", "a.ts"], roots)], ["src/a.ts"]);
+    const sibling = { ...edit, files: [{ ...edit.files![0]!, path: "~/repo-wt/src/a.ts" }] };
+    assert.deepStrictEqual([...editedPaths([sibling], ["src/a.ts"], roots)], ["src/a.ts"]);
+    const other = { ...edit, files: [{ ...edit.files![0]!, path: "~/other/src/a.ts" }] };
+    assert.strictEqual(editedPaths([other], ["src/a.ts"], roots).size, 0, "another repo");
+    const tmp = action("t", "2026-01-01T09:00:00Z", "echo x > /tmp/a.ts");
+    assert.strictEqual(editedPaths([tmp], ["a.ts"], roots).size, 0);
+    assert.strictEqual(
+      editedPaths([edit], ["src/a.ts"]).size,
+      0,
+      "no worktrees, no absolute match",
+    );
+    assert.strictEqual(editedPaths([{ ...edit, status: "failed" }], ["src/a.ts"], roots).size, 0);
   });
 
   it("takes history between the previous commit and this one", () => {
