@@ -94,6 +94,8 @@ const ProjectRow = Schema.Struct({ id: Schema.String, title: Schema.String, root
 const decodeProjectRows = Schema.decodeUnknownEffect(Schema.Array(ProjectRow));
 const CursorRow = Schema.Struct({ threadId: Schema.NullOr(Schema.String) });
 const decodeCursorRows = Schema.decodeUnknownEffect(Schema.Array(CursorRow));
+const idSet = (rows: ReadonlyArray<typeof CursorRow.Type>): ReadonlySet<string> =>
+  new Set(rows.flatMap((r) => (r.threadId ? [r.threadId] : [])));
 
 /** V1 session statuses and V2 run statuses. */
 const toStatus = (s: string | null): ThreadStatus =>
@@ -128,6 +130,8 @@ export class ThreadStore extends Context.Service<
     readonly head: (id: string) => Effect.Effect<ThreadHead, ThreadNotFound>;
     /** Codex thread ids T3 runs itself (from its resume cursors), so other sources can skip them. */
     readonly codexThreadIds: Effect.Effect<ReadonlySet<string>>;
+    /** Claude Code session ids T3 runs itself, likewise. */
+    readonly claudeSessionIds: Effect.Effect<ReadonlySet<string>>;
     readonly projects: Effect.Effect<ReadonlyArray<T3Project>>;
   }
 >()("toolreader/server/ThreadStore") {
@@ -139,6 +143,7 @@ export class ThreadStore extends Context.Service<
       get: (id) => Effect.fail(new ThreadNotFound({ threadId: id })),
       head: (id) => Effect.fail(new ThreadNotFound({ threadId: id })),
       codexThreadIds: Effect.succeed(new Set()),
+      claudeSessionIds: Effect.succeed(new Set()),
       projects: Effect.succeed([]),
     }),
   );
@@ -310,11 +315,21 @@ export class ThreadStore extends Context.Service<
           : sql`
         select json_extract(resume_cursor_json, '$.threadId') threadId
         from provider_session_runtime where provider_name = 'codex'`
-      ).pipe(
-        Effect.flatMap(decodeCursorRows),
-        Effect.map((rows) => new Set(rows.flatMap((r) => (r.threadId ? [r.threadId] : [])))),
-        Effect.orDie,
-      );
+      ).pipe(Effect.flatMap(decodeCursorRows), Effect.map(idSet), Effect.orDie);
+
+      // Claude session ids T3 resumes: V1 cursors keep them in `resume` (`threadId` is T3's own).
+      const claudeSessionIds = (
+        v2
+          ? sql`
+        select json_extract(resume_cursor_json, '$.resume') threadId
+        from provider_session_runtime where provider_name = 'claudeAgent'
+        union
+        select json_extract(payload_json, '$.nativeThreadRef.nativeId') threadId
+        from orchestration_v2_projection_provider_threads where provider = 'claudeAgent'`
+          : sql`
+        select json_extract(resume_cursor_json, '$.resume') threadId
+        from provider_session_runtime where provider_name = 'claudeAgent'`
+      ).pipe(Effect.flatMap(decodeCursorRows), Effect.map(idSet), Effect.orDie);
 
       const projects = sql`
         select project_id id, title, workspace_root root from projection_projects where deleted_at is null`.pipe(
@@ -323,7 +338,7 @@ export class ThreadStore extends Context.Service<
       );
 
       yield* list; // warm the action-count cache
-      return ThreadStore.of({ list, get, head, codexThreadIds, projects });
+      return ThreadStore.of({ list, get, head, codexThreadIds, claudeSessionIds, projects });
     }),
   );
 }

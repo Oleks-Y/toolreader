@@ -45,6 +45,7 @@ const withLabeler = <A, E>(
         dbPath: path.join(dir, "state.sqlite"),
         codexBin,
         codexHome: dir,
+        claudeHome: "/nonexistent",
         labelsPath,
         userConfigPath: "",
         distDir: dir,

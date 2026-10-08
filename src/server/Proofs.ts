@@ -24,6 +24,7 @@ import {
   selectEntries,
   type ProofScope,
 } from "../core/proof.ts";
+import { CLAUDE_ID_PREFIX, ClaudeTranscripts } from "./ClaudeTranscripts.ts";
 import { CODEX_ID_PREFIX, CodexSessions } from "./CodexSessions.ts";
 import { Labeler } from "./Labeler.ts";
 import { ServerConfig } from "./ServerConfig.ts";
@@ -58,6 +59,7 @@ export class Proofs extends Context.Service<
       const config = yield* ServerConfig;
       const store = yield* ThreadStore;
       const codex = yield* CodexSessions;
+      const claude = yield* ClaudeTranscripts;
       const labeler = yield* Labeler;
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -88,7 +90,9 @@ export class Proofs extends Context.Service<
         const labels = yield* labeler.forThread(request.threadId);
         const view = request.threadId.startsWith(CODEX_ID_PREFIX)
           ? yield* codex.get(request.threadId.slice(CODEX_ID_PREFIX.length), labels)
-          : yield* store.get(request.threadId, labels);
+          : request.threadId.startsWith(CLAUDE_ID_PREFIX)
+            ? yield* claude.get(request.threadId.slice(CLAUDE_ID_PREFIX.length), labels)
+            : yield* store.get(request.threadId, labels);
         const selected = selectEntries(view.entries, request.scope);
         const { entries, redactions } = redactEntries(selected, {
           outputs: request.outputs,
