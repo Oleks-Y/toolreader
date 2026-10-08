@@ -171,34 +171,50 @@ export function ActionView({
   const [labeling, setLabeling] = useState<Record<string, string>>({}); // turnId → status text
   const open = useOpenState();
 
-  const load = useCallback(
-    () =>
-      readOnly
-        ? Promise.resolve()
-        : call((api) => api.threads.get({ params: { id: threadId } })).then(setView, (e: unknown) =>
-            setError(errorMessage(e)),
-          ),
-    [threadId, readOnly],
-  );
-  useEffect(() => void load(), [load]);
+  // One effect owns each live history, including pending HEAD and GET responses.
+  useEffect(() => {
+    if (readOnly || threadId === undefined) {
+      setView(artifact?.view ?? givenView ?? null);
+      setError(null);
+      return;
+    }
+    let active = true;
+    let busy = false;
+    let latest: ThreadView | null = null;
+    const refresh = async (checkHead: boolean) => {
+      if (!active || busy) return;
+      busy = true;
+      try {
+        if (checkHead) {
+          const h = await call((api) => api.threads.head({ params: { id: threadId } })).catch(
+            () => null,
+          );
+          if (!active || !h) return;
+          if (h.head === latest?.thread.head && h.status === latest.thread.status) return;
+        }
+        const next = await call((api) => api.threads.get({ params: { id: threadId } }));
+        if (!active) return;
+        latest = next;
+        setView(next);
+        setError(null);
+      } catch (e) {
+        if (active) setError(errorMessage(e));
+      } finally {
+        busy = false;
+      }
+    };
+    void refresh(false);
+    // Keep watching idle threads so later interactive turns appear too.
+    const timer = setInterval(() => void refresh(true), 3000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [threadId, readOnly, artifact, givenView]);
   useEffect(() => localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)), [prefs]);
   useEffect(() => {
     if (view && !embedded) document.title = `${view.thread.title} · toolreader`;
   }, [view?.thread.title]);
-
-  // Keep watching idle threads so later interactive turns appear too.
-  const status = view?.thread.status;
-  const head = view?.thread.head;
-  useEffect(() => {
-    if (readOnly || threadId === undefined) return;
-    const timer = setInterval(async () => {
-      const h = await call((api) => api.threads.head({ params: { id: threadId } })).catch(
-        () => null,
-      );
-      if (h && (h.head !== head || h.status !== status)) load();
-    }, 3000);
-    return () => clearInterval(timer);
-  }, [readOnly, status, head, threadId, load]);
 
   const actions = useMemo(
     () => (view?.entries ?? []).filter((e): e is Action => e.type === "action"),

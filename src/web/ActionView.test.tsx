@@ -87,6 +87,18 @@ async function settle() {
   await Promise.resolve();
   await Promise.resolve();
 }
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+function cleanup() {
+  for (const effect of hooks.effects) effect.cleanup?.();
+}
 beforeEach(() => {
   vi.useFakeTimers();
   hooks.states = [];
@@ -138,6 +150,105 @@ describe("ActionView live history", () => {
     render({ threadId: "codex:demo" });
     await vi.advanceTimersByTimeAsync(3000);
     expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it("serializes slow initial loads, HEAD checks and history refreshes", async () => {
+    const initial = deferred<ThreadView>();
+    const marker = deferred<{ head: string; status: "running" }>();
+    const history = deferred<ThreadView>();
+    get.mockReturnValueOnce(initial.promise).mockReturnValueOnce(history.promise);
+    head.mockReturnValueOnce(marker.promise).mockResolvedValue({ head: "three", status: "idle" });
+    const props = { threadId: "codex:demo" };
+    render(props);
+    await vi.advanceTimersByTimeAsync(9000);
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(head).not.toHaveBeenCalled();
+    initial.resolve(view("idle"));
+    await settle();
+    await vi.advanceTimersByTimeAsync(9000);
+    expect(head).toHaveBeenCalledTimes(1);
+    marker.resolve({ head: "two", status: "running" });
+    await settle();
+    await vi.advanceTimersByTimeAsync(9000);
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(head).toHaveBeenCalledTimes(1);
+    history.resolve(view("running", "two", "Second turn"));
+    await settle();
+    expect(JSON.stringify(render(props))).toContain("Second turn");
+    get.mockResolvedValue(view("idle", "three", "Newest turn"));
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(JSON.stringify(render(props))).toContain("Newest turn");
+  });
+
+  it.each(["unmount", "thread", "snapshot"])(
+    "ignores a pending HEAD after %s cleanup",
+    async (mode) => {
+      const pending = deferred<{ head: string; status: "running" }>();
+      get.mockResolvedValue(view("idle"));
+      head.mockReturnValue(pending.promise);
+      render({ threadId: "codex:demo" });
+      await settle();
+      await vi.advanceTimersByTimeAsync(3000);
+      if (mode === "unmount") cleanup();
+      else if (mode === "thread") render({ threadId: "codex:other" });
+      else render({ threadId: "codex:demo", view: view("idle", "snapshot", "Saved history") });
+      await settle();
+      const calls = get.mock.calls.length;
+      pending.resolve({ head: "obsolete", status: "running" });
+      await settle();
+      expect(get).toHaveBeenCalledTimes(calls);
+    },
+  );
+
+  it.each(["unmount", "thread", "snapshot"])(
+    "ignores a pending GET after %s cleanup",
+    async (mode) => {
+      const pending = deferred<ThreadView>();
+      get.mockReturnValueOnce(pending.promise).mockResolvedValue(view("idle", "new", "New thread"));
+      render({ threadId: "codex:demo" });
+      const snapshotProps = {
+        threadId: "codex:demo",
+        view: view("idle", "snapshot", "Saved history"),
+      };
+      if (mode === "unmount") cleanup();
+      else render(mode === "thread" ? { threadId: "codex:other" } : snapshotProps);
+      await settle();
+      const accepted = hooks.states[0];
+      pending.resolve(view("running", "obsolete", "Obsolete history"));
+      await settle();
+      expect(hooks.states[0]).toBe(accepted);
+      if (mode === "snapshot")
+        expect(JSON.stringify(render(snapshotProps))).toContain("Saved history");
+      if (mode === "thread")
+        expect(JSON.stringify(render({ threadId: "codex:other" }))).toContain("New thread");
+    },
+  );
+
+  it("ignores a rejected GET after switching to a snapshot", async () => {
+    const pending = deferred<ThreadView>();
+    get.mockReturnValue(pending.promise);
+    render({ threadId: "codex:demo" });
+    const props = { view: view("idle", "saved", "Saved history") };
+    render(props);
+    pending.reject(new Error("obsolete failure"));
+    await settle();
+    expect(JSON.stringify(render(props))).toContain("Saved history");
+    expect(JSON.stringify(render(props))).not.toContain("obsolete failure");
+  });
+
+  it("clears a transient refresh error when the next refresh succeeds", async () => {
+    get.mockResolvedValueOnce(view("idle")).mockRejectedValueOnce(new Error("temporary failure"));
+    head.mockResolvedValue({ head: "two", status: "running" });
+    const props = { threadId: "codex:demo" };
+    render(props);
+    await settle();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(JSON.stringify(render(props))).toContain("temporary failure");
+    get.mockResolvedValue(view("running", "two", "Recovered history"));
+    await vi.advanceTimersByTimeAsync(3000);
+    const output = JSON.stringify(render(props));
+    expect(output).toContain("Recovered history");
+    expect(output).not.toContain("temporary failure");
   });
 
   it.each(["proof", "given", "embedded"])(
