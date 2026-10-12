@@ -15,7 +15,7 @@ import { Command, Flag } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { redactText } from "../../core/proof.ts";
-import { LedgerApp } from "../app.ts";
+import { CliApp } from "../app.ts";
 import { SESSION_SOURCES } from "../RepoSessions.ts";
 import { ServerConfig } from "../ServerConfig.ts";
 import { HistoryFailed } from "./HistoryClient.ts";
@@ -145,7 +145,7 @@ const sync = Command.make(
       : Option.isSome(flags.pr)
         ? yield* prRange(repo, flags.pr.value)
         : `-1 ${Option.getOrThrow(flags.sha)}`;
-    const app = LedgerApp({ appServer: flags.source === "codex-app-server", codexHome: null });
+    const app = CliApp({ appServer: flags.source === "codex-app-server", codexHome: null });
     const syncRange = (r: string) =>
       Effect.flatMap(HistorySync, (h) =>
         h.sync(repo, r, { source: flags.source, dryRun: flags.dryRun }),
@@ -229,7 +229,7 @@ const site = Command.make(
       : yield* prRange(repo, Option.getOrThrow(flags.pr));
     const { file, view } = yield* Effect.flatMap(HistorySync, (h) =>
       h.site(repo, range, flags.out),
-    ).pipe(Effect.provide(LedgerApp({ appServer: false, codexHome: null })));
+    ).pipe(Effect.provide(CliApp({ appServer: false, codexHome: null })));
     const linked = view.commits.filter((c) => (c.entry?.links.length ?? 0) > 0).length;
     yield* Console.log(
       `${file}\n${view.repo}: ${view.commits.length} commits, ${linked} with agent history`,

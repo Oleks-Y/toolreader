@@ -20,7 +20,7 @@
     "check": "vp check",
     "typecheck": "tsgo --noEmit -p tsconfig.json && tsgo --noEmit -p src/web/tsconfig.json",
     "export": "node src/server/bin.ts export",
-    "ledger": "node src/server/bin.ts ledger",
+    "history": "node src/server/bin.ts history",
     "prepack": "vp run build",
     "site:build": "vp build -c vite.site.config.ts && node scripts/site.ts"
   },

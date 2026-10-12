@@ -1,6 +1,6 @@
 // The agent sessions that worked in a repo: every session, from the chosen sources, whose
 // directory is inside one of the repo's git worktrees, read whole, with its subagent parent from
-// T3. What the ledger and `history sync` both read.
+// T3. What `history sync` reads.
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";

@@ -674,20 +674,6 @@ a.chip {
 }
 
 /* Commit ledger */
-.ledger-form {
-  display: flex;
-  gap: 8px;
-  margin: 10px 0;
-}
-.ledger-form input {
-  flex: 1;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  color: var(--fg);
-  border-radius: 6px;
-  padding: 6px 10px;
-  font: 13px var(--mono);
-}
 /* Session titles are long first prompt lines: they give way to the commit subject. */
 .ledger-commit .turn-head {
   grid-template-columns: 14px auto minmax(16em, 1fr) minmax(0, auto);

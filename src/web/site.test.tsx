@@ -93,9 +93,7 @@ describe("static ledger page", () => {
     // client.ts builds its API client from `location` on import; the static page never calls it.
     Object.assign(globalThis, { location: { origin: "http://127.0.0.1", hash: "" } });
     const { LedgerPage } = await import("./LedgerPage.tsx");
-    const html = renderToStaticMarkup(
-      <LedgerPage repo={range.repo} range={range.range} inline={range} />,
-    );
+    const html = renderToStaticMarkup(<LedgerPage data={range} />);
     assert.include(html, "Done.", "the message is rendered");
     assert.notMatch(html, /<img\b/i);
     assert.include(html, `href="${BEACON.replace("&", "&amp;")}"`, "kept as a link to click");
@@ -104,9 +102,7 @@ describe("static ledger page", () => {
   it("shows every linked thread with its role, stale reviews, file buckets and notes", async () => {
     Object.assign(globalThis, { location: { origin: "http://127.0.0.1", hash: "" } });
     const { LedgerPage } = await import("./LedgerPage.tsx");
-    const html = renderToStaticMarkup(
-      <LedgerPage repo={range.repo} range={range.range} inline={range} />,
-    );
+    const html = renderToStaticMarkup(<LedgerPage data={range} />);
     for (const text of ["Do it", "Review it", "reviewer", "stale: reviewed bbbbbbbb", "untracked"])
       assert.include(html, text);
     assert.include(html, "b.css by hand");
