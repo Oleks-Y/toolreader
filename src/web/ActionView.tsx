@@ -454,6 +454,8 @@ function TurnBlock({
   exportLink: { href: string; download: string } | undefined;
 }) {
   const isOpen = ctx.open.isOpen(turn.id, true);
+  const promptId = `${turn.id}:prompt`;
+  const promptOpen = ctx.open.isOpen(promptId, false);
   const s = turn.stats;
   const day = fmtDay(s.start);
   return (
@@ -461,7 +463,14 @@ function TurnBlock({
       <div className="turn-head" onClick={() => ctx.open.toggle(turn.id)}>
         <span className="caret">{isOpen ? "▾" : "▸"}</span>
         <span className="turn-index">T{turn.index + 1}</span>
-        <span className="prompt">
+        <span
+          className={`prompt${promptOpen ? " open" : ""}`}
+          title={promptOpen ? undefined : "Click to show the whole prompt"}
+          onClick={(e) => {
+            e.stopPropagation();
+            ctx.open.toggle(promptId);
+          }}
+        >
           {turn.prompt ? turn.prompt.text : <i className="dim">(no prompt)</i>}
         </span>
         <span className="turn-stats">
