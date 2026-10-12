@@ -354,6 +354,10 @@ pre {
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
+  cursor: pointer;
+}
+.prompt.open {
+  -webkit-line-clamp: unset;
 }
 .turn-stats {
   font-size: 12px;
