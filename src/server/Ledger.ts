@@ -33,6 +33,7 @@ import {
   SESSION_TRAILER,
   strongerVia,
   type CommitAction,
+  type FoundLink,
   type LedgerCommit,
   type LedgerCommitView,
   type LedgerLink,
@@ -42,7 +43,7 @@ import {
   type LinkVia,
 } from "../core/ledger.ts";
 import { ledgerSiteHtml, publicRange } from "../core/ledgerSite.ts";
-import { linkCommits, selectScope, type Scope } from "../core/linking.ts";
+import { linkCommits, selectScope, type CommitLinks, type Scope } from "../core/linking.ts";
 import type { SanitizeMode } from "../core/sanitize.ts";
 import { CLAUDE_ID_PREFIX, ClaudeTranscripts } from "./ClaudeTranscripts.ts";
 import { CodexRollouts, ROLLOUT_DIRS } from "./CodexRollouts.ts";
@@ -762,11 +763,33 @@ export class Ledger extends Context.Service<
         options: ScopeOptions,
       ) {
         const repo = (yield* git(repoArg, ["rev-parse", "--show-toplevel"])).trim();
-        const { sessions, roots, linked } = yield* linkRange(
-          repo,
-          range,
-          options,
-          options.here ?? repo,
+        const {
+          sessions,
+          roots,
+          linked: found,
+        } = yield* linkRange(repo, range, options, options.here ?? repo);
+        // Links a person made (`ledger link`, e.g. for a candidate): matching can't find them, so
+        // they come from the commit's ledger entry, over the window `assert` gives them.
+        const now = DateTime.formatIso(yield* DateTime.now);
+        const linked = yield* Effect.forEach(found, (c) =>
+          Effect.map(readEntry(repo, c.commit.commit.sha), (entry): CommitLinks => {
+            const extra = Option.match(entry, {
+              onNone: () => [],
+              onSome: (e) => e.links.filter((l) => l.via === "asserted"),
+            }).flatMap((l): FoundLink[] => {
+              const s = sessions.find((s) => s.thread.id === l.thread.id);
+              if (!s || c.links.some((f) => f.thread.id === s.thread.id)) return [];
+              const { commit, previousAt } = c.commit;
+              const segment =
+                l.role === "reviewer"
+                  ? segmentByTime(s.entries, commit.committedAt, now)
+                  : segmentByTime(s.entries, previousAt, commit.committedAt);
+              return [{ ...l, thread: s.thread, segment, labels: s.labels }];
+            });
+            return extra.length === 0
+              ? c
+              : { ...c, links: [...c.links, ...extra], ambiguous: null };
+          }),
         );
         const scope = selectScope(linked, sessions, { roots, home: config.home });
         // Counts only: what the range held and what matching made of it.

@@ -1,15 +1,22 @@
 // Service wiring shared by the HTTP server (`serve`) and the other commands of bin.ts.
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
+import { CheckpointFailed, Checkpoints } from "./checkpoints/Checkpoints.ts";
+import { DirectSink } from "./directSink.ts";
+import { CheckpointStore } from "./backend/CheckpointStore.ts";
+import { pgLayer } from "./backend/pg.ts";
 import { ClaudeTranscripts } from "./ClaudeTranscripts.ts";
 import { CodexRollouts } from "./CodexRollouts.ts";
 import { CodexSessions } from "./CodexSessions.ts";
 import { Labeler } from "./Labeler.ts";
 import { Ledger } from "./Ledger.ts";
 import * as NodeSqliteClient from "./NodeSqliteClient.ts";
+import { PgMigrationsLive } from "./backend/PgMigrations.ts";
 import { Proofs } from "./Proofs.ts";
 import { Sanitizer } from "./Sanitizer.ts";
 import { ServerConfig } from "./ServerConfig.ts";
@@ -68,3 +75,25 @@ export const LedgerApp = (options: { appServer: boolean; codexHome: string | nul
   options.appServer
     ? appLayer(CodexSessions.layer, options.codexHome)
     : appLayer(CodexSessions.disabled, options.codexHome);
+
+/** Where checkpoints go: Postgres at TOOLREADER_DATABASE_URL, migrated on start. */
+const SinkLive = Layer.unwrap(
+  Effect.gen(function* () {
+    if (Option.isNone(yield* Config.option(Config.string("TOOLREADER_DATABASE_URL"))))
+      return yield* new CheckpointFailed({
+        message: "No checkpoint database: set TOOLREADER_DATABASE_URL",
+      });
+    return DirectSink.pipe(
+      Layer.provideMerge(CheckpointStore.layer),
+      Layer.provideMerge(PgMigrationsLive),
+      Layer.provideMerge(pgLayer(2)),
+    );
+  }),
+);
+
+/** For `toolreader checkpoint`: the ledger's readers, and where checkpoints go. */
+export const CheckpointApp = (options: { appServer: boolean } = { appServer: false }) =>
+  Checkpoints.layer.pipe(
+    Layer.provideMerge(SinkLive),
+    Layer.provideMerge(LedgerApp({ appServer: options.appServer, codexHome: null })),
+  );

@@ -40,6 +40,40 @@ export default defineConfig({
       suspicious: "warn",
       perf: "warn",
     },
+    // The CLI side and the backend share only core/; app.ts and directSink.ts join them.
+    overrides: [
+      {
+        files: ["src/server/checkpoints/**"],
+        rules: {
+          "eslint/no-restricted-imports": [
+            "error",
+            {
+              patterns: [
+                { group: ["**/backend/*"], message: "The CLI talks to the backend over /v1." },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        files: ["src/server/backend/**"],
+        rules: {
+          "eslint/no-restricted-imports": [
+            "error",
+            {
+              patterns: [
+                {
+                  group: ["**/checkpoints/*", "**/app.ts", "**/directSink.ts"],
+                  message: "The backend doesn't depend on the CLI.",
+                },
+              ],
+            },
+          ],
+        },
+      },
+      // Tests run each side against the other's real code.
+      { files: ["**/*.test.ts"], rules: { "eslint/no-restricted-imports": "off" } },
+    ],
     // Same opt-outs as t3code.
     rules: {
       "unicorn/no-array-sort": "off",
