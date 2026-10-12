@@ -2,6 +2,8 @@
 
 See what coding agents _did_: every file they read, command they ran and edit they made. toolreader also shows which agent turns wrote each commit.
 
+**Website:** [toolreader-site.borith1111.workers.dev](https://toolreader-site.borith1111.workers.dev/), with a [live demo](https://toolreader-site.borith1111.workers.dev/demo/).
+
 ## Why
 
 A diff shows what an agent changed. It doesn't show what the agent was asked, what it read, which tests failed along the way, or what it tried before the version you're reviewing. Chat transcripts have all of that, but buried in prose, one session at a time, and nothing ties them to commits.
