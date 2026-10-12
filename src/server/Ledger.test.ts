@@ -222,6 +222,7 @@ const ledgerLayer = (options: {
               }),
               claudeSessionIds: Effect.succeed(new Set()),
               projects: Effect.succeed([]),
+              turnMeta: () => Effect.succeed([]),
             }),
           )
         : ThreadStore.empty,

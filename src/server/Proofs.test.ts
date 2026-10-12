@@ -74,6 +74,7 @@ describe("Proofs", () => {
                 lineage: Effect.succeed({ nativeIds: new Map(), parents: new Map() }),
                 claudeSessionIds: Effect.succeed(new Set()),
                 projects: Effect.succeed([]),
+                turnMeta: () => Effect.succeed([]),
               }),
             ),
             CodexSessions.disabled,

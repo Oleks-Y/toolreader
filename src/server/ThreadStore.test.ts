@@ -35,20 +35,18 @@ const seed = Effect.gen(function* () {
 });
 
 const SqlLive = Layer.effectDiscard(seed).pipe(Layer.provideMerge(NodeSqliteClient.layerMemory()));
-const ConfigLive = Layer.succeed(
-  ServerConfig,
-  ServerConfig.of({
-    port: 0,
-    home: "/home/me",
-    dbPath: ":memory:",
-    codexBin: "codex",
-    codexHome: "/home/me/.codex",
-    claudeHome: "/nonexistent",
-    labelsPath: "/dev/null",
-    userConfigPath: "",
-    distDir: "dist",
-  }),
-);
+const config = ServerConfig.of({
+  port: 0,
+  home: "/home/me",
+  dbPath: ":memory:",
+  codexBin: "codex",
+  codexHome: "/home/me/.codex",
+  claudeHome: "/nonexistent",
+  labelsPath: "/dev/null",
+  userConfigPath: "",
+  distDir: "dist",
+});
+const ConfigLive = Layer.succeed(ServerConfig, config);
 const TestLive = ThreadStore.layer.pipe(
   Layer.provideMerge(SqlLive),
   Layer.provide(ConfigLive),
@@ -123,15 +121,24 @@ const seedV2 = Effect.gen(function* () {
   yield* seed;
   const sql = yield* SqlClient.SqlClient;
   yield* sql`create table orchestration_v2_projection_threads (thread_id text primary key, project_id text not null, title text not null, default_provider text not null, updated_at text not null, archived_at text, deleted_at text, payload_json text not null)`;
-  yield* sql`create table orchestration_v2_projection_runs (run_id text primary key, thread_id text not null, ordinal integer not null, status text not null)`;
-  yield* sql`create table orchestration_v2_projection_turn_items (turn_item_id text primary key, thread_id text not null, ordinal integer not null, type text not null, status text not null, updated_at text not null, payload_json text not null)`;
+  yield* sql`create table orchestration_v2_projection_runs (run_id text primary key, thread_id text not null, ordinal integer not null, status text not null, requested_at text, completed_at text, payload_json text not null default '{}')`;
+  yield* sql`create table orchestration_v2_projection_turn_items (turn_item_id text primary key, thread_id text not null, ordinal integer not null, type text not null, status text not null, updated_at text not null, payload_json text not null, run_id text)`;
+  yield* sql`create table orchestration_v2_projection_run_attempts (attempt_id text primary key, run_id text not null)`;
+  yield* sql`create table orchestration_v2_projection_provider_turns (provider_turn_id text primary key, run_attempt_id text not null, ordinal integer not null, payload_json text not null)`;
   yield* sql`create table orchestration_v2_projection_provider_threads (provider_thread_id text primary key, thread_id text, provider text not null, payload_json text not null)`;
   yield* sql`create table provider_session_runtime (thread_id text primary key, provider_name text not null, resume_cursor_json text)`;
   yield* sql`insert into orchestration_v2_projection_threads values
     ('t1', 'p1', 'Fix it', 'codex', '2026-01-01T00:00:00Z', null, null, '{}'),
     ('n1', 'p1', 'New work', 'claudeAgent', '2026-02-01T00:00:00Z', null, null, '{"worktreePath":"/wt","lineage":{"parentThreadId":"t1","relationshipToParent":"subagent"}}'),
     ('gone', 'p1', 'Deleted', 'codex', '2026-01-02T00:00:00Z', null, '2026-01-03T00:00:00Z', '{}')`;
-  yield* sql`insert into orchestration_v2_projection_runs values ('r1', 'n1', 1, 'completed'), ('r2', 'n1', 2, 'running')`;
+  yield* sql`insert into orchestration_v2_projection_runs values
+    ('r1', 'n1', 1, 'completed', '2026-02-01T00:00:00Z', '2026-02-01T00:00:09Z', '{"modelSelection":{"model":"claude-opus-5-5"}}'),
+    ('r2', 'n1', 2, 'running', '2026-02-01T00:01:00Z', null, '{"modelSelection":{"model":5}}')`;
+  yield* sql`insert into orchestration_v2_projection_run_attempts values ('a1', 'r1')`;
+  // Two provider turns in one attempt: the last one's usage is the turn's.
+  yield* sql`insert into orchestration_v2_projection_provider_turns values
+    ('pt-a', 'a1', 1, '{"tokenUsage":{"usedTokens":50,"inputTokens":40}}'),
+    ('pt-b', 'a1', 2, '{"tokenUsage":{"usedTokens":120,"inputTokens":100,"cachedInputTokens":90,"outputTokens":20,"reasoningOutputTokens":3}}')`;
   const turnItem = (
     id: string,
     thread: string,
@@ -139,8 +146,9 @@ const seedV2 = Effect.gen(function* () {
     type: string,
     at: string,
     fields: object,
+    run: string | null = null,
   ) =>
-    sql`insert into orchestration_v2_projection_turn_items values (${id}, ${thread}, ${ordinal}, ${type}, 'completed', ${at}, ${JSON.stringify({ startedAt: at, ...fields })})`;
+    sql`insert into orchestration_v2_projection_turn_items values (${id}, ${thread}, ${ordinal}, ${type}, 'completed', ${at}, ${JSON.stringify({ startedAt: at, ...fields })}, ${run})`;
   // T3 copies V1 messages into V2; the V1 rows stay the source for those.
   yield* turnItem("migration:v1:turn-item:m1", "t1", 1, "user_message", "2026-01-01T00:00:01Z", {
     text: "fix the build",
@@ -149,7 +157,15 @@ const seedV2 = Effect.gen(function* () {
     input: "pnpm test",
     exitCode: 0,
   });
-  yield* turnItem("i2", "n1", 1000001, "user_message", "2026-02-01T00:00:01Z", { text: "start" });
+  yield* turnItem(
+    "i2",
+    "n1",
+    1000001,
+    "user_message",
+    "2026-02-01T00:00:01Z",
+    { text: "start" },
+    "r1",
+  );
   yield* turnItem("i3", "n1", 1000002, "dynamic_tool", "2026-02-01T00:00:02Z", {
     toolName: "Read",
     input: { file_path: "/wt/src/b.ts" },
@@ -204,7 +220,7 @@ describe("ThreadStore on orchestration V2", () => {
         const store = yield* ThreadStore;
         const before = yield* store.head("n1");
         const sql = yield* SqlClient.SqlClient;
-        yield* sql`insert into orchestration_v2_projection_turn_items values ('i4', 'n1', 1000003, 'reasoning', 'running', '2026-02-01T00:00:03Z', '{}')`;
+        yield* sql`insert into orchestration_v2_projection_turn_items (turn_item_id, thread_id, ordinal, type, status, updated_at, payload_json) values ('i4', 'n1', 1000003, 'reasoning', 'running', '2026-02-01T00:00:03Z', '{}')`;
         const after = yield* store.head("n1");
         assert.notStrictEqual(before.head, after.head);
         assert.strictEqual(after.status, "running");
@@ -226,6 +242,22 @@ describe("ThreadStore on orchestration V2", () => {
           ["codex-v2", "t1"],
         ]);
         assert.deepStrictEqual([...parents], [["n1", "t1"]]);
+      }),
+    );
+
+    it.effect("reads each turn's model, times and token usage", () =>
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        assert.deepStrictEqual(yield* store.turnMeta("n1"), [
+          {
+            promptId: "i2",
+            model: "claude-opus-5-5",
+            usage: { input: 100, cachedInput: 90, output: 20, reasoning: 3, total: 120 },
+            startedAt: "2026-02-01T00:00:00Z",
+            endedAt: "2026-02-01T00:00:09Z",
+          },
+        ]);
+        assert.deepStrictEqual(yield* store.turnMeta("t1"), []);
       }),
     );
   });

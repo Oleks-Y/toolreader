@@ -109,7 +109,7 @@ export function summarizeFold(actions: Action[]): { summary: string; targets: st
   return { summary: counts, targets };
 }
 
-function stats(
+export function turnStats(
   actions: Action[],
   prompt: Message | null,
   entries: ReadonlyArray<Entry>,
@@ -197,7 +197,7 @@ export function buildTree(
       index,
       prompt: turn.prompt,
       phases,
-      stats: stats(actions, turn.prompt, turn.entries),
+      stats: turnStats(actions, turn.prompt, turn.entries),
       actions,
     };
   });

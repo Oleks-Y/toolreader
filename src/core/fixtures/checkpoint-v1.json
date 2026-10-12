@@ -1,0 +1,166 @@
+{
+  "formatVersion": 1,
+  "id": "commit:acme/widgets:abc123:t3-thread:coder",
+  "trigger": "commit",
+  "takenAt": "2026-10-01T10:02:00.000Z",
+  "toolreaderVersion": "0.1.0",
+  "session": "codex:019a-native",
+  "thread": {
+    "id": "t3-thread",
+    "title": "Fix the parser",
+    "source": "t3",
+    "provider": "codex",
+    "origin": null,
+    "parent": null
+  },
+  "repo": {
+    "name": "acme/widgets",
+    "worktree": "~/widgets",
+    "branch": "main",
+    "head": "abc123"
+  },
+  "commit": {
+    "sha": "abc123",
+    "subject": "fix: parser handles empty input",
+    "committedAt": "2026-10-01T10:01:30Z",
+    "patchId": "p1",
+    "role": "coder",
+    "via": "trailer",
+    "reviewedSha": null,
+    "paths": ["src/parse.ts", "README.md"],
+    "files": ["src/parse.ts"]
+  },
+  "outputs": "included",
+  "redactions": 0,
+  "entries": [
+    {
+      "type": "message",
+      "id": "u1",
+      "at": "2026-10-01T10:00:00Z",
+      "role": "user",
+      "text": "parse('') throws; fix it"
+    },
+    {
+      "type": "message",
+      "id": "r1",
+      "at": "2026-10-01T10:00:05Z",
+      "role": "reasoning",
+      "text": "Look at parse first."
+    },
+    {
+      "type": "action",
+      "id": "a1",
+      "at": "2026-10-01T10:00:10Z",
+      "kind": "read",
+      "status": "ok",
+      "title": "read src/parse.ts",
+      "targets": ["src/parse.ts"]
+    },
+    {
+      "type": "action",
+      "id": "a2",
+      "at": "2026-10-01T10:00:20Z",
+      "kind": "edit",
+      "status": "ok",
+      "title": "edit src/parse.ts",
+      "files": [
+        {
+          "path": "src/parse.ts",
+          "added": 3,
+          "removed": 1,
+          "isNew": false,
+          "isDeleted": false
+        }
+      ]
+    },
+    {
+      "type": "action",
+      "id": "a3",
+      "at": "2026-10-01T10:00:30Z",
+      "kind": "test",
+      "status": "failed",
+      "title": "npm test",
+      "command": "npm test",
+      "exitCode": 1,
+      "output": "1 failed"
+    },
+    {
+      "type": "action",
+      "id": "a4",
+      "at": "2026-10-01T10:00:40Z",
+      "kind": "test",
+      "status": "ok",
+      "title": "npm test",
+      "command": "npm test",
+      "exitCode": 0,
+      "output": "all passed"
+    },
+    {
+      "type": "action",
+      "id": "a5",
+      "at": "2026-10-01T10:01:20Z",
+      "kind": "git",
+      "status": "ok",
+      "title": "git commit",
+      "command": "git commit -m 'fix: parser handles empty input'"
+    },
+    {
+      "type": "message",
+      "id": "m1",
+      "at": "2026-10-01T10:01:25Z",
+      "role": "assistant",
+      "text": "Fixed: empty input returns []."
+    }
+  ],
+  "labels": {
+    "a2": "guard empty input"
+  },
+  "turns": [
+    {
+      "id": "u1",
+      "startedAt": "2026-10-01T09:59:59Z",
+      "endedAt": "2026-10-01T10:01:26Z",
+      "model": "gpt-5.6",
+      "usage": {
+        "input": 1200,
+        "cachedInput": 800,
+        "output": 90,
+        "reasoning": 30,
+        "total": 1290
+      },
+      "phases": [
+        {
+          "phase": "explore",
+          "actionIds": ["a1"]
+        },
+        {
+          "phase": "edit",
+          "actionIds": ["a2"]
+        },
+        {
+          "phase": "verify",
+          "actionIds": ["a3", "a4"]
+        },
+        {
+          "phase": "ship",
+          "actionIds": ["a5"]
+        }
+      ],
+      "stats": {
+        "actions": 5,
+        "failed": 1,
+        "files": 1,
+        "added": 3,
+        "removed": 1
+      }
+    }
+  ],
+  "filesTouched": [
+    {
+      "path": "src/parse.ts",
+      "added": 3,
+      "removed": 1
+    }
+  ],
+  "durationMs": 85000
+}

@@ -7,6 +7,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ThreadNotFound } from "../core/api.ts";
+import type { TurnMeta } from "../core/checkpoint.ts";
 import type {
   Labels,
   ThreadHead,
@@ -16,7 +17,12 @@ import type {
 } from "../core/domain.ts";
 import { normalize, type ActivityRow } from "../core/normalize.ts";
 import { ToolPayload } from "../core/payload.ts";
-import { ACTION_ITEM_TYPES, IMPORTED_ITEM_PREFIX, turnItemsToRows } from "../core/t3v2.ts";
+import {
+  ACTION_ITEM_TYPES,
+  IMPORTED_ITEM_PREFIX,
+  runsToTurnMeta,
+  turnItemsToRows,
+} from "../core/t3v2.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 
 const ACTIVITY_KINDS = [
@@ -86,6 +92,16 @@ const decodeMessageRows = Schema.decodeUnknownEffect(Schema.Array(MessageDbRow))
 const decodeThreadHeadRows = Schema.decodeUnknownEffect(Schema.Array(ThreadHeadRow));
 const decodeV2CountRows = Schema.decodeUnknownEffect(Schema.Array(V2CountRow));
 const decodeTurnItemRows = Schema.decodeUnknownEffect(Schema.Array(TurnItemDbRow));
+// `model` and `usage` come out of provider payloads: anything but text degrades to null.
+const RunMetaDbRow = Schema.Struct({
+  promptId: Schema.NullOr(Schema.String),
+  model: Schema.Unknown,
+  startedAt: Schema.NullOr(Schema.String),
+  endedAt: Schema.NullOr(Schema.String),
+  usage: Schema.Unknown,
+});
+const text = (v: unknown) => (typeof v === "string" ? v : null);
+const decodeRunMetaRows = Schema.decodeUnknownEffect(Schema.Array(RunMetaDbRow));
 /** Malformed payloads degrade to an untyped tool row instead of dropping the thread. */
 const decodePayload = Schema.decodeUnknownOption(Schema.fromJsonString(ToolPayload));
 
@@ -143,6 +159,8 @@ export class ThreadStore extends Context.Service<
     /** Claude Code session ids T3 runs itself, likewise. */
     readonly claudeSessionIds: Effect.Effect<ReadonlySet<string>>;
     readonly projects: Effect.Effect<ReadonlyArray<T3Project>>;
+    /** Per-turn model, times and token usage, for checkpoints (V2 only; V1 threads have none). */
+    readonly turnMeta: (id: string) => Effect.Effect<ReadonlyArray<TurnMeta>>;
   }
 >()("toolreader/server/ThreadStore") {
   /** No T3 database (e.g. CI): no threads, and no Codex sessions owned by T3. */
@@ -156,6 +174,7 @@ export class ThreadStore extends Context.Service<
       lineage: Effect.succeed({ nativeIds: new Map(), parents: new Map() }),
       claudeSessionIds: Effect.succeed(new Set()),
       projects: Effect.succeed([]),
+      turnMeta: () => Effect.succeed([]),
     }),
   );
 
@@ -378,6 +397,30 @@ export class ThreadStore extends Context.Service<
         Effect.orDie,
       );
 
+      // A run is a turn: its prompt is the run's user_message item, its token usage the last
+      // provider turn's.
+      const turnMeta = Effect.fn("ThreadStore.turnMeta")(function* (id: string) {
+        if (!v2) return [];
+        const runs = yield* sql`
+          select (select ti.turn_item_id from orchestration_v2_projection_turn_items ti
+                  where ti.run_id = r.run_id and ti.type = 'user_message'
+                  order by ti.ordinal limit 1) promptId,
+                 json_extract(r.payload_json, '$.modelSelection.model') model,
+                 r.requested_at startedAt, r.completed_at endedAt,
+                 (select json_extract(p.payload_json, '$.tokenUsage')
+                  from orchestration_v2_projection_provider_turns p
+                  join orchestration_v2_projection_run_attempts a on a.attempt_id = p.run_attempt_id
+                  where a.run_id = r.run_id order by p.ordinal desc limit 1) usage
+          from orchestration_v2_projection_runs r
+          where r.thread_id = ${id} order by r.ordinal`.pipe(
+          Effect.flatMap(decodeRunMetaRows),
+          Effect.orDie,
+        );
+        return runsToTurnMeta(
+          runs.map((r) => ({ ...r, model: text(r.model), usage: text(r.usage) })),
+        );
+      });
+
       yield* list; // warm the action-count cache
       return ThreadStore.of({
         list,
@@ -387,6 +430,7 @@ export class ThreadStore extends Context.Service<
         claudeSessionIds,
         lineage,
         projects,
+        turnMeta,
       });
     }),
   );

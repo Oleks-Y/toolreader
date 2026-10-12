@@ -84,6 +84,7 @@ describe("ClaudeTranscripts", () => {
               claudeSessionIds: Effect.succeed(new Set(["owned"])),
               lineage: Effect.succeed({ nativeIds: new Map(), parents: new Map() }),
               projects: Effect.succeed([]),
+              turnMeta: () => Effect.succeed([]),
             }),
           ),
           NodeServices.layer,

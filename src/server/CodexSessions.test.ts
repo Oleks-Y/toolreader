@@ -96,6 +96,7 @@ const withSessions = <A, E>(
         lineage: Effect.succeed({ nativeIds: new Map(), parents: new Map() }),
         claudeSessionIds: Effect.succeed(new Set()),
         projects: Effect.succeed([{ id: "p1", title: "repo", root: "/work/repo" }]),
+        turnMeta: () => Effect.succeed([]),
       }),
     );
     return yield* Effect.flatMap(CodexSessions, (codex) => use(codex, dir)).pipe(

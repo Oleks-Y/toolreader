@@ -6,6 +6,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
+import type { TokenUsage, TurnMeta } from "./checkpoint.ts";
 import type { ActivityRow, MessageRow } from "./normalize.ts";
 import type { ToolPayload } from "./payload.ts";
 
@@ -254,3 +255,51 @@ export function turnItemsToRows(rows: ReadonlyArray<TurnItemRow>): {
   }
   return { activities, messages };
 }
+
+/** One V2 run, as ThreadStore.meta reads it: its prompt's turn item, model, times and token usage JSON. */
+export type RunMetaRow = {
+  readonly promptId: string | null;
+  readonly model: string | null;
+  readonly startedAt: string | null;
+  readonly endedAt: string | null;
+  readonly usage: string | null;
+};
+
+/** A provider turn's `tokenUsage`: the context window after its last request. */
+const ProviderTokenUsage = Schema.Struct({
+  usedTokens: opt(Schema.Number),
+  inputTokens: opt(Schema.Number),
+  cachedInputTokens: opt(Schema.Number),
+  outputTokens: opt(Schema.Number),
+  reasoningOutputTokens: opt(Schema.Number),
+});
+const decodeTokenUsage = Schema.decodeUnknownOption(Schema.fromJsonString(ProviderTokenUsage));
+
+const tokenUsage = (json: string | null): TokenUsage | null =>
+  json === null
+    ? null
+    : Option.getOrNull(
+        Option.map(decodeTokenUsage(json), (u) => ({
+          input: u.inputTokens ?? null,
+          cachedInput: u.cachedInputTokens ?? null,
+          output: u.outputTokens ?? null,
+          reasoning: u.reasoningOutputTokens ?? null,
+          total: u.usedTokens ?? null,
+        })),
+      );
+
+/** Each run that has a prompt, as the turn it started: model, times and token usage. */
+export const runsToTurnMeta = (rows: ReadonlyArray<RunMetaRow>): TurnMeta[] =>
+  rows.flatMap((r) =>
+    r.promptId === null
+      ? []
+      : [
+          {
+            promptId: r.promptId,
+            model: r.model,
+            usage: tokenUsage(r.usage),
+            startedAt: r.startedAt,
+            endedAt: r.endedAt,
+          },
+        ],
+  );
