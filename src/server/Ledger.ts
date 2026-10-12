@@ -220,10 +220,15 @@ export class Ledger extends Context.Service<
       range: string | null,
     ) => Effect.Effect<LedgerRange, LedgerFailed>;
     /** Writes the static page of a range (`ledger site`, `publicRange`) to `<out>/index.html`. */
+    /**
+     * Writes the range's page. With `historySince`, from what `sync --history-since` would write,
+     * matched now and never written to agent-ledger (a stack's PRs, before or without a sync).
+     */
     readonly site: (
       repo: string,
       range: string | null,
       out: string,
+      options?: { readonly historySince?: string | null },
     ) => Effect.Effect<{ readonly file: string; readonly view: LedgerRange }, LedgerFailed>;
     /**
      * Rewrites agent-ledger (local and, with `push`, origin's) as one commit of its entries
@@ -1275,9 +1280,61 @@ export class Ledger extends Context.Service<
           .join("\n");
       });
 
+      /** `range` as `sync --history-since` would leave it, built in memory. */
+      const liveRange = Effect.fn("Ledger.liveRange")(function* (
+        repoArg: string,
+        rangeArg: string | null,
+        historySince: string,
+      ) {
+        const repo = (yield* git(repoArg, ["rev-parse", "--show-toplevel"])).trim();
+        const range = rangeArg ?? (yield* defaultRange(repo));
+        const { roots, linked } = yield* linkRange(
+          repo,
+          range,
+          { ...SYNC_DEFAULTS, historySince },
+          repo,
+        );
+        const built = linked.map((c) =>
+          buildEntry({
+            commit: c.commit.commit,
+            links: c.links,
+            paths: c.commit.paths,
+            roots,
+            outputs: SYNC_DEFAULTS.outputs,
+            maxOutput: SYNC_DEFAULTS.maxOutput,
+            home: config.home,
+          }),
+        );
+        const { entries } = yield* sanitizeAll(repo, built, {
+          mode: SYNC_DEFAULTS.sanitize,
+          agent: SYNC_DEFAULTS.sanitizeAgent,
+        });
+        const remote = yield* gitOption(repo, ["remote", "get-url", "origin"]);
+        return {
+          repo,
+          range,
+          remoteUrl: remoteWebUrl(Option.getOrNull(remote)),
+          commits: linked.map((c, i) => ({
+            commit: c.commit.commit,
+            entry: c.links.length > 0 ? entries[i]! : null,
+            matchedBy: c.links.length > 0 ? ("sha" as const) : null,
+          })),
+        };
+      });
+
       const site = Effect.fn("Ledger.site")(
-        function* (repo: string, rangeArg: string | null, out: string) {
-          const view = publicRange(yield* range(repo, rangeArg), config.home);
+        function* (
+          repo: string,
+          rangeArg: string | null,
+          out: string,
+          options: { readonly historySince?: string | null } = {},
+        ) {
+          const view = publicRange(
+            options.historySince
+              ? yield* liveRange(repo, rangeArg, options.historySince)
+              : yield* range(repo, rangeArg),
+            config.home,
+          );
           const templateFile = path.join(config.distDir, "site", "index.html");
           const template = (yield* exists(templateFile))
             ? yield* fs.readFileString(templateFile)

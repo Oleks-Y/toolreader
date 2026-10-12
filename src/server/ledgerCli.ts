@@ -215,10 +215,18 @@ const site = Command.make(
       Flag.withDescription("Directory to write index.html into"),
       Flag.withDefault("ledger-site"),
     ),
+    historySince: Flag.string("history-since").pipe(
+      Flag.withDescription(
+        "Match now, as `sync --history-since` would, instead of reading agent-ledger (nothing is written there)",
+      ),
+      Flag.optional,
+    ),
   },
-  Effect.fn("toolreader ledger site")(function* ({ repo, range, out }) {
+  Effect.fn("toolreader ledger site")(function* ({ repo, range, out, historySince }) {
     const { file, view } = yield* Effect.flatMap(Ledger, (ledger) =>
-      ledger.site(repo, Option.getOrNull(range), out),
+      ledger.site(repo, Option.getOrNull(range), out, {
+        historySince: Option.getOrNull(historySince),
+      }),
     ).pipe(Effect.provide(offline));
     const withHistory = view.commits.filter((c) => (c.entry?.links.length ?? 0) > 0).length;
     yield* Console.log(
