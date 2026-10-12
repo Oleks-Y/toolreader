@@ -623,6 +623,8 @@ export function remoteWebUrl(remote: string | null): string | null {
   if (!remote) return null;
   const ssh = /^[\w.-]+@([\w.-]+):(.+?)(?:\.git)?$/.exec(remote);
   if (ssh) return `https://${ssh[1]}/${ssh[2]}`;
+  const sshUrl = /^ssh:\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+?)(?:\.git)?\/?$/.exec(remote);
+  if (sshUrl) return `https://${sshUrl[1]}/${sshUrl[2]}`;
   const http = /^https?:\/\/(?:[^@/]+@)?([^/]+)\/(.+?)(?:\.git)?\/?$/.exec(remote);
   return http ? `https://${http[1]}/${http[2]}` : null;
 }

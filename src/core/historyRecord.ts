@@ -6,8 +6,9 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 import { Entry, Labels } from "./domain.ts";
-import { LedgerThread } from "./ledger.ts";
-import { redactText } from "./proof.ts";
+import type { CommitHistory } from "./history.ts";
+import { clipOutputs, LedgerThread } from "./ledger.ts";
+import { redactEntries, redactLabels, redactor, redactText } from "./proof.ts";
 
 export const HISTORY_FORMAT_VERSION = 1;
 
@@ -158,3 +159,65 @@ export const admitCommit = admit("commit", Schema.toStandardSchemaV1(CommitRecor
   SHA.test(c.sha) ? c.sha : "",
   ...c.links.map((l) => l.threadId),
 ]);
+
+/**
+ * A thread's record: its whole history with every free-text field redacted (the home directory as
+ * `~`), each output clipped to `maxOutput` bytes, head and tail.
+ */
+export function buildThreadRecord(input: {
+  readonly thread: LedgerThread;
+  readonly entries: ReadonlyArray<Entry>;
+  readonly labels: Labels;
+  readonly takenAt: string;
+  readonly toolreaderVersion: string;
+  readonly maxOutput: number;
+  readonly home?: string | undefined;
+}): ThreadRecord {
+  const { clean, count } = redactor(input.home);
+  const redacted = redactEntries(input.entries, { outputs: true, home: input.home });
+  const entries = clipOutputs(redacted.entries, input.maxOutput).map((e) =>
+    e.type !== "action"
+      ? e
+      : {
+          ...e,
+          // A cut can land inside a placeholder (`TOKEN=[reda…`), which reads as a value again.
+          ...(e.clipped && e.output ? { output: redactText(e.output).text } : {}),
+          // Matching keys stay on this machine: the backend gets what the diff shows.
+          ...(e.files ? { files: e.files.map(({ addedKeys: _, ...f }) => f) } : {}),
+        },
+  );
+  return {
+    formatVersion: HISTORY_FORMAT_VERSION,
+    thread: { ...input.thread, title: clean(input.thread.title) },
+    takenAt: input.takenAt,
+    toolreaderVersion: input.toolreaderVersion,
+    entries,
+    labels: redactLabels(input.labels, clean),
+    redactions: redacted.redactions + count(),
+  };
+}
+
+/** A commit's record: its links as `linkByContent` found them, its subject redacted. */
+export function buildCommitRecord(input: {
+  readonly repo: string;
+  readonly subject: string;
+  readonly committedAt: string;
+  readonly history: CommitHistory;
+  readonly linkedAt: string;
+  readonly toolreaderVersion: string;
+  readonly home?: string | undefined;
+}): CommitRecord {
+  const { clean } = redactor(input.home);
+  return {
+    formatVersion: HISTORY_FORMAT_VERSION,
+    repo: input.repo,
+    sha: input.history.sha,
+    subject: clean(input.subject),
+    committedAt: input.committedAt,
+    novel: input.history.novel,
+    explained: input.history.explained,
+    links: input.history.links,
+    linkedAt: input.linkedAt,
+    toolreaderVersion: input.toolreaderVersion,
+  };
+}

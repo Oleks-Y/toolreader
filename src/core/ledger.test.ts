@@ -5,6 +5,7 @@ import * as Schema from "effect/Schema";
 
 import {
   buildEntry,
+  remoteWebUrl,
   clipOutputs,
   editedPaths,
   fileCoverage,
@@ -450,5 +451,15 @@ describe("several threads per commit", () => {
     const once = mergeEntries(empty, fresh);
     assert.deepStrictEqual(once.files, [{ path: "a.ts", bucket: "attributed" }]);
     assert.deepStrictEqual(mergeEntries(once, fresh), once);
+  });
+
+  it("names a repo by its remote, in every URL form git takes", () => {
+    for (const remote of [
+      "git@github.com:acme/app.git",
+      "https://github.com/acme/app.git",
+      "ssh://git@github.com/acme/app.git",
+      "ssh://git@github.com:22/acme/app",
+    ])
+      assert.strictEqual(remoteWebUrl(remote), "https://github.com/acme/app", remote);
   });
 });

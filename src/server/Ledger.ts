@@ -13,8 +13,8 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { LedgerFailed, type ThreadNotFound } from "../core/api.ts";
-import type { Entry, Labels, ThreadSummary, ThreadView } from "../core/domain.ts";
+import { LedgerFailed } from "../core/api.ts";
+import type { Entry, Labels } from "../core/domain.ts";
 import {
   buildEntry,
   commitMsgHook,
@@ -28,7 +28,6 @@ import {
   matchCommit,
   madeEdits,
   mergeEntries,
-  nativeId,
   prePushHook,
   remoteWebUrl,
   segmentByTime,
@@ -49,13 +48,14 @@ import {
 } from "../core/ledger.ts";
 import { ledgerSiteHtml, publicRange } from "../core/ledgerSite.ts";
 import type { SanitizeMode } from "../core/sanitize.ts";
-import { CLAUDE_ID_PREFIX, ClaudeTranscripts } from "./ClaudeTranscripts.ts";
-import { CodexRollouts, ROLLOUT_DIRS } from "./CodexRollouts.ts";
-import { CODEX_ID_PREFIX, CodexSessions } from "./CodexSessions.ts";
-import { Labeler } from "./Labeler.ts";
 import { Sanitizer, type SanitizeChoice } from "./Sanitizer.ts";
+import {
+  RepoSessions,
+  SESSION_SOURCES,
+  type RepoSession,
+  type SessionSource,
+} from "./RepoSessions.ts";
 import { ServerConfig } from "./ServerConfig.ts";
-import { ThreadStore } from "./ThreadStore.ts";
 
 const LEDGER_REF = `refs/heads/${LEDGER_BRANCH}`;
 const REMOTE = "origin";
@@ -73,15 +73,8 @@ const encodePatchIds = Schema.encodeEffect(Schema.fromJsonString(PatchIds));
 /** Field separator for `git log --format`; never appears in subjects. */
 const US = "\u001f";
 
-/** Where sessions come from. `auto`: T3 if its database exists, plus Codex rollout files and Claude Code transcripts. */
-export const LEDGER_SOURCES = [
-  "auto",
-  "t3",
-  "codex-app-server",
-  "codex-rollouts",
-  "claude-transcripts",
-] as const;
-export type LedgerSource = (typeof LEDGER_SOURCES)[number];
+export const LEDGER_SOURCES = SESSION_SOURCES;
+export type LedgerSource = SessionSource;
 
 export type SyncOptions = {
   /** Keep command and tool outputs (redacted). */
@@ -226,11 +219,7 @@ export class Ledger extends Context.Service<
     Ledger,
     Effect.gen(function* () {
       const config = yield* ServerConfig;
-      const store = yield* ThreadStore;
-      const codex = yield* CodexSessions;
-      const rollouts = yield* CodexRollouts;
-      const claude = yield* ClaudeTranscripts;
-      const labeler = yield* Labeler;
+      const repoSessions = yield* RepoSessions;
       const sanitizer = yield* Sanitizer;
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -415,77 +404,6 @@ export class Ledger extends Context.Service<
           ),
         );
 
-      /** Sessions from the chosen sources that worked in this repo or one of its git worktrees. */
-      const sessionsFor = Effect.fn("Ledger.sessionsFor")(function* (
-        repo: string,
-        source: LedgerSource,
-      ) {
-        const listing = yield* git(repo, ["worktree", "list", "--porcelain"]);
-        const roots = listing
-          .split("\n")
-          .filter((l) => l.startsWith("worktree "))
-          .map((l) => l.slice("worktree ".length));
-        const hasT3 = yield* exists(config.dbPath);
-        const rolloutDirs = ROLLOUT_DIRS.map((dir) => path.join(config.codexHome, dir));
-        const hasRollouts = (yield* Effect.forEach(rolloutDirs, exists)).some(Boolean);
-        const claudeDir = path.join(config.claudeHome, "projects");
-        const hasClaude = yield* exists(claudeDir);
-        if (source === "t3" && !hasT3)
-          return yield* new LedgerFailed({ message: `No T3 database at ${config.dbPath}` });
-        if (source === "claude-transcripts" && !hasClaude)
-          return yield* new LedgerFailed({ message: `No Claude Code sessions in ${claudeDir}` });
-        if (source === "codex-rollouts" && !hasRollouts)
-          return yield* new LedgerFailed({
-            message: `No Codex sessions in ${rolloutDirs.join(" or ")}`,
-          });
-
-        const sources: string[] = [];
-        const found: Array<{
-          summary: ThreadSummary;
-          load: (labels: Labels) => Effect.Effect<ThreadView, ThreadNotFound>;
-        }> = [];
-        const bare = (s: ThreadSummary) => s.id.slice(CODEX_ID_PREFIX.length);
-        if (source === "t3" || (source === "auto" && hasT3)) {
-          sources.push("t3");
-          for (const s of yield* store.list)
-            found.push({ summary: s, load: (l) => store.get(s.id, l) });
-        }
-        if (source === "codex-app-server") {
-          sources.push("codex-app-server");
-          yield* codex.ready;
-          for (const s of yield* codex.list)
-            found.push({ summary: s, load: (l) => codex.get(bare(s), l) });
-        }
-        // T3 runs Codex too; the rollout listing skips the sessions T3 owns.
-        if (source === "codex-rollouts" || (source === "auto" && hasRollouts)) {
-          sources.push("codex-rollouts");
-          for (const s of yield* rollouts.list)
-            found.push({ summary: s, load: (l) => rollouts.get(bare(s), l) });
-        }
-        // T3 runs Claude too; the transcript listing skips the sessions T3 owns.
-        if (source === "claude-transcripts" || (source === "auto" && hasClaude)) {
-          sources.push("claude-transcripts");
-          for (const s of yield* claude.list)
-            found.push({
-              summary: s,
-              load: (l) => claude.get(s.id.slice(CLAUDE_ID_PREFIX.length), l),
-            });
-        }
-        // The innermost worktree holding the session's directory (worktrees can nest).
-        const rootOf = (dir: string | null) =>
-          roots
-            .filter((root) => !!dir && (dir === root || dir.startsWith(`${root}/`)))
-            .sort((a, b) => b.length - a.length)[0];
-        return {
-          sources,
-          roots,
-          found: found.flatMap((f) => {
-            const root = rootOf(f.summary.worktree);
-            return root ? [{ ...f, root }] : [];
-          }),
-        };
-      });
-
       /**
        * A ledger commit with `bases` as parents (their files merged, patch-ids united) plus
        * `writes`, built through a private index. Moves no ref.
@@ -659,51 +577,28 @@ export class Ledger extends Context.Service<
           });
       });
 
-      /** Each session that worked here, loaded once, with its subagent parent from T3. */
+      /** Each session that worked here, loaded once, as the ledger matches them. */
       const loadSessions = Effect.fn("Ledger.loadSessions")(function* (
         repo: string,
         source: LedgerSource,
       ) {
-        const { sources, found, roots } = yield* sessionsFor(repo, source);
-        const { nativeIds, parents } = yield* store.lineage;
-        const sessions: Session[] = [];
-        for (const { summary, load, root } of found) {
-          const labels = yield* labeler.forThread(summary.id);
-          const view = yield* load(labels).pipe(Effect.option);
-          if (Option.isNone(view)) continue;
-          const { entries, thread: t } = view.value;
-          if (!entries.some((e) => e.type === "action")) continue;
-          sessions.push({
-            here: root === repo,
-            root,
-            edited: madeEdits(entries),
-            entries,
-            actions: findCommitActions(entries),
-            labels: { ...view.value.labels },
-            thread: {
-              id: t.id,
-              title: t.title,
-              source: t.source,
-              provider: t.provider,
-              origin: t.origin,
-              parent: parents.get(t.id) ?? null,
-            },
-          });
-        }
-        // A name is a thread id, `codex:<id>`, or what an agent exports (`claude-code:<id>`),
-        // which T3 knows by its provider thread.
-        const named = (name: string) => {
-          const id = nativeId(name);
-          const ids = new Set([
-            name,
-            id,
-            `${CODEX_ID_PREFIX}${id}`,
-            `${CLAUDE_ID_PREFIX}${id}`,
-            nativeIds.get(id),
-          ]);
-          return sessions.filter((s) => ids.has(s.thread.id));
-        };
-        return { sources, sessions, named, roots };
+        const loaded = yield* repoSessions
+          .load(repo, source)
+          .pipe(Effect.mapError((e) => new LedgerFailed({ message: e.message })));
+        const toSession = (r: RepoSession): Session => ({
+          here: r.root === repo,
+          root: r.root,
+          edited: madeEdits(r.entries),
+          entries: r.entries,
+          actions: findCommitActions(r.entries),
+          labels: r.labels,
+          thread: r.thread,
+        });
+        const sessions = loaded.sessions.map(toSession);
+        const byId = new Map(sessions.map((x) => [x.thread.id, x]));
+        const named = (name: string) =>
+          loaded.named(name).flatMap((r) => byId.get(r.thread.id) ?? []);
+        return { sources: loaded.sources, sessions, named, roots: loaded.roots };
       });
 
       const sync = Effect.fn("Ledger.sync")(function* (
@@ -1193,5 +1088,5 @@ export class Ledger extends Context.Service<
 
       return Ledger.of({ sync, range, site, hook, assert, sanitize: sanitizeBranch });
     }),
-  );
+  ).pipe(Layer.provide(RepoSessions.layer));
 }
