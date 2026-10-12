@@ -3,6 +3,7 @@
 //   toolreader history sync (--range A..B | --pr N | --sha X) [--repo PATH]
 //                           [--source auto|t3|codex-app-server|codex-rollouts|claude-transcripts]
 //                           [--dry-run] [--hook]
+//   toolreader history site (--range A..B | --pr N) [--repo PATH] [--out DIR]
 //   toolreader history hook install|uninstall [--repo PATH]    (historyHooks.ts)
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
@@ -199,6 +200,47 @@ const sync = Command.make(
   ),
 );
 
+const site = Command.make(
+  "site",
+  {
+    repo: Flag.string("repo").pipe(
+      Flag.withDescription("Repository (any path inside it)"),
+      Flag.withDefault("."),
+    ),
+    range: Flag.string("range").pipe(
+      Flag.withDescription("Commits, as `git log` takes them: main..HEAD"),
+      Flag.optional,
+    ),
+    pr: Flag.integer("pr").pipe(
+      Flag.withDescription("A GitHub pull request's commits (base..head, through `gh`)"),
+      Flag.optional,
+    ),
+    out: Flag.string("out").pipe(
+      Flag.withDescription("Directory to write index.html into"),
+      Flag.withDefault("history-site"),
+    ),
+  },
+  Effect.fn("toolreader history site")(function* (flags) {
+    const repo = (yield* Path.Path).resolve(flags.repo);
+    if (Option.isSome(flags.range) === Option.isSome(flags.pr))
+      return yield* new HistoryFailed({ message: "Give exactly one of --range A..B or --pr N" });
+    const range = Option.isSome(flags.range)
+      ? flags.range.value
+      : yield* prRange(repo, Option.getOrThrow(flags.pr));
+    const { file, view } = yield* Effect.flatMap(HistorySync, (h) =>
+      h.site(repo, range, flags.out),
+    ).pipe(Effect.provide(LedgerApp({ appServer: false, codexHome: null })));
+    const linked = view.commits.filter((c) => (c.entry?.links.length ?? 0) > 0).length;
+    yield* Console.log(
+      `${file}\n${view.repo}: ${view.commits.length} commits, ${linked} with agent history`,
+    );
+  }),
+).pipe(
+  Command.withDescription(
+    "Write a self-contained page of a range's agent history, as the backend has it (opens from file:// or any static host)",
+  ),
+);
+
 const installer = (action: "install" | "uninstall") =>
   Command.make(
     action,
@@ -224,6 +266,7 @@ export const historyCommand = Command.make("history").pipe(
   Command.withDescription("Agent history per commit, kept on the history backend"),
   Command.withSubcommands([
     sync,
+    site,
     Command.make("hook").pipe(
       Command.withDescription("The git hooks that send history as you push"),
       Command.withSubcommands([installer("install"), installer("uninstall")]),

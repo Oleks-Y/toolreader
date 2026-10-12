@@ -13,6 +13,7 @@ import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServer from "effect/unstable/http/HttpServer";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
+import { SITE_DATA_MARKER } from "../../core/ledgerSite.ts";
 import { BackendRoutes } from "../backend/Backend.ts";
 import { HistoryStore } from "../backend/HistoryStore.ts";
 import { PgMigrationsLive } from "../backend/PgMigrations.ts";
@@ -171,7 +172,7 @@ const services = (home: string, codexHome: string) =>
           claudeHome: "/nonexistent",
           labelsPath: "",
           userConfigPath: `${home}/.toolreader/config.json`,
-          distDir: "",
+          distDir: `${home}/dist`,
         }),
       ),
       ThreadStore.empty,
@@ -277,6 +278,24 @@ describe("history sync", () => {
             const [thread] = yield* store.threads(["codex:coder"]);
             // Sent redacted: the home directory reads `~`, never the temp path.
             assert.notInclude(encodeJson(thread), home);
+
+            // Read back as the range's page.
+            yield* fs.makeDirectory(`${home}/dist/site`, { recursive: true });
+            yield* fs.writeFileString(
+              `${home}/dist/site/index.html`,
+              `<script>${SITE_DATA_MARKER}</script>`,
+            );
+            const { file, view } = yield* history.site(repo, "main~2..main", `${home}/page`);
+            assert.deepStrictEqual(
+              view.commits.map((c) => c.entry?.links.map((l) => [l.thread.id, l.via])),
+              [[["codex:coder", "content"]], [["codex:coder", "content"]]],
+            );
+            assert.include(yield* fs.readFileString(file), "Add the store and client");
+            // The turn's edits are the commits' files: each attributed, not "untracked".
+            assert.deepStrictEqual(
+              view.commits.map((c) => c.entry?.files.map((f) => [f.path, f.bucket])),
+              [[["store.ts", "attributed"]], [["client.ts", "attributed"]]],
+            );
           }).pipe(Effect.provide(services(home, codexHome)));
         }).pipe(Effect.scoped),
     );

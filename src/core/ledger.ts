@@ -43,7 +43,15 @@ export type LinkRole = (typeof LINK_ROLES)[number];
  * an `Agent-Session` trailer, its SHA in `git commit` output, `sync --session`, the time of a
  * `git commit` action, or edits to the commit's files.
  */
-export const LINK_VIA = ["asserted", "trailer", "sha", "session", "time", "evidence"] as const;
+export const LINK_VIA = [
+  "asserted",
+  "trailer",
+  "sha",
+  "session",
+  "time",
+  "evidence",
+  "content",
+] as const;
 export type LinkVia = (typeof LINK_VIA)[number];
 
 export const LedgerLink = Schema.Struct({

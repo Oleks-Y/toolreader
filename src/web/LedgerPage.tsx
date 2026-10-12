@@ -49,6 +49,7 @@ const VIA_TEXT: Record<LinkVia, string> = {
   session: "named with sync --session",
   time: "its git commit ran just before this commit",
   evidence: "it edited this commit's files",
+  content: "its edits wrote this commit's new lines",
 };
 
 /**

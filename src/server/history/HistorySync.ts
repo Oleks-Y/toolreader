@@ -1,5 +1,5 @@
 // `history sync`: the agent history of a range of commits, linked by content (core/history.ts)
-// and sent to the backend. Each linked thread goes whole, once (only when it grew since the
+// and sent to the backend; `history site`: that history read back, as one page. Each linked thread goes whole, once (only when it grew since the
 // backend last had it); each commit's links replace what the backend had for it, so linking a
 // range again after a split or rebase corrects it.
 import * as Context from "effect/Context";
@@ -7,6 +7,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
@@ -23,7 +24,9 @@ import {
   type CommitRecord,
   type ThreadRecord,
 } from "../../core/historyRecord.ts";
-import { remoteWebUrl, SESSION_TRAILER } from "../../core/ledger.ts";
+import { historyRange } from "../../core/historyPage.ts";
+import { remoteWebUrl, SESSION_TRAILER, type LedgerRange } from "../../core/ledger.ts";
+import { ledgerSiteHtml, publicRange } from "../../core/ledgerSite.ts";
 import { redactor } from "../../core/proof.ts";
 import { threadSha } from "../recordHash.ts";
 import { RepoSessions, type SessionSource } from "../RepoSessions.ts";
@@ -71,6 +74,12 @@ export class HistorySync extends Context.Service<
       range: string,
       options: SyncOptions,
     ) => Effect.Effect<SyncReport, HistoryFailed>;
+    /** The range's page (the ledger viewer, inlined) from what the backend has; writes `out/index.html`. */
+    readonly site: (
+      repo: string,
+      range: string,
+      out: string,
+    ) => Effect.Effect<{ readonly file: string; readonly view: LedgerRange }, HistoryFailed>;
   }
 >()("toolreader/server/history/HistorySync") {
   static readonly layer = Layer.effect(
@@ -80,6 +89,7 @@ export class HistorySync extends Context.Service<
       const sessions = yield* RepoSessions;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
 
       /** git in `repo`; `ok` exit codes besides 0 (`git grep` exits 1 when nothing matched). */
       const git = (repo: string, args: ReadonlyArray<string>, ok: ReadonlyArray<number> = []) =>
@@ -291,7 +301,115 @@ export class HistorySync extends Context.Service<
         return report(sent, threads.length - sent);
       }, Effect.provide(FetchHttpClient.layer));
 
-      return HistorySync.of({ sync });
+      /** The repo's worktrees: where a session's absolute paths count as the commit's files. */
+      const worktrees = (repo: string) =>
+        Effect.map(git(repo, ["worktree", "list", "--porcelain"]), (out) =>
+          out
+            .split("\n")
+            .filter((l) => l.startsWith("worktree "))
+            .map((l) => l.slice("worktree ".length)),
+        );
+
+      const site = Effect.fn("HistorySync.site")(
+        function* (repoArg: string, range: string, out: string) {
+          const repo = (yield* git(repoArg, ["rev-parse", "--show-toplevel"])).trim();
+          const origin = (yield* git(repo, ["remote", "get-url", "origin"], [2])).trim();
+          const web = remoteWebUrl(origin || null);
+          if (!web)
+            return yield* new HistoryFailed({
+              message: `${repo} has no origin on a git host: the backend names repos owner/name`,
+            });
+          const repoName = new URL(web).pathname.slice(1);
+          // One commit at a time, the subject last: a subject may hold any character.
+          const shas = (yield* git(repo, [
+            "rev-list",
+            "--reverse",
+            ...range.split(/\s+/).filter(Boolean),
+          ]))
+            .split("\n")
+            .filter((s) => HEX.test(s));
+          const commits = yield* Effect.forEach(shas, (sha) =>
+            Effect.map(git(repo, ["show", "-s", `--format=%cI${US}%s`, sha]), (out) => {
+              const [committedAt = "", ...rest] = out.trimEnd().split(US);
+              return { sha, subject: rest.join(US), committedAt, patchId: null };
+            }),
+          );
+          const settings = yield* backendSettings().pipe(
+            Effect.provideService(ServerConfig, config),
+            Effect.provideService(FileSystem.FileSystem, fs),
+          );
+          const api = yield* connect(settings);
+          const params = { ws: settings.workspace };
+          const records = new Map<string, CommitRecord>();
+          for (let i = 0; i < commits.length; i += LIMITS.ids) {
+            const shas = commits.slice(i, i + LIMITS.ids).map((c) => c.sha);
+            const found = yield* call(
+              api.history.commits({ params: { ...params, repo: repoName }, payload: { shas } }),
+            );
+            for (const c of found.commits) records.set(c.sha, c);
+          }
+          const ids = [
+            ...new Set([...records.values()].flatMap((c) => c.links.map((l) => l.threadId))),
+          ];
+          const threads = new Map<string, ThreadRecord>();
+          for (let i = 0; i < ids.length; i += LIMITS.threads) {
+            const found = yield* call(
+              api.history.threads({ params, payload: { ids: ids.slice(i, i + LIMITS.threads) } }),
+            );
+            for (const t of found.threads) threads.set(t.thread.id, t);
+          }
+          const withPaths = yield* Effect.forEach(commits, (commit) =>
+            Effect.map(
+              // NUL-separated: names as they are, not C-quoted (non-ASCII) or split (a newline).
+              git(repo, [
+                "diff-tree",
+                "-z",
+                "--no-commit-id",
+                "--name-only",
+                "-r",
+                "--root",
+                commit.sha,
+              ]),
+              (names) => ({
+                commit,
+                paths: names.split("\u0000").filter(Boolean),
+                record: records.get(commit.sha) ?? null,
+              }),
+            ),
+          );
+          const view = publicRange(
+            historyRange({
+              repo,
+              range,
+              remoteUrl: web,
+              commits: withPaths,
+              threads,
+              roots: yield* worktrees(repo),
+              home: config.home,
+            }),
+            config.home,
+          );
+          const templateFile = path.join(config.distDir, "site", "index.html");
+          const template = (yield* fs.exists(templateFile))
+            ? yield* fs.readFileString(templateFile)
+            : "";
+          const html = ledgerSiteHtml(template, view);
+          if (html === null)
+            return yield* new HistoryFailed({
+              message: `No page template at ${templateFile}; build it with \`vp run build\`.`,
+            });
+          const file = path.resolve(out, "index.html");
+          yield* fs.makeDirectory(path.dirname(file), { recursive: true });
+          yield* fs.writeFileString(file, html);
+          return { file, view };
+        },
+        Effect.catchTag("PlatformError", (e) =>
+          Effect.fail(new HistoryFailed({ message: e.message })),
+        ),
+        Effect.provide(FetchHttpClient.layer),
+      );
+
+      return HistorySync.of({ sync, site });
     }),
   );
 }
