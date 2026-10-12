@@ -103,6 +103,12 @@ const sync = Command.make(
       Flag.withDescription("Tie such commits to this session (repeatable)"),
       Flag.atLeast(0),
     ),
+    historySince: Flag.string("history-since").pipe(
+      Flag.withDescription(
+        "For stacked PRs split from one branch: each commit gets the turns since this revision, in any worktree, that edited its files",
+      ),
+      Flag.optional,
+    ),
     push: Flag.boolean("push").pipe(
       Flag.withDescription(
         "Write on top of origin's agent-ledger and push it, retrying if another push wins",
@@ -126,6 +132,7 @@ const sync = Command.make(
     push,
     matchSessions,
     session,
+    historySince,
     sanitize,
     sanitizeAgent,
   }) {
@@ -138,6 +145,7 @@ const sync = Command.make(
         push,
         matchSessions,
         sessions: session,
+        historySince: Option.getOrNull(historySince),
         sanitize: Option.getOrNull(sanitize),
         sanitizeAgent: onOff(sanitizeAgent),
       }),

@@ -20,6 +20,7 @@ import {
   type PathWhere,
 } from "./ledger.ts";
 import { splitCommand, unwrapShell } from "./shell.ts";
+import { splitTurns } from "./tree.ts";
 
 /** A commit of the range, with what git says about it. */
 export type LinkCommit = {
@@ -50,7 +51,30 @@ export type LinkOptions<S extends LinkSession> = PathWhere & {
   readonly sessions: ReadonlyArray<string>;
   /** `--match-sessions`: else the one session here that edited and ended in the window. */
   readonly matchSessions: boolean;
+  /**
+   * `--history-since`: for stacked PRs split from one long-lived branch, whose commits came long
+   * after the work. A commit's history is then each turn since this time, in any worktree, that
+   * edited one of its files (`trees`: each commit's files, for files moved since); who ran
+   * `git commit` (sha, time, `--session`) is bookkeeping there and isn't matched.
+   */
+  readonly historySince?: string | undefined;
+  readonly trees?: ReadonlyMap<string, ReadonlySet<string>> | undefined;
 };
+
+/** The turns of `entries` in `from`..`to` that edited one of `paths`, each with its prompt. */
+export function editingTurns(
+  entries: ReadonlyArray<Entry>,
+  paths: ReadonlyArray<string>,
+  where: PathWhere,
+  from: string,
+  to: string,
+): Entry[] {
+  return splitTurns(segmentByTime(entries, from, to)).flatMap((t) =>
+    editedPaths(t.entries, paths, where).size > 0
+      ? [...(t.prompt ? [t.prompt] : []), ...t.entries]
+      : [],
+  );
+}
 
 export type CommitLinks = {
   readonly commit: LinkCommit;
@@ -95,6 +119,16 @@ export function linkCommits<S extends LinkSession>(
     for (const name of c.trailers)
       for (const s of options.named(name))
         add(s, "trailer", segmentByTime(s.entries, before, commit.committedAt));
+    if (options.historySince !== undefined) {
+      const at = { ...where, tree: options.trees?.get(commit.sha) };
+      for (const s of sessions)
+        add(
+          s,
+          "evidence",
+          editingTurns(s.entries, paths, at, options.historySince, commit.committedAt),
+        );
+      return { commit: c, links: found, ambiguous: null };
+    }
     // A printed SHA, in any session; else the latest `git commit` action just before it.
     const candidates = sessions.flatMap((s) => {
       const m = matchCommit(commit, s.actions);

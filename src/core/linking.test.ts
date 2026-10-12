@@ -198,4 +198,42 @@ describe("linking", () => {
     ]);
     assert.deepStrictEqual([merge.candidates, merge.unmatched.length], [[], 1]);
   });
+
+  it("gives a stacked PR's commit the turns, in any worktree, that edited its files", () => {
+    const edit = (id: string, minute: number, path: string): Action => ({
+      type: "action",
+      id,
+      at: at(minute),
+      kind: "edit",
+      status: "ok",
+      title: path,
+      files: [{ path, added: 1, removed: 0, isNew: false, isDeleted: false }],
+    });
+    // Written in another worktree, before the split moved the file into backend/.
+    const work = session("work", false, [
+      prompt("u1", at(1)),
+      edit("e1", 2, "/w/wt/src/server/Store.ts"),
+      prompt("u2", at(3)),
+      edit("e2", 4, "README.md"),
+      prompt("u3", at(5)),
+      sh("c1", at(6), "git commit -m split", "[main abc1234] split"),
+    ]);
+    const commit: LinkCommit = {
+      commit: ledgerCommit("abc1234", at(30)),
+      previousAt: at(29),
+      trailers: [],
+      paths: ["src/server/backend/Store.ts", "README.md"],
+    };
+    const [linked] = linkCommits([commit], [work], {
+      ...options([work]),
+      roots: ["/w/repo", "/w/wt"],
+      historySince: at(0),
+      trees: new Map([["abc1234", new Set(["src/server/backend/Store.ts", "README.md"])]]),
+    });
+    // Only the editing turns; the `git commit` turn is bookkeeping, not this commit's history.
+    assert.deepStrictEqual(
+      linked?.links.map((l) => [l.via, l.segment.map((e) => e.id)]),
+      [["evidence", ["u1", "e1", "u2", "e2"]]],
+    );
+  });
 });

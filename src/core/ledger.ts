@@ -530,6 +530,11 @@ export type PathWhere = {
   /** The repo's worktrees: absolute paths outside them are not the commit's. */
   readonly roots?: ReadonlyArray<string> | undefined;
   readonly home?: string | undefined;
+  /**
+   * Every file at the commit. A path written inside a worktree that is gone from it names the one
+   * commit file of the same name: the file was moved since (a branch split into stacked PRs).
+   */
+  readonly tree?: ReadonlySet<string> | undefined;
 };
 
 /** The commit path (repo-relative, of `paths`) a path written in a session names, if any. */
@@ -543,17 +548,38 @@ export function commitPathMatcher(
   // ponytail: a relative path's cwd is unknown, so it matches by whole trailing segments, the
   // longest commit path winning; written from a subdirectory it can name the wrong one of two
   // same-named files.
-  const sameFile = (written: string, path: string) => {
+  /** Repo-relative, for a path written absolute (or `~/…`) inside a worktree; else null. */
+  const inRepo = (written: string) => {
     let w = written.replace(/^\.\//, "");
     if (where.home && (w === "~" || w.startsWith("~/"))) w = `${where.home}${w.slice(1)}`;
-    if (w.startsWith("/") || w.startsWith("~")) {
-      const root = roots.find((r) => w.startsWith(`${r}/`));
-      return !!root && w.slice(root.length + 1) === path;
-    }
-    return w === path || w.endsWith(`/${path}`) || path.endsWith(`/${w}`);
+    if (!w.startsWith("/") && !w.startsWith("~")) return { relative: w };
+    const root = roots.find((r) => w.startsWith(`${r}/`));
+    return root ? { inside: w.slice(root.length + 1) } : null;
+  };
+  const sameFile = (written: string, path: string) => {
+    const w = inRepo(written);
+    if (!w) return false;
+    if ("inside" in w) return w.inside === path;
+    const r = w.relative;
+    return r === path || r.endsWith(`/${path}`) || path.endsWith(`/${r}`);
+  };
+  const moved = (written: string) => {
+    const w = inRepo(written);
+    if (!where.tree || !w) return undefined;
+    // Relative: to the session's own worktree, or a directory in it; gone if no file ends so.
+    const p = "inside" in w ? w.inside : w.relative;
+    const gone =
+      "inside" in w
+        ? !where.tree.has(p)
+        : ![...where.tree].some((f) => f === p || f.endsWith(`/${p}`));
+    if (!gone) return undefined;
+    const name = p.slice(p.lastIndexOf("/") + 1);
+    const same = paths.filter((p) => p === name || p.endsWith(`/${name}`));
+    return same.length === 1 ? same[0] : undefined;
   };
   return (written) =>
-    paths.filter((p) => sameFile(written, p)).sort((x, y) => y.length - x.length)[0];
+    paths.filter((p) => sameFile(written, p)).sort((x, y) => y.length - x.length)[0] ??
+    moved(written);
 }
 
 /**

@@ -97,6 +97,11 @@ export type SyncOptions = {
   readonly matchSessions: boolean;
   /** Sessions (ids, `codex:` optional) to tie such commits to, instead of guessing which. */
   readonly sessions: ReadonlyArray<string>;
+  /**
+   * A revision where the work began: each commit gets the turns since then, in any worktree, that
+   * edited its files (stacked PRs split from one branch; `linkCommits` `historySince`).
+   */
+  readonly historySince?: string | null;
   /** How entries are sanitized; null: the repo's `.toolreader.json`, else `anonymize`. */
   readonly sanitize: SanitizeMode | "off" | null;
   /** Run the agent pass; null: the repo's `.toolreader.json`, else no. */
@@ -113,7 +118,10 @@ export const SYNC_DEFAULTS: SyncOptions = {
   sanitizeAgent: null,
 };
 
-export type ScopeOptions = Pick<SyncOptions, "source" | "sessions" | "matchSessions"> & {
+export type ScopeOptions = Pick<
+  SyncOptions,
+  "source" | "sessions" | "matchSessions" | "historySince"
+> & {
   readonly here?: string;
 };
 
@@ -747,10 +755,28 @@ export class Ledger extends Context.Service<
       const linkRange = Effect.fn("Ledger.linkRange")(function* (
         repo: string,
         range: string,
-        options: Pick<SyncOptions, "source" | "sessions" | "matchSessions">,
+        options: Pick<SyncOptions, "source" | "sessions" | "matchSessions" | "historySince">,
         here: string,
       ) {
         const { commits, previousAt, trailers, paths } = yield* commitsIn(repo, range);
+        const history = options.historySince
+          ? {
+              historySince: (yield* git(repo, [
+                "show",
+                "-s",
+                "--format=%cI",
+                options.historySince,
+              ])).trim(),
+              trees: new Map(
+                yield* Effect.forEach(commits, (c) =>
+                  Effect.map(
+                    git(repo, ["ls-tree", "-r", "--name-only", c.sha]),
+                    (out) => [c.sha, new Set(out.split("\n").filter(Boolean))] as const,
+                  ),
+                ),
+              ),
+            }
+          : {};
         const { sources, sessions, named, roots } =
           commits.length > 0
             ? yield* loadSessions(repo, options.source, here)
@@ -775,6 +801,7 @@ export class Ledger extends Context.Service<
             matchSessions: options.matchSessions,
             roots,
             home: config.home,
+            ...history,
           },
         );
         return { sources, sessions, roots, linked };
