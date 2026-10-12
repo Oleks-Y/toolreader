@@ -42,3 +42,8 @@ jobs:
 
       - name: Build
         run: vp run build
+
+      # The tarball as teams install it: the bundle alone must serve the backend on a fresh
+      # Postgres, link a commit to the session that wrote it, and send it from a push's hook.
+      - name: Package smoke test
+        run: sh scripts/smoke.sh

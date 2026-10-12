@@ -2,7 +2,8 @@
 // (core/history.ts), kept on the history backend (~/.toolreader/config.json).
 //   toolreader history sync (--range A..B | --pr N | --sha X) [--repo PATH]
 //                           [--source auto|t3|codex-app-server|codex-rollouts|claude-transcripts]
-//                           [--dry-run]
+//                           [--dry-run] [--hook]
+//   toolreader history hook install|uninstall [--repo PATH]    (historyHooks.ts)
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -15,7 +16,9 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { redactText } from "../../core/proof.ts";
 import { LedgerApp } from "../app.ts";
 import { SESSION_SOURCES } from "../RepoSessions.ts";
+import { ServerConfig } from "../ServerConfig.ts";
 import { HistoryFailed } from "./HistoryClient.ts";
+import { appendLog, causeMessage, installHooks, pending } from "./historyHooks.ts";
 import { HistorySync, type SyncReport } from "./HistorySync.ts";
 
 const PullRequest = Schema.Struct({ baseRefOid: Schema.String, headRefOid: Schema.String });
@@ -62,6 +65,9 @@ const prRange = Effect.fn("history.prRange")(function* (repo: string, pr: number
   if (!(yield* has(base))) yield* run(repo, "git", ["fetch", "-q", "origin", base]);
   return `${base}..${head}`;
 });
+
+/** Full SHAs in a range (`a --not b c`, as the hook passes it) as `git log --oneline` shows them. */
+const shortShas = (range: string) => range.replace(/\b[0-9a-f]{40}\b/g, (sha) => sha.slice(0, 8));
 
 /** Titles are a session's first prompt line: logs (CI's included) get them redacted. */
 const title = (t: string) => redactText(t).text;
@@ -116,6 +122,11 @@ const sync = Command.make(
     dryRun: Flag.boolean("dry-run").pipe(
       Flag.withDescription("Link and report, but send nothing to the backend"),
     ),
+    hook: Flag.boolean("hook").pipe(
+      Flag.withDescription(
+        "Run as a git hook: report to ~/.toolreader/history.log, never fail, and retry what failed before",
+      ),
+    ),
   },
   Effect.fn("toolreader history sync")(function* (flags) {
     const repo = (yield* Path.Path).resolve(flags.repo);
@@ -133,14 +144,54 @@ const sync = Command.make(
       : Option.isSome(flags.pr)
         ? yield* prRange(repo, flags.pr.value)
         : `-1 ${Option.getOrThrow(flags.sha)}`;
-    const report = yield* Effect.flatMap(HistorySync, (h) =>
-      h.sync(repo, range, { source: flags.source, dryRun: flags.dryRun }),
-    ).pipe(
-      Effect.provide(
-        LedgerApp({ appServer: flags.source === "codex-app-server", codexHome: null }),
+    const app = LedgerApp({ appServer: flags.source === "codex-app-server", codexHome: null });
+    const syncRange = (r: string) =>
+      Effect.flatMap(HistorySync, (h) =>
+        h.sync(repo, r, { source: flags.source, dryRun: flags.dryRun }),
+      ).pipe(Effect.provide(app));
+    if (!flags.hook) {
+      for (const line of reportLines(yield* syncRange(range), flags.dryRun))
+        yield* Console.log(line);
+      return;
+    }
+    // As a hook: what failed before in this repo first, then this push; whatever fails waits.
+    yield* Effect.gen(function* () {
+      // Keyed by the repository (its common git dir), so any of its worktrees retries.
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const common = (yield* spawner
+        .string(
+          ChildProcess.make("git", [
+            "-C",
+            repo,
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+          ]),
+        )
+        .pipe(Effect.orElseSucceed(() => repo))).trim();
+      const store = yield* pending(common);
+      const lines: string[] = [];
+      for (const r of new Set([...(yield* store.list), range])) {
+        const done = yield* Effect.result(syncRange(r));
+        if (done._tag === "Success") {
+          lines.push(...reportLines(done.success, false));
+          yield* store.done(r);
+        } else {
+          yield* store.add(r);
+          lines.push(
+            `✗ ${shortShas(r)}: ${redactText(done.failure.message).text} (retried by the next push)`,
+          );
+        }
+      }
+      yield* appendLog(`sync ${shortShas(range)} in ${repo}`, lines);
+    }).pipe(
+      // Crashes too: a detached job has nowhere else to say it died.
+      Effect.catchCause((cause) =>
+        appendLog(`sync ${shortShas(range)} in ${repo}`, [`✗ ${causeMessage(cause)}`]),
       ),
+      Effect.provide(ServerConfig.layer),
+      Effect.ignore,
     );
-    for (const line of reportLines(report, flags.dryRun)) yield* Console.log(line);
   }),
 ).pipe(
   Command.withDescription(
@@ -148,7 +199,34 @@ const sync = Command.make(
   ),
 );
 
+const installer = (action: "install" | "uninstall") =>
+  Command.make(
+    action,
+    {
+      repo: Flag.string("repo").pipe(
+        Flag.withDescription("Repository (any path inside it)"),
+        Flag.withDefault("."),
+      ),
+    },
+    Effect.fn(`toolreader history hook ${action}`)(function* ({ repo }) {
+      const lines = yield* installHooks((yield* Path.Path).resolve(repo), action);
+      for (const line of lines) yield* Console.log(line);
+    }),
+  ).pipe(
+    Command.withDescription(
+      action === "install"
+        ? "Opt this repo in: every push to origin sends its agent history, in the background"
+        : "Opt this repo out and remove its history hooks",
+    ),
+  );
+
 export const historyCommand = Command.make("history").pipe(
   Command.withDescription("Agent history per commit, kept on the history backend"),
-  Command.withSubcommands([sync]),
+  Command.withSubcommands([
+    sync,
+    Command.make("hook").pipe(
+      Command.withDescription("The git hooks that send history as you push"),
+      Command.withSubcommands([installer("install"), installer("uninstall")]),
+    ),
+  ]),
 );
