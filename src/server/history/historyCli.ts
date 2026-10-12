@@ -93,7 +93,7 @@ export const reportLines = (report: SyncReport, dryRun: boolean): string[] => {
     lines.push(
       c.links.length === 0
         ? `  · no agent turn wrote its ${c.novel} new lines`
-        : `  ${c.explained} of its ${c.novel} new lines written by these agents`,
+        : `  ${c.explained} of its ${c.novel} new lines match these agents' edits`,
     );
   }
   for (const why of report.ignored) lines.push(`! ignored ${title(why)}`);

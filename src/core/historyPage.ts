@@ -75,7 +75,7 @@ export function historyRange(input: {
         home: input.home,
         notes: [
           {
-            text: `Its agents wrote ${record.explained} of the ${record.novel} lines it adds that weren't in the repo before.`,
+            text: `${record.explained} of the ${record.novel} lines it adds that weren't in the repo before match its agents' edits.`,
             file: null,
             at: record.linkedAt,
           },

@@ -330,7 +330,7 @@ describe("history sync", () => {
               item: declare(
                 "d1",
                 "toolreader history link --sha HEAD~1 --session codex:coder --turns 1 --note 'wrote the store'",
-                `history link: ${store}`,
+                `history link: ${store} for HEAD~1`,
               ),
             },
             {
@@ -338,7 +338,7 @@ describe("history sync", () => {
               item: declare(
                 "d2",
                 "npx toolreader history unlink --sha HEAD --session codex:coder",
-                `history unlink: ${client}`,
+                `history unlink: ${client} for HEAD`,
               ),
             },
           ]);

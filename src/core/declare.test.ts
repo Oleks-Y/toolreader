@@ -5,6 +5,7 @@ import {
   declarationsIn,
   isGitCommit,
   parseDeclaration,
+  parseDeclarations,
   parseTurns,
   turnIds,
 } from "./declare.ts";
@@ -42,14 +43,27 @@ describe("declare", () => {
     assert.deepStrictEqual(
       parseDeclaration(
         `/bin/zsh -lc "npx toolreader history link --sha HEAD --turns 2-3 --note 'wrote the store'"`,
-        `history link: ${SHA} (T2–T3 of "Add a")\n`,
+        `history link: ${SHA} for HEAD (T2–T3 of "Add a")\n`,
       ),
       { kind: "link", sha: SHA, turns: [2, 3], session: null, note: "wrote the store" },
     );
     assert.deepStrictEqual(
-      parseDeclaration("node /x/dist/bin.mjs history unlink --sha=abc1234 --session codex:t2"),
-      { kind: "unlink", sha: "abc1234", turns: null, session: "codex:t2", note: null },
+      parseDeclaration(
+        "node /x/dist/bin.mjs history unlink --sha=abc1234 --session codex:t2",
+        `history unlink: ${"c".repeat(40)} for abc1234`,
+      ),
+      { kind: "unlink", sha: "c".repeat(40), turns: null, session: "codex:t2", note: null },
     );
+    // Only what ran and confirmed: of `a || b`, the one whose line was printed.
+    assert.deepStrictEqual(
+      parseDeclarations(
+        "(command -v toolreader && toolreader history link --sha HEAD --note x || npx toolreader history link --sha HEAD --note x)",
+        `history link: ${SHA} for HEAD (T1)`,
+      ).map((d) => [d.sha, d.note]),
+      [[SHA, "x"]],
+    );
+    // Run, but no line (refused, or the record holds no output yet): nothing declared.
+    assert.isNull(parseDeclaration("toolreader history link --sha HEAD"));
     // Talking about it, or another program's `history`, declares nothing.
     assert.isNull(parseDeclaration("echo toolreader history link --sha HEAD | grep history"));
     assert.isNull(parseDeclaration("history link --sha abc1234"));
@@ -60,12 +74,22 @@ describe("declare", () => {
     const entries: Entry[] = [
       prompt(1),
       prompt(2),
-      run("c1", 5, "toolreader history link --sha HEAD", `history link: ${SHA}`),
+      run("c1", 5, "toolreader history link --sha HEAD", `history link: ${SHA} for HEAD`),
       prompt(3),
       run("bad", 7, "toolreader history link --sha nope", "", true),
       prompt(4),
-      run("c2", 9, "toolreader history link --sha bbbbbbb"),
-      run("other", 10, "toolreader history link --sha ccccccc --session codex:else --turns 1"),
+      run(
+        "c2",
+        9,
+        "toolreader history link --sha bbbbbbb",
+        `history link: ${"b".repeat(40)} for bbbbbbb`,
+      ),
+      run(
+        "other",
+        10,
+        "toolreader history link --sha ccccccc --session codex:else --turns 1",
+        `history link: ${"c".repeat(40)} for ccccccc`,
+      ),
     ];
     assert.deepStrictEqual(
       declarationsIn("t1", entries).map((d) => [d.sha.slice(0, 7), d.turns, d.turn, d.session]),
@@ -87,7 +111,7 @@ describe("declare", () => {
         "c1",
         5,
         "toolreader history link --sha HEAD~1 --note one && toolreader history link --sha HEAD --note two",
-        `history link: ${SHA} (T1–T2)\nhistory link: ${b} (T2)\n`,
+        `history link: ${SHA} for HEAD~1 (T1–T2)\nhistory link: ${b} for HEAD (T2)\n`,
       ),
     ];
     assert.deepStrictEqual(

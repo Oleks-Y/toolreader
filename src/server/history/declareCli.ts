@@ -168,7 +168,7 @@ const link = Command.make(
           ? `T${previous + 1} through the current turn`
           : "this session's turns since its last declaration";
     yield* Console.log(
-      `${declaredLine("link", sha)} (${shown} of ${found ? `"${title(found)}"` : name})`,
+      `${declaredLine("link", sha, flags.sha)} (${shown} of ${found ? `"${title(found)}"` : name})`,
     );
     if (!found)
       yield* Console.log(
@@ -197,7 +197,7 @@ const unlink = Command.make(
     if (!found && !own)
       return yield* new HistoryFailed({ message: `No session ${name} has worked in ${repo}` });
     yield* Console.log(
-      `${declaredLine("unlink", sha)} (${found ? `"${title(found)}"` : name} didn't produce it)`,
+      `${declaredLine("unlink", sha, flags.sha)} (${found ? `"${title(found)}"` : name} didn't produce it)`,
     );
   }),
 ).pipe(Command.withDescription("Declare that a session didn't produce a commit"));

@@ -11,7 +11,7 @@ import { splitTurns } from "./tree.ts";
 
 export type Declaration = {
   readonly kind: "link" | "unlink";
-  /** As the command printed it (full), else as given. */
+  /** Full, as the command printed it. */
   readonly sha: string;
   /** 1-based, as the viewer numbers them; null: since the session's previous declaration. */
   readonly turns: ReadonlyArray<number> | null;
@@ -20,9 +20,13 @@ export type Declaration = {
   readonly note: string | null;
 };
 
-/** What `history link` prints first, so a sync reads the SHA it resolved. */
-export const declaredLine = (kind: "link" | "unlink", sha: string) => `history ${kind}: ${sha}`;
-const DECLARED_ALL = /^history (link|unlink): ([0-9a-f]{40,64})\b/gm;
+/**
+ * What `history link` prints first: the full SHA it resolved, and the revision it was given, so a
+ * sync pairs each declaration in a command with its own line.
+ */
+export const declaredLine = (kind: "link" | "unlink", sha: string, rev: string) =>
+  `history ${kind}: ${sha} for ${rev.replace(/\s+/g, "")}`;
+const DECLARED_ALL = /^history (link|unlink): ([0-9a-f]{40,64}) for (\S+)/gm;
 
 /** `3-5,9` → [3, 4, 5, 9]; null when it isn't a list of turns and ranges. */
 export function parseTurns(spec: string): number[] | null {
@@ -59,12 +63,13 @@ function historyAt(words: ReadonlyArray<string>): number {
 }
 
 /**
- * The declarations a shell command makes, one per `toolreader history link|unlink` it runs (an
- * agent may chain several with `;` or `&&`), in order. The output's `history link: <sha>` lines
- * give the SHAs each resolved, in the same order.
+ * The declarations a shell command made: each `toolreader history link|unlink` in it (an agent may
+ * chain several) that printed its `history link: <sha> for <rev>` line. One that didn't print it
+ * didn't run or failed (`a || b`, a check that refused it), and declares nothing.
  */
 export function parseDeclarations(command: string, output?: string): Declaration[] {
   const printed = output ? [...output.matchAll(DECLARED_ALL)] : [];
+  const used = new Set<number>();
   const found: Declaration[] = [];
   for (const pipeline of splitCommand(unwrapShell(command)))
     for (const words of pipeline) {
@@ -78,9 +83,11 @@ export function parseDeclarations(command: string, output?: string): Declaration
         if (!m) continue;
         flags.set(m[1]!, m[2] ?? rest[++i] ?? "");
       }
-      const said = printed[found.length];
-      const sha = said?.[1] === kind ? said[2]! : (flags.get("sha") ?? "");
-      if (!sha) continue;
+      const rev = (flags.get("sha") ?? "").replace(/\s+/g, "");
+      const said = printed.findIndex((m, k) => !used.has(k) && m[1] === kind && m[3] === rev);
+      if (said < 0) continue;
+      used.add(said);
+      const sha = printed[said]![2]!;
       const spec = flags.get("turns");
       const turns = spec === undefined ? null : parseTurns(spec);
       if (spec !== undefined && turns === null) continue;
