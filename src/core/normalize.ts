@@ -11,6 +11,7 @@ import {
   type ToolPayload,
 } from "./payload.ts";
 import { humanizeCommand, strongestKind } from "./shell.ts";
+import { addedLines } from "./history.ts";
 
 export type ActivityRow = {
   readonly id: string;
@@ -152,8 +153,15 @@ function cutHunk(hunk: string, maxChars: number): string {
   return [`@@ -${m[1]},${oldCount} +${m[2]},${newCount} @@${m[3]}`, ...kept].join("\n");
 }
 
-/** Keeps whole hunks up to the size limit (cutting an oversized first one), so the result still parses. */
-export function clipDiff(diff: string): { diff: string; truncated?: boolean } {
+/**
+ * Keeps whole hunks up to the size limit (cutting an oversized first one), so the result still
+ * parses; what was cut stays matchable as `addedKeys`.
+ */
+export function clipDiff(diff: string): {
+  diff: string;
+  truncated?: boolean;
+  addedKeys?: string[];
+} {
   if (diff.length <= MAX_DIFF_CHARS) return { diff };
   const hunks = diff.split(/\n(?=@@ )/);
   const kept: string[] = [];
@@ -166,7 +174,7 @@ export function clipDiff(diff: string): { diff: string; truncated?: boolean } {
     kept.push(hunk);
     size += hunk.length + 1;
   }
-  return { diff: kept.join("\n"), truncated: true };
+  return { diff: kept.join("\n"), truncated: true, addedKeys: addedLines(diff) };
 }
 
 function unifiedDiffStats(diff: string): { added: number; removed: number } {

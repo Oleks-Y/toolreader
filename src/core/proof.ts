@@ -139,7 +139,12 @@ export function redactEntries(
       output: options.outputs ? maybe(e.output) : undefined,
       parts: e.parts?.map((p) => ({ ...p, title: clean(p.title) })),
       targets: e.targets?.map(clean),
-      files: e.files?.map((f) => ({ ...f, path: clean(f.path), diff: maybe(f.diff) })),
+      // `addedKeys` are for matching on this machine only: never in what is exported or published.
+      files: e.files?.map(({ addedKeys: _, ...f }) => ({
+        ...f,
+        path: clean(f.path),
+        diff: maybe(f.diff),
+      })),
     };
   });
   return { entries: result, redactions: count() };

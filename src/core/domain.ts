@@ -28,6 +28,11 @@ export const FileChange = Schema.Struct({
   diff: Schema.optional(Schema.String),
   /** Hunks were dropped to keep the payload small. */
   truncated: Schema.optional(Schema.Boolean),
+  /**
+   * With `truncated`: every added line of the whole diff worth matching (history.ts
+   * `addedLines`), so `linkByContent` still finds what a big write added.
+   */
+  addedKeys: Schema.optional(Schema.Array(Schema.String)),
   /** Line numbers are real file lines (Codex). Claude/Cursor edits only know the edited snippet. */
   exactLines: Schema.optional(Schema.Boolean),
 });

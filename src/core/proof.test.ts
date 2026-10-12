@@ -72,6 +72,8 @@ describe("proof", () => {
             isNew: false,
             isDeleted: false,
             diff: "@@ -0,0 +1,1 @@\n+API_KEY=zzz",
+            truncated: true,
+            addedKeys: ["API_KEY=zzz from the clipped tail"],
           },
         ],
       }),
@@ -89,6 +91,8 @@ describe("proof", () => {
     assert.strictEqual(a.output, "wrote ~/.config/x with SECRET_KEY=[redacted]");
     assert.strictEqual(a.files?.[0]?.path, "~/app/.env");
     assert.strictEqual(a.files?.[0]?.diff, "@@ -0,0 +1,1 @@\n+API_KEY=[redacted]");
+    // Matching keys never leave the machine.
+    assert.isUndefined(a.files?.[0]?.addedKeys);
     assert.strictEqual((withOutputs.entries[2] as { text: string }).text, "set STRIPE [redacted]");
     assert.strictEqual(withOutputs.redactions, 5);
 
