@@ -1,5 +1,5 @@
 // The checkpoint backend's HTTP contract, v1: shared by the backend
-// (src/server/Backend.ts) and its clients. Browser-safe, like api.ts: never put server code here.
+// (src/server/backend/Backend.ts) and its clients. Browser-safe, like api.ts: never put server code here.
 // Inside /v1, changes are additive only; a breaking one is /v2, served next to it.
 import * as Context from "effect/Context";
 import * as Schema from "effect/Schema";

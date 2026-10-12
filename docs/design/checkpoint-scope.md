@@ -2,7 +2,7 @@
 
 Checkpoints store sessions for commits, not sessions on the machine. The unit is a link, one (commit, session, role) at a time, and its history is the session's window for that commit. A session that links to no commit in scope is never stored. A session that only looks related is shown for a decision and is not stored until someone decides.
 
-Code: `src/core/linking.ts` (`linkCommits`, `signalsFor`, `selectScope`), `Ledger.scope` (loads a range and runs both), `checkpoint collect` (`src/server/checkpointCli.ts`). `ledger sync` uses `linkCommits` too, so the ledger and checkpoints link the same sessions.
+Code: `src/core/linking.ts` (`linkCommits`, `signalsFor`, `selectScope`), `Ledger.scope` (loads a range and runs both), `checkpoint collect` (`src/server/checkpoints/checkpointCli.ts`). `ledger sync` uses `linkCommits` too, so the ledger and checkpoints link the same sessions.
 
 ## The border
 

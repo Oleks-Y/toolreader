@@ -32,6 +32,11 @@ jobs:
       - name: Typecheck
         run: vp run typecheck
 
+      # The Postgres tests start their own container per test file (src/server/backend/testPostgres.ts).
+      # Pulled here, from the image that file names, so the pull doesn't count against test timeouts.
+      - name: Pull the Postgres test image
+        run: docker pull "$(sed -n 's/^const IMAGE = "\(.*\)";$/\1/p' src/server/backend/testPostgres.ts)"
+
       - name: Test
         run: vp test run
 
