@@ -1,5 +1,6 @@
 // `toolreader checkpoint`: stores agent history as it is now, with model and token usage, so it
-// outlives the session's own store, in Postgres at TOOLREADER_DATABASE_URL.
+// outlives the session's own store: through the backend in ~/.toolreader/config.json
+// (BackendClient.ts), or without one straight to Postgres at TOOLREADER_DATABASE_URL.
 //   toolreader checkpoint put --session ID [--repo PATH] [--replace]
 //                             [--max-output BYTES] [--no-outputs]
 //   toolreader checkpoint collect (--range A..B | --pr N | --sha X) [--repo PATH]

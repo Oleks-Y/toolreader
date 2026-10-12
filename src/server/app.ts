@@ -6,6 +6,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
+import { BackendSink, backendSettings } from "./checkpoints/BackendClient.ts";
 import { CheckpointFailed, Checkpoints } from "./checkpoints/Checkpoints.ts";
 import { DirectSink } from "./directSink.ts";
 import { CheckpointStore } from "./backend/CheckpointStore.ts";
@@ -76,12 +77,18 @@ export const LedgerApp = (options: { appServer: boolean; codexHome: string | nul
     ? appLayer(CodexSessions.layer, options.codexHome)
     : appLayer(CodexSessions.disabled, options.codexHome);
 
-/** Where checkpoints go: Postgres at TOOLREADER_DATABASE_URL, migrated on start. */
+/**
+ * Where checkpoints go: the backend configured in ~/.toolreader/config.json (or the environment);
+ * without one, Postgres at TOOLREADER_DATABASE_URL directly, migrated on start.
+ */
 const SinkLive = Layer.unwrap(
   Effect.gen(function* () {
+    const settings = yield* backendSettings();
+    if (settings) return BackendSink(settings);
     if (Option.isNone(yield* Config.option(Config.string("TOOLREADER_DATABASE_URL"))))
       return yield* new CheckpointFailed({
-        message: "No checkpoint database: set TOOLREADER_DATABASE_URL",
+        message:
+          "No checkpoint backend: set backend.url, backend.token and backend.workspace in ~/.toolreader/config.json",
       });
     return DirectSink.pipe(
       Layer.provideMerge(CheckpointStore.layer),

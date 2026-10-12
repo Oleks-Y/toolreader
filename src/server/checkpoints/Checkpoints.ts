@@ -1,6 +1,6 @@
 // Takes checkpoints (src/core/checkpoint.ts): finds a session by any name agents or toolreader give
-// it, reads it once, with T3's per-turn model and token usage, and hands the result to the sink
-// (Postgres directly, for now).
+// it, reads it once, with T3's per-turn model and token usage, and hands the result to the sink:
+// the backend (BackendClient.ts) or, without one, Postgres directly.
 // `toolreader checkpoint put` takes one named session; `collect` takes each link of a commit range.
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -68,7 +68,7 @@ export type Flushed = {
   readonly elsewhere: number;
 };
 
-/** Where records go: Postgres directly (`directSink.ts`), or a backend that may queue them. */
+/** Where records go: the backend (`BackendClient.ts`), or Postgres directly (`directSink.ts`). */
 export class CheckpointSink extends Context.Service<
   CheckpointSink,
   {
