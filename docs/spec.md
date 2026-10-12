@@ -9,7 +9,7 @@ Read-only viewer for what coding agents _did_ in T3 Code threads. Actions come f
   - Codex sessions that ran outside T3 (CLI, TUI, Desktop, `codex exec`), read through `codex app-server`: `thread/list` for discovery, `thread/read` with `includeTurns` for content. Items carry no timestamps, so each item's time comes from the first rollout line that mentions its id. Sessions T3 runs itself are hidden (matched through T3's resume cursors); subagent threads are not listed. If `codex` can't start, this source is simply empty.
   - The same Codex sessions straight from rollout files (`$CODEX_HOME/sessions/**/rollout-*.jsonl`), with no app-server: the `thread/read` result is rebuilt from the file's `item_completed` events, so entries are identical. Used by `history sync` (e.g. in CI); the viewer still lists Codex sessions through the app-server.
   - Without a T3 database, the T3 source is empty instead of an error.
-  - Claude Code sessions outside T3 are not read yet.
+  - Claude Code sessions that ran outside T3 (CLI, desktop app, SDK hosts), from transcripts in `$CLAUDE_CONFIG_DIR/projects` (default `~/.claude`), as `claude:<sessionId>`. Sessions T3 runs and subagent files are skipped.
 - Separate repo. Code borrowed from `~/proj/t3code` is copied with a source comment, never linked.
 - Built with Effect: an `HttpApi` contract in `src/core/api.ts` shared by the server and a typed browser client. All T3 schema knowledge lives in `src/server/ThreadStore.ts`.
 - Local only: the server binds `127.0.0.1`.
