@@ -7,6 +7,7 @@ import * as Schema from "effect/Schema";
 
 import { Entry, Labels } from "./domain.ts";
 import { LedgerThread } from "./ledger.ts";
+import { redactText } from "./proof.ts";
 
 export const HISTORY_FORMAT_VERSION = 1;
 
@@ -70,3 +71,90 @@ const reader =
   };
 export const readThread = reader("thread", decodeThread);
 export const readCommit = reader("commit", decodeCommit);
+
+export const REJECT_REASONS = ["unsupported-format", "invalid", "not-redacted"] as const;
+export type RejectReason = (typeof REJECT_REASONS)[number];
+export type Rejection = { readonly reason: RejectReason; readonly detail: string };
+
+/**
+ * A field path safe to send back: indexes and schema field names (camelCase letters) as they are;
+ * anything else (a label id, which a session wrote) as `*`.
+ */
+const safePath = (path: ReadonlyArray<PropertyKey>) =>
+  path
+    .map((p) =>
+      typeof p === "number" || (typeof p === "string" && /^[a-z][A-Za-z]*$/.test(p)) ? p : "*",
+    )
+    .join(".") || "(record)";
+
+/** The first leaf or object key in `value` that `bad` flags, as a safe path; null when none. */
+function firstField(
+  value: unknown,
+  bad: (leaf: unknown) => boolean,
+  path: ReadonlyArray<string | number> = [],
+): string | null {
+  if (value === null || typeof value !== "object") return bad(value) ? safePath(path) : null;
+  for (const [key, v] of Object.entries(value)) {
+    const at = [...path, Array.isArray(value) ? Number(key) : key];
+    if (!Array.isArray(value) && bad(key)) return safePath(at);
+    const found = firstField(v, bad, at);
+    if (found !== null) return found;
+  }
+  return null;
+}
+
+const redacts = (leaf: unknown) => typeof leaf === "string" && redactText(leaf).text !== leaf;
+/** JSON's `1e400` parses as Infinity, which Schema.Number takes and jsonb can't hold. */
+const nonFinite = (leaf: unknown) => typeof leaf === "number" && !Number.isFinite(leaf);
+/** Ids are keys of Postgres text columns, which can't hold NUL. */
+const goodId = (s: string) => s.length > 0 && s.length <= 1024 && !s.includes("\u0000");
+
+/**
+ * Whether a record someone sent may be stored, as the backend checks each one: a format it knows,
+ * a valid record of it, and no text the redactor would still change. `detail` names fields and
+ * versions only, never the record's text.
+ */
+const admit =
+  <A>(
+    what: string,
+    standard: ReturnType<typeof Schema.toStandardSchemaV1<Schema.Codec<A, unknown>>>,
+    ids: (a: A) => ReadonlyArray<string>,
+  ) =>
+  (record: unknown): Result.Result<A, Rejection> => {
+    const format = Option.getOrNull(decodeFormat(record))?.formatVersion ?? null;
+    if (format === null)
+      return Result.fail({ reason: "invalid", detail: "formatVersion is missing or not a number" });
+    if (format !== HISTORY_FORMAT_VERSION)
+      return Result.fail({
+        reason: "unsupported-format",
+        detail: `${what} format v${format}; this backend takes v${HISTORY_FORMAT_VERSION}`,
+      });
+    const decoded = standard["~standard"].validate(record);
+    if (decoded instanceof Promise || decoded.issues !== undefined) {
+      const at = decoded instanceof Promise ? [] : (decoded.issues[0]?.path ?? []);
+      const path = safePath(at.map((p) => (typeof p === "object" ? p.key : p)));
+      return Result.fail({ reason: "invalid", detail: `not a ${what} record at ${path}` });
+    }
+    const value = decoded.value;
+    const infinite = firstField(value, nonFinite);
+    if (infinite !== null)
+      return Result.fail({ reason: "invalid", detail: `not a finite number at ${infinite}` });
+    if (!ids(value).every(goodId))
+      return Result.fail({ reason: "invalid", detail: "an id is empty, too long or holds NUL" });
+    const field = firstField(value, redacts);
+    if (field !== null)
+      return Result.fail({ reason: "not-redacted", detail: `the redactor would change ${field}` });
+    return Result.succeed(value);
+  };
+
+const SHA = /^[0-9a-f]{4,64}$/;
+/** `owner/name`, as long as the API's `:repo` takes it: a longer one would be stored, never read. */
+export const REPO_MAX = 512;
+export const admitThread = admit("thread", Schema.toStandardSchemaV1(ThreadRecordV1), (t) => [
+  t.thread.id,
+]);
+export const admitCommit = admit("commit", Schema.toStandardSchemaV1(CommitRecordV1), (c) => [
+  c.repo.length <= REPO_MAX ? c.repo : "",
+  SHA.test(c.sha) ? c.sha : "",
+  ...c.links.map((l) => l.threadId),
+]);

@@ -5,10 +5,10 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import type { Entry } from "../../core/domain.ts";
-import type { CommitRecord, ThreadRecord } from "../../core/historyRecord.ts";
 import { threadSha } from "../recordHash.ts";
 import { HistoryStore } from "./HistoryStore.ts";
 import { PgMigrationsLive } from "./PgMigrations.ts";
+import { commitRecord, threadRecord } from "./testRecords.ts";
 import { inWorkspace, PgTestLive } from "./testPostgres.ts";
 
 const TestLive = HistoryStore.layer.pipe(
@@ -23,29 +23,6 @@ const message = (id: string, text: string): Entry => ({
   at: "2026-01-01T10:00:00.000Z",
   role: "user",
   text,
-});
-
-export const threadRecord = (id: string, entries: Entry[]): ThreadRecord => ({
-  formatVersion: 1,
-  thread: { id, title: "Add a", source: "codex", provider: "codex", origin: null, parent: null },
-  takenAt: "2026-01-01T11:00:00.000Z",
-  toolreaderVersion: "0.1.0",
-  entries,
-  labels: {},
-  redactions: 0,
-});
-
-export const commitRecord = (sha: string, threadIds: string[]): CommitRecord => ({
-  formatVersion: 1,
-  repo: "acme/app",
-  sha,
-  subject: "feat: a",
-  committedAt: "2026-01-01T12:00:00.000Z",
-  novel: 4,
-  explained: 3,
-  links: threadIds.map((threadId) => ({ threadId, turns: ["u1"], via: "content", lines: 3 })),
-  linkedAt: "2026-01-01T12:01:00.000Z",
-  toolreaderVersion: "0.1.0",
 });
 
 describe("HistoryStore", () => {

@@ -53,9 +53,50 @@ export function selectEntries(entries: ReadonlyArray<Entry>, scope: ProofScope):
 }
 
 // Secret shapes, most specific first. Each keeps a harmless prefix ($1) where there is one.
-const SECRET_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
+// The backend runs these on every string it is sent: keep every pattern linear (bound each
+// run that could start at many places), or one crafted record stalls it (`redactText` timing test).
+/**
+ * The JWTs in one dotted run (`a.b.c…`, no other characters), as
+ * `\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}` finds them: a header starting
+ * `eyJ` at a segment's start or after a `-`, then two segments of 10 or more. That regex is
+ * quadratic on `eyJ-eyJ-…` (each start scans ahead for the `.`); this walks each segment once.
+ */
+function jwtsIn(run: string): { text: string; count: number } {
+  const segments = run.split(".");
+  const out: string[] = [];
+  let count = 0;
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i]!;
+    let at = segment.indexOf("eyJ");
+    while (at > 0 && segment[at - 1] !== "-") at = segment.indexOf("eyJ", at + 1);
+    const jwt =
+      at >= 0 &&
+      segment.length - at >= 13 &&
+      (segments[i + 1]?.length ?? 0) >= 10 &&
+      (segments[i + 2]?.length ?? 0) >= 10;
+    if (!jwt) {
+      out.push(segment);
+      continue;
+    }
+    out.push(`${segment.slice(0, at)}[redacted jwt]`);
+    count++;
+    i += 2;
+  }
+  return { text: out.join("."), count };
+}
+
+const SECRET_PATTERNS: ReadonlyArray<
+  readonly [RegExp, string | ((match: string) => { text: string; count: number })]
+> = [
   [
-    /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+    /-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----(?:(?!-----BEGIN )[\s\S]){0,16384}?-----END [A-Z ]{0,40}PRIVATE KEY-----/g,
+    "[redacted private key]",
+  ],
+  // A key left without its END line (cut off by clipping, or pasted half): the rest of the text.
+  // Only a header a key body follows (a line break, raw or JSON-escaped, then base64 or
+  // `Proc-Type:`): code that only names the header keeps its text.
+  [
+    /-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----(?:\r?\n|\\(?:r\\)?n)[A-Za-z0-9+/][\s\S]*/g,
     "[redacted private key]",
   ],
   [
@@ -63,7 +104,8 @@ const SECRET_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
     "$1[redacted]",
   ],
   [
-    /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,})/g,
+    // trk_: toolreader's own backend tokens (`backend token create`).
+    /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|trk_[A-Za-z0-9_-]{40,})/g,
     "[redacted]",
   ],
   [/\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}/g, "[redacted]"],
@@ -72,10 +114,12 @@ const SECRET_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
   [/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, "[redacted]"],
   [/\bAIza[0-9A-Za-z_-]{35}\b/g, "[redacted]"],
   [/\bnpm_[A-Za-z0-9]{36}\b/g, "[redacted]"],
-  [/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, "[redacted jwt]"],
-  // KEY=value / KEY: value where the name says secret (env files, exports, YAML).
+  // JWTs: found by `jwtsIn` in each dotted run, which a regex alone can't do in linear time.
+  [/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+/g, jwtsIn],
+  // KEY=value / KEY: value where the name says secret (env files, exports, YAML). A value that is
+  // already the placeholder stays as it is, with what follows it: redacting twice changes nothing.
   [
-    /\b((?:[A-Z][A-Z0-9_]*)?(?:SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY|PRIVATE_KEY|ACCESS_KEY|CREDENTIALS?)[A-Z0-9_]*\s*[=:]\s*)("[^"\n]*"|'[^'\n]*'|[^\s"'\n]+)/g,
+    /\b((?:[A-Z][A-Z0-9_]{0,255})?(?:SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY|PRIVATE_KEY|ACCESS_KEY|CREDENTIALS?)[A-Z0-9_]{0,255}\s*[=:]\s*)("[^"\n]*"|'[^'\n]*'|\[redacted\]|[^\s"'\n]+)/g,
     "$1[redacted]",
   ],
   // JSON fields with secret names.
@@ -84,7 +128,7 @@ const SECRET_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
     '$1"[redacted]"',
   ],
   // Credentials in URLs and secret-looking query parameters.
-  [/(\b[a-z][a-z0-9+.-]*:\/\/)[^/\s:@'"]+:[^/\s@'"]+@/gi, "$1[redacted]@"],
+  [/(\b[a-z][a-z0-9+.-]{0,31}:\/\/)[^/\s:@'"]+:[^/\s@'"]+@/gi, "$1[redacted]@"],
   [
     /([?&](?:token|access_token|api_key|apikey|key|secret|signature|sig|password)=)[^&\s"'#]+/gi,
     "$1[redacted]",
@@ -97,6 +141,11 @@ export function redactText(text: string): { text: string; count: number } {
   let out = text;
   for (const [pattern, replacement] of SECRET_PATTERNS) {
     out = out.replace(pattern, (...args: unknown[]) => {
+      if (typeof replacement === "function") {
+        const found = replacement(String(args[0]));
+        count += found.count;
+        return found.text;
+      }
       count++;
       const prefix = typeof args[1] === "string" ? args[1] : "";
       return replacement.replace("$1", prefix);

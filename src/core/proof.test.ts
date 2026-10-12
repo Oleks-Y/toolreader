@@ -58,6 +58,44 @@ describe("proof", () => {
     assert.strictEqual(redactText("const tokenCount = 3; PASSWORD_MIN_LENGTH").count, 0);
   });
 
+  it("changes nothing when it runs again on what it wrote", () => {
+    for (const text of [
+      "const TOKEN = [redacted];",
+      "TOOLREADER_BACKEND_TOKEN: [redacted],",
+      'SECRET=[redacted]x://a:b"',
+      "export GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123; echo done",
+      // A JWT's shape, built here so no scanner mistakes the test for a leaked token.
+      `curl -H 'Authorization: Bearer ${"eyJ"}${"x".repeat(14)}.${"y".repeat(14)}.${"z".repeat(14)}'`,
+    ]) {
+      const once = redactText(text).text;
+      assert.strictEqual(redactText(once).text, once, text);
+    }
+  });
+
+  it("redacts a private key cut off before its END line, through to the end of the text", () => {
+    const head = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmU";
+    assert.deepStrictEqual(redactText(`cat key\n${head}\n… [512 bytes clipped] …\nAAAA`), {
+      text: "cat key\n[redacted private key]",
+      count: 1,
+    });
+    const whole = `${head}\n-----END OPENSSH PRIVATE KEY-----`;
+    assert.deepStrictEqual(redactText(`${whole}\nnext\n${head}`), {
+      text: "[redacted private key]\nnext\n[redacted private key]",
+      count: 2,
+    });
+    // JSON-escaped, as a tool output quoting a key file holds it.
+    assert.strictEqual(
+      redactText(`{"key": "${head.replace("\n", "\\n")}`).text,
+      '{"key": "[redacted private key]',
+    );
+    // Code that only names the header isn't a key.
+    const code = 'if (s.startsWith("-----BEGIN RSA PRIVATE KEY-----")) parse(s);\nconst rest = 1;';
+    assert.strictEqual(redactText(code).text, code);
+    // Redacting again changes nothing: the backend admits what the CLI redacted.
+    const once = redactText(`${head}\nmore`).text;
+    assert.strictEqual(redactText(once).text, once);
+  });
+
   it("redacts every free-text field, rewrites home, and drops outputs when asked", () => {
     const entries: Entry[] = [
       user("u1", "2026-01-01T00:00:00Z"),
