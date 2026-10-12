@@ -18,27 +18,21 @@ import type { Entry, Labels, ThreadSummary, ThreadView } from "../core/domain.ts
 import {
   buildEntry,
   commitMsgHook,
-  editedPaths,
   fileCoverage,
   findCommitActions,
   HOOK_MARKER,
   LEDGER_BRANCH,
   LedgerEntry,
   ledgerPath,
-  matchCommit,
   madeEdits,
   mergeEntries,
   nativeId,
   prePushHook,
   remoteWebUrl,
   segmentByTime,
-  segmentFor,
   SESSION_TRAILER,
-  sessionSegment,
-  sessionsBetween,
   strongerVia,
   type CommitAction,
-  type FoundLink,
   type LedgerCommit,
   type LedgerCommitView,
   type LedgerLink,
@@ -48,6 +42,7 @@ import {
   type LinkVia,
 } from "../core/ledger.ts";
 import { ledgerSiteHtml, publicRange } from "../core/ledgerSite.ts";
+import { linkCommits, selectScope, type Scope } from "../core/linking.ts";
 import type { SanitizeMode } from "../core/sanitize.ts";
 import { CLAUDE_ID_PREFIX, ClaudeTranscripts } from "./ClaudeTranscripts.ts";
 import { CodexRollouts, ROLLOUT_DIRS } from "./CodexRollouts.ts";
@@ -115,6 +110,10 @@ export const SYNC_DEFAULTS: SyncOptions = {
   sanitizeAgent: null,
 };
 
+export type ScopeOptions = Pick<SyncOptions, "source" | "sessions" | "matchSessions"> & {
+  readonly here?: string;
+};
+
 export type SyncResult = {
   readonly range: string;
   readonly sources: ReadonlyArray<string>;
@@ -176,6 +175,19 @@ export type Assertion =
 export class Ledger extends Context.Service<
   Ledger,
   {
+    /**
+     * What checkpoints of `range` take (`selectScope`): each commit's links as `sync` finds them,
+     * plus the sessions only signals point at. `here` is the worktree whose sessions give evidence
+     * and signals (default: the repo's own).
+     */
+    readonly scope: (
+      repo: string,
+      range: string,
+      options: ScopeOptions,
+    ) => Effect.Effect<
+      { readonly repo: string; readonly roots: ReadonlyArray<string>; readonly scope: Scope },
+      LedgerFailed
+    >;
     /** Writes entries for commits in `range` that have none yet; `range` defaults to <default branch>..HEAD. */
     readonly sync: (
       repo: string,
@@ -663,6 +675,7 @@ export class Ledger extends Context.Service<
       const loadSessions = Effect.fn("Ledger.loadSessions")(function* (
         repo: string,
         source: LedgerSource,
+        here: string = repo,
       ) {
         const { sources, found, roots } = yield* sessionsFor(repo, source);
         const { nativeIds, parents } = yield* store.lineage;
@@ -674,7 +687,7 @@ export class Ledger extends Context.Service<
           const { entries, thread: t } = view.value;
           if (!entries.some((e) => e.type === "action")) continue;
           sessions.push({
-            here: root === repo,
+            here: root === here,
             root,
             edited: madeEdits(entries),
             entries,
@@ -706,6 +719,68 @@ export class Ledger extends Context.Service<
         return { sources, sessions, named, roots };
       });
 
+      /** The range's commits, the sessions that worked in the repo, and each commit's links. */
+      const linkRange = Effect.fn("Ledger.linkRange")(function* (
+        repo: string,
+        range: string,
+        options: Pick<SyncOptions, "source" | "sessions" | "matchSessions">,
+        here: string,
+      ) {
+        const { commits, previousAt, trailers, paths } = yield* commitsIn(repo, range);
+        const { sources, sessions, named, roots } =
+          commits.length > 0
+            ? yield* loadSessions(repo, options.source, here)
+            : { sources: [], sessions: [], named: () => [], roots: [] };
+
+        const missing = options.sessions.filter((name) => named(name).length === 0);
+        if (commits.length > 0 && missing.length > 0)
+          return yield* new LedgerFailed({
+            message: `No session ${missing.join(", ")} in ${sources.join(" + ") || "any source"} for ${repo}`,
+          });
+        const linked = linkCommits(
+          commits.map((commit) => ({
+            commit,
+            previousAt: previousAt.get(commit.sha) ?? null,
+            trailers: trailers.get(commit.sha) ?? [],
+            paths: paths.get(commit.sha) ?? [],
+          })),
+          sessions,
+          {
+            named,
+            sessions: options.sessions,
+            matchSessions: options.matchSessions,
+            roots,
+            home: config.home,
+          },
+        );
+        return { sources, sessions, roots, linked };
+      });
+
+      const scope = Effect.fn("Ledger.scope")(function* (
+        repoArg: string,
+        range: string,
+        options: ScopeOptions,
+      ) {
+        const repo = (yield* git(repoArg, ["rev-parse", "--show-toplevel"])).trim();
+        const { sessions, roots, linked } = yield* linkRange(
+          repo,
+          range,
+          options,
+          options.here ?? repo,
+        );
+        const scope = selectScope(linked, sessions, { roots, home: config.home });
+        // Counts only: what the range held and what matching made of it.
+        yield* Effect.annotateCurrentSpan({
+          "scope.commits": linked.length,
+          "scope.sessions": sessions.length,
+          "scope.take": scope.take.length,
+          "scope.candidates": scope.candidates.length,
+          "scope.ambiguous": scope.ambiguous.length,
+          "scope.unmatched": scope.unmatched.length,
+        });
+        return { repo, roots, scope };
+      });
+
       const sync = Effect.fn("Ledger.sync")(function* (
         repoArg: string,
         rangeArg: string | null,
@@ -715,27 +790,9 @@ export class Ledger extends Context.Service<
         const repo = (yield* git(repoArg, ["rev-parse", "--show-toplevel"])).trim();
         yield* ensureNotCheckedOut(repo);
         const range = rangeArg ?? (yield* defaultRange(repo));
-        const { commits, previousAt, trailers, paths } = yield* commitsIn(repo, range);
+        const { sources, roots, linked } = yield* linkRange(repo, range, options, repo);
         const remote = options.push ? yield* fetchRemote(repo) : null;
         const local = yield* resolve(repo, LEDGER_REF);
-        const { sources, sessions, named, roots } =
-          commits.length > 0
-            ? yield* loadSessions(repo, options.source)
-            : { sources: [], sessions: [], named: () => [], roots: [] };
-
-        // Who may take a commit no `git commit` action made: the sessions named, or (when asked)
-        // the ones that edited this worktree.
-        const missing = options.sessions.filter((name) => named(name).length === 0);
-        if (commits.length > 0 && missing.length > 0)
-          return yield* new LedgerFailed({
-            message: `No session ${missing.join(", ")} in ${sources.join(" + ") || "any source"} for ${repo}`,
-          });
-        const eligible =
-          options.sessions.length > 0
-            ? [...new Set(options.sessions.flatMap(named))]
-            : options.matchSessions
-              ? sessions.filter((s) => s.here && s.edited)
-              : [];
 
         const added: Array<SyncResult["added"][number]> = [];
         const unmatched: LedgerCommit[] = [];
@@ -746,63 +803,14 @@ export class Ledger extends Context.Service<
           current: LedgerEntry | null;
         }> = [];
         let existing = 0;
-        for (const commit of commits) {
-          const before = previousAt.get(commit.sha) ?? null;
-          const files = paths.get(commit.sha) ?? [];
+        for (const { commit: c, links: found, ambiguous: between } of linked) {
+          const { commit, paths: files } = c;
           const current =
             Option.getOrNull(yield* readEntry(repo, commit.sha)) ??
             (remote ? Option.getOrNull(yield* readEntry(repo, commit.sha, remote)) : null);
-          const found: FoundLink[] = [];
-          // Strongest first; a thread found again keeps its first (strongest) link.
-          const add = (s: Session, via: LinkVia, segment: ReadonlyArray<Entry>) => {
-            // A trailer names the thread even when its history here shows no action.
-            if (via !== "trailer" && !segment.some((e) => e.type === "action")) return;
-            if (found.some((f) => f.thread.id === s.thread.id)) return;
-            found.push({
-              thread: s.thread,
-              role: "coder",
-              via,
-              reviewedSha: null,
-              segment,
-              labels: s.labels,
-            });
-          };
-          // A trailer's thread: everything since the commit's parent (an amend or an earlier
-          // `git commit` of the same change must not cut its history short).
-          for (const name of trailers.get(commit.sha) ?? [])
-            for (const s of named(name))
-              add(s, "trailer", segmentByTime(s.entries, before, commit.committedAt));
-          // A printed SHA, in any session; else the latest `git commit` action just before it.
-          const candidates = sessions.flatMap((s) => {
-            const m = matchCommit(commit, s.actions);
-            return m ? [{ session: s, ...m }] : [];
-          });
-          for (const c of candidates.filter((c) => c.match === "sha"))
-            add(c.session, "sha", segmentFor(c.session.entries, c.action, c.session.actions));
-          const byTime = candidates
-            .filter((c) => c.match === "time")
-            .sort((a, b) => (a.action.action.at < b.action.action.at ? 1 : -1))[0];
-          if (byTime && found.length === 0)
-            add(
-              byTime.session,
-              "time",
-              segmentFor(byTime.session.entries, byTime.action, byTime.session.actions),
-            );
-          if (found.length === 0 && eligible.length > 0) {
-            const between = sessionsBetween(commit, before, eligible);
-            if (between.length > 1) {
-              ambiguous.push({ commit, sessions: between.map((s) => s.thread.id) });
-              continue;
-            }
-            const s = between[0];
-            if (s) add(s, "session", sessionSegment(s.entries, s.actions, before));
-          }
-          // Every other thread that edited the commit's files in this worktree since the
-          // previous commit (another worktree's edits never reach this commit).
-          for (const s of sessions.filter((s) => s.here)) {
-            const segment = segmentByTime(s.entries, before, commit.committedAt);
-            if (editedPaths(segment, files, { roots, home: config.home }).size > 0)
-              add(s, "evidence", segment);
+          if (between) {
+            ambiguous.push({ commit, sessions: between });
+            continue;
           }
 
           // Only what the entry doesn't already hold as strongly (or holds with less history),
@@ -1191,7 +1199,15 @@ export class Ledger extends Context.Service<
         ),
       );
 
-      return Ledger.of({ sync, range, site, hook, assert, sanitize: sanitizeBranch });
+      return Ledger.of({
+        scope,
+        sync,
+        range,
+        site,
+        hook,
+        assert,
+        sanitize: sanitizeBranch,
+      });
     }),
   );
 }

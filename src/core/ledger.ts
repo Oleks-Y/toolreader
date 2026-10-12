@@ -5,7 +5,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { Entry, Labels, ThreadSource, type Action } from "./domain.ts";
-import { redactEntries, redactLabels, redactor } from "./proof.ts";
+import { redactEntries, redactLabels, redactor, redactText } from "./proof.ts";
 import { humanizeCommand, unwrapShell } from "./shell.ts";
 import { splitTurns } from "./tree.ts";
 
@@ -342,29 +342,10 @@ export function buildEntry(input: {
 }): LedgerEntry {
   const { clean, count } = redactor(input.home);
   let redactions = 0;
-  const links = input.links.map((found): LedgerLink => {
-    const redacted = redactEntries(found.segment, { outputs: input.outputs, home: input.home });
-    redactions += redacted.redactions;
-    const entries = clipOutputs(redacted.entries, input.maxOutput);
-    const ids = new Set(entries.map((e) => e.id));
-    return {
-      thread: { ...found.thread, title: clean(found.thread.title) },
-      role: found.role,
-      via: found.via,
-      reviewedSha: found.reviewedSha,
-      // A review comes after the commit: what it edits is not the commit's.
-      files:
-        found.role === "reviewer"
-          ? []
-          : [...editedPaths(found.segment, input.paths, { roots: input.roots, home: input.home })],
-      entries,
-      labels: redactLabels(
-        Object.fromEntries(
-          Object.entries(found.labels).filter(([id]) => ids.has(id) || id.startsWith("fold:")),
-        ),
-        clean,
-      ),
-    };
+  const links = input.links.map((found) => {
+    const r = redactLink(found, input, clean);
+    redactions += r.redactions;
+    return r.link;
   });
   const notes = (input.notes ?? []).map((n) => ({ ...n, text: clean(n.text) }));
   return {
@@ -376,6 +357,56 @@ export function buildEntry(input: {
     notes,
     outputs: input.outputs ? "included" : "omitted",
     redactions: redactions + count(),
+  };
+}
+
+/**
+ * One link of `buildEntry`, also what a checkpoint stores: the segment redacted and clipped, the
+ * title and labels cleaned with `clean` (whose count the caller adds). `redactions` counts the
+ * entries' own.
+ */
+export function redactLink(
+  found: FoundLink,
+  options: {
+    readonly paths: ReadonlyArray<string>;
+    readonly roots?: ReadonlyArray<string> | undefined;
+    readonly outputs: boolean;
+    readonly maxOutput: number;
+    readonly home?: string | undefined;
+  },
+  clean: (s: string) => string,
+): { link: LedgerLink; redactions: number } {
+  const redacted = redactEntries(found.segment, { outputs: options.outputs, home: options.home });
+  // A cut can land inside a placeholder (`TOKEN=[reda…`), which reads as a value again.
+  const entries = clipOutputs(redacted.entries, options.maxOutput).map((e) =>
+    e.type === "action" && e.clipped && e.output ? { ...e, output: redactText(e.output).text } : e,
+  );
+  const ids = new Set(entries.map((e) => e.id));
+  return {
+    redactions: redacted.redactions,
+    link: {
+      thread: { ...found.thread, title: clean(found.thread.title) },
+      role: found.role,
+      via: found.via,
+      reviewedSha: found.reviewedSha,
+      // A review comes after the commit: what it edits is not the commit's.
+      files:
+        found.role === "reviewer"
+          ? []
+          : [
+              ...editedPaths(found.segment, options.paths, {
+                roots: options.roots,
+                home: options.home,
+              }),
+            ],
+      entries,
+      labels: redactLabels(
+        Object.fromEntries(
+          Object.entries(found.labels).filter(([id]) => ids.has(id) || id.startsWith("fold:")),
+        ),
+        clean,
+      ),
+    },
   };
 }
 
@@ -475,11 +506,37 @@ export const isStale = (link: LedgerLink, sha: string) =>
 export function editedPaths(
   entries: ReadonlyArray<Entry>,
   paths: ReadonlyArray<string>,
-  where: {
-    readonly roots?: ReadonlyArray<string> | undefined;
-    readonly home?: string | undefined;
-  } = {},
+  where: PathWhere = {},
 ): Set<string> {
+  const commitPath = commitPathMatcher(paths, where);
+  const hit = new Set<string>();
+  for (const e of entries) {
+    if (e.type !== "action" || e.status === "failed") continue;
+    const written = [
+      ...(e.files ?? []).map((f) => f.path),
+      ...(e.command
+        ? humanizeCommand(e.command).flatMap((p) => (p.kind === "edit" ? (p.targets ?? []) : []))
+        : []),
+    ];
+    for (const w of written) {
+      const best = commitPath(w);
+      if (best) hit.add(best);
+    }
+  }
+  return hit;
+}
+
+export type PathWhere = {
+  /** The repo's worktrees: absolute paths outside them are not the commit's. */
+  readonly roots?: ReadonlyArray<string> | undefined;
+  readonly home?: string | undefined;
+};
+
+/** The commit path (repo-relative, of `paths`) a path written in a session names, if any. */
+export function commitPathMatcher(
+  paths: ReadonlyArray<string>,
+  where: PathWhere = {},
+): (written: string) => string | undefined {
   const roots = [...(where.roots ?? [])].sort((x, y) => y.length - x.length);
   // Entries write paths outside the thread's own worktree as `~/…` (normalize); those and absolute
   // paths count only inside a worktree of this repo, compared exactly (never /tmp, another repo).
@@ -495,21 +552,8 @@ export function editedPaths(
     }
     return w === path || w.endsWith(`/${path}`) || path.endsWith(`/${w}`);
   };
-  const hit = new Set<string>();
-  for (const e of entries) {
-    if (e.type !== "action" || e.status === "failed") continue;
-    const written = [
-      ...(e.files ?? []).map((f) => f.path),
-      ...(e.command
-        ? humanizeCommand(e.command).flatMap((p) => (p.kind === "edit" ? (p.targets ?? []) : []))
-        : []),
-    ];
-    for (const w of written) {
-      const best = paths.filter((p) => sameFile(w, p)).sort((x, y) => y.length - x.length)[0];
-      if (best) hit.add(best);
-    }
-  }
-  return hit;
+  return (written) =>
+    paths.filter((p) => sameFile(written, p)).sort((x, y) => y.length - x.length)[0];
 }
 
 /**
