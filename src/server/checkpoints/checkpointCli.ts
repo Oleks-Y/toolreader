@@ -6,7 +6,8 @@
 //   toolreader checkpoint collect (--range A..B | --pr N | --sha X) [--repo PATH]
 //                             [--source auto|t3|codex-app-server|codex-rollouts|claude-transcripts]
 //                             [--match-sessions | --session ID ...] [--replace]
-//                             [--max-output BYTES] [--no-outputs]
+//                             [--max-output BYTES] [--no-outputs] [--hook]
+//   toolreader checkpoint rewrite | hook install|uninstall|stop     (checkpointHooks.ts)
 // ID is a T3 thread id, codex:<id>, claude-code:<id> (what agents export) or claude:<id>.
 // `collect` stores each link of the scope's commits (docs/design/checkpoint-scope.md), and lists
 // the sessions only signals point at, for a person to link. Taking the same checkpoint again stores
@@ -26,6 +27,14 @@ import type { LinkCommit } from "../../core/linking.ts";
 import { redactText } from "../../core/proof.ts";
 import { CheckpointApp } from "../app.ts";
 import {
+  flushedLines,
+  hookCommand,
+  hookFlag,
+  mark,
+  reportAs,
+  rewriteCommand,
+} from "./checkpointHooks.ts";
+import {
   CheckpointFailed,
   Checkpoints,
   CheckpointSink,
@@ -33,29 +42,6 @@ import {
   type Sent,
 } from "./Checkpoints.ts";
 import { Ledger, LEDGER_SOURCES, SYNC_DEFAULTS, type ScopeOptions } from "../Ledger.ts";
-
-const mark = (result: Sent | "failed") =>
-  result === "failed" || result === "rejected"
-    ? "✗"
-    : result === "exists" || result === "differs"
-      ? "·"
-      : result === "queued"
-        ? "…"
-        : "✓";
-
-/** What the outbox sent, why it stopped, and what waits for another backend. */
-const flushedLines = (flushed: Flushed) => [
-  ...flushed.sent.map(
-    (f) =>
-      `${mark(f.result)} ${f.id}  ${f.result} (from the outbox)${f.detail ? `: ${f.detail}` : ""}`,
-  ),
-  ...(flushed.blocked ? [`… the outbox waits: ${flushed.blocked}`] : []),
-  ...(flushed.elsewhere > 0
-    ? [
-        `· ${flushed.elsewhere} queued for another backend, workspace or toolreader version, left in ~/.toolreader/outbox (delete them there if that backend is gone)`,
-      ]
-    : []),
-];
 
 const PullRequest = Schema.Struct({ baseRefOid: Schema.String, headRefOid: Schema.String });
 const decodePullRequest = Schema.decodeUnknownEffect(Schema.fromJsonString(PullRequest));
@@ -263,14 +249,17 @@ const noOutputsFlag = Flag.boolean("no-outputs").pipe(
   Flag.withDescription("Leave command and tool outputs out (they are redacted otherwise)"),
 );
 
-/** What `collect` did, a line each. */
+/** Full SHAs in a range (`a --not b c`, as the hook passes it) as `git log --oneline` shows them. */
+const shortShas = (range: string) => range.replace(/\b[0-9a-f]{40}\b/g, (sha) => sha.slice(0, 8));
+
+/** What `collect` did, a line each: printed, or appended to checkpoint.log by the hook. */
 export const collectReport = (
   flushed: Flushed,
   result: { readonly range: string; readonly commits: ReadonlyArray<CommitReport> },
 ) => {
   const lines = flushedLines(flushed);
   lines.push(
-    `${result.range}: ${result.commits.length} commit${result.commits.length === 1 ? "" : "s"}`,
+    `${shortShas(result.range)}: ${result.commits.length} commit${result.commits.length === 1 ? "" : "s"}`,
   );
   let failed = 0;
   for (const r of result.commits) {
@@ -384,6 +373,7 @@ const collectCommand = Command.make(
     replace: replaceFlag,
     maxOutput: maxOutputFlag,
     noOutputs: noOutputsFlag,
+    hook: hookFlag,
   },
   Effect.fn("toolreader checkpoint collect")(function* (flags) {
     const path = yield* Path.Path;
@@ -415,9 +405,11 @@ const collectCommand = Command.make(
         ? collectReport(flushed, collected.success)
         : { lines: flushedLines(flushed), failure: collected.failure.message };
     }).pipe(Effect.provide(CheckpointApp({ appServer: flags.source === "codex-app-server" })));
-    const { lines, failure } = yield* work;
-    for (const line of lines) yield* Console.log(line);
-    if (failure) return yield* new CheckpointFailed({ message: failure });
+    const scope = Option.getOrElse(
+      Option.orElse(flags.range, () => Option.map(flags.pr, (pr) => `PR ${pr}`)),
+      () => Option.getOrElse(flags.sha, () => ""),
+    );
+    yield* reportAs(flags.hook, `collect ${shortShas(scope)} in ${repo}`, work);
   }),
 ).pipe(
   Command.withDescription(
@@ -426,6 +418,8 @@ const collectCommand = Command.make(
 );
 
 export const checkpointCommand = Command.make("checkpoint").pipe(
-  Command.withDescription("Agent history per commit, stored in Postgres (TOOLREADER_DATABASE_URL)"),
-  Command.withSubcommands([put, collectCommand]),
+  Command.withDescription(
+    "Agent history per commit, uploaded to the checkpoint backend (~/.toolreader/config.json)",
+  ),
+  Command.withSubcommands([put, collectCommand, rewriteCommand, hookCommand]),
 );

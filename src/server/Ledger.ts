@@ -2,6 +2,8 @@
 // `agent-ledger` branch with git plumbing (never touching HEAD or the working tree), optionally on
 // top of origin's copy and pushed; `range` reads them back; `hook` installs the pre-push hook.
 // Every entry is written as Sanitizer.ts leaves it; `sanitize` rewrites the whole branch that way.
+import * as NodeCrypto from "node:crypto";
+
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -173,6 +175,16 @@ export type Assertion =
   | { readonly unlink: string }
   | { readonly note: { readonly text: string; readonly file: string | null } };
 
+const SEAL = "# toolreader hook sha256 ";
+const sha256 = (s: string) => NodeCrypto.createHash("sha256").update(s).digest("hex");
+/** A hook script with its hash appended, as `hookFile` writes it. */
+export const sealHook = (script: string) => `${script}${SEAL}${sha256(script)}\n`;
+/** Whether a hook file is still exactly what `sealHook` wrote, whatever script that was. */
+const isSealed = (text: string) => {
+  const at = text.lastIndexOf(`\n${SEAL}`) + 1;
+  return at > 0 && text === sealHook(text.slice(0, at));
+};
+
 export class Ledger extends Context.Service<
   Ledger,
   {
@@ -223,6 +235,17 @@ export class Ledger extends Context.Service<
       action: "install" | "uninstall",
       command: string,
       options?: { readonly commit?: boolean },
+    ) => Effect.Effect<string, LedgerFailed>;
+    /**
+     * Installs or removes one hook file (`checkpoint hook` uses it too). A file that has `marker`
+     * but isn't exactly `script` was edited by someone, and is left alone.
+     */
+    readonly hookFile: (
+      repo: string,
+      name: string,
+      script: string,
+      action: "install" | "uninstall",
+      marker?: string,
     ) => Effect.Effect<string, LedgerFailed>;
     /** Links or unlinks a thread, or adds a note, on one commit's entry (local agent-ledger only). */
     readonly assert: (
@@ -1132,23 +1155,43 @@ export class Ledger extends Context.Service<
         return { repo, range, remoteUrl: remoteWebUrl(Option.getOrNull(remote)), commits: views };
       });
 
-      /** Installs or removes one hook file; ours means exactly what we write. */
+      /**
+       * Installs or removes one hook file. Each is written with a hash of its script, so a hook
+       * no one edited is ours to replace even after the script changed (an upgrade, or toolreader
+       * moved), and an edited one is left alone.
+       */
       const hookFile = Effect.fn("Ledger.hookFile")(
-        function* (repo: string, name: string, script: string, action: "install" | "uninstall") {
+        function* (
+          repo: string,
+          name: string,
+          script: string,
+          action: "install" | "uninstall",
+          marker: string = HOOK_MARKER,
+        ) {
           const file = path.resolve(
             repo,
             (yield* git(repo, ["rev-parse", "--git-path", `hooks/${name}`])).trim(),
           );
           const current = (yield* exists(file)) ? yield* fs.readFileString(file) : null;
+          const sealed = sealHook(script);
+          // Unedited: what we wrote then, sealed or (before seals) exactly the script.
+          const ours =
+            current !== null &&
+            current.includes(marker) &&
+            (isSealed(current) || current === script);
           // A marked hook someone edited is theirs now.
-          const changed = current !== null && current !== script && current.includes(HOOK_MARKER);
-          const foreign = current !== null && current !== script && !changed;
+          const changed = current !== null && !ours && current.includes(marker);
+          const foreign = current !== null && !ours && !changed;
           if (changed)
             return yield* new LedgerFailed({
               message: `${file} has changed since toolreader wrote it; leaving it alone. Edit or remove it by hand.`,
             });
           if (action === "uninstall") {
             if (current === null) return `No ${name} hook at ${file}.`;
+            if (foreign && current.includes("# toolreader "))
+              return yield* new LedgerFailed({
+                message: `${file} is toolreader's other ${name} hook (the ledger's or the checkpoints'); leaving it alone.`,
+              });
             if (foreign)
               return yield* new LedgerFailed({
                 message: `${file} is not toolreader's hook; leaving it alone.`,
@@ -1156,11 +1199,16 @@ export class Ledger extends Context.Service<
             yield* fs.remove(file);
             return `Removed ${file}.`;
           }
+          // The ledger's and the checkpoints' hooks of one name can't share its file.
+          if (foreign && current.includes("# toolreader "))
+            return yield* new LedgerFailed({
+              message: `${file} is toolreader's other ${name} hook (the ledger's or the checkpoints'); they can't share it. Uninstall that one first.`,
+            });
           if (foreign)
             return yield* new LedgerFailed({
               message: [
                 `${file} already exists and is not toolreader's; leaving it alone.`,
-                `To chain the ledger, run this from it${name === "pre-push" ? " with the push's stdin (a copy, if your hook reads it too)" : ', with "$@"'}:`,
+                `To chain toolreader's hook, run this from it${name === "pre-push" ? " with the push's stdin (a copy, if your hook reads it too)" : ', with "$@"'}:`,
                 // A subshell, so its `exit 0`s end only the ledger part.
                 `(\n${script
                   .split("\n")
@@ -1168,11 +1216,11 @@ export class Ledger extends Context.Service<
                   .join("\n")}\n)`,
               ].join("\n"),
             });
-          if (current === script) return `Already installed: ${file}.`;
+          if (current === sealed) return `Already installed: ${file}.`;
           yield* fs.makeDirectory(path.dirname(file), { recursive: true });
-          yield* fs.writeFileString(file, script);
+          yield* fs.writeFileString(file, sealed);
           yield* fs.chmod(file, 0o755);
-          return `Installed ${file}.`;
+          return `${current === null ? "Installed" : "Updated"} ${file}.`;
         },
         Effect.catchTag("PlatformError", (e) =>
           Effect.fail(new LedgerFailed({ message: e.message })),
@@ -1228,6 +1276,7 @@ export class Ledger extends Context.Service<
         range,
         site,
         hook,
+        hookFile,
         assert,
         sanitize: sanitizeBranch,
       });

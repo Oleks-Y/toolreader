@@ -42,3 +42,8 @@ jobs:
 
       - name: Build
         run: vp run build
+
+      # The tarball as teams install it: the bundle alone must run, serve the backend on a fresh
+      # Postgres, upload through it (outbox included), and run the git hooks.
+      - name: Package smoke test
+        run: sh scripts/smoke.sh

@@ -257,6 +257,15 @@ const sanitize = Command.make(
   ),
 );
 
+/**
+ * This same CLI, as a hook runs it: the script node started (bin.ts, or the bundled dist/bin.mjs),
+ * quoted, with absolute paths so it works from any shell.
+ */
+export const selfCommand = (path: Path.Path) =>
+  [process.execPath, path.resolve(process.argv[1]!)]
+    .map((a) => `'${a.replace(/'/g, `'\\''`)}'`)
+    .join(" ");
+
 const hook = Command.make(
   "hook",
   {
@@ -269,14 +278,9 @@ const hook = Command.make(
     ),
   },
   Effect.fn("toolreader ledger hook")(function* ({ action, repo, commit }) {
-    // The hook runs this same CLI (the script node started: bin.ts, or the bundled dist/bin.mjs),
-    // with absolute paths so it works from any shell.
-    const path = yield* Path.Path;
-    const self = [process.execPath, path.resolve(process.argv[1]!)]
-      .map((a) => `'${a.replace(/'/g, `'\\''`)}'`)
-      .concat("ledger");
+    const self = `${selfCommand(yield* Path.Path)} ledger`;
     const message = yield* Effect.flatMap(Ledger, (ledger) =>
-      ledger.hook(repo, action, self.join(" "), { commit }),
+      ledger.hook(repo, action, self, { commit }),
     ).pipe(Effect.provide(offline));
     yield* Console.log(message);
   }),

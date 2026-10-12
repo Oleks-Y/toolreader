@@ -1,0 +1,14 @@
+# A local trace viewer for toolreader: Jaeger, taking OTLP over HTTP and showing it in its UI.
+#   docker compose -f docs/observability/compose.yml up -d
+#   export OTEL_TRACES_EXPORTER=otlp OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+#   (the backend: also OTEL_SERVICE_NAME=toolreader-backend)
+#   open http://127.0.0.1:16686
+# Both ports listen on 127.0.0.1 only. Traces live in memory: `down` forgets them.
+services:
+  jaeger:
+    image: jaegertracing/jaeger:2.11.0
+    # Docker's default bridge: no network of its own to create (pools run out on busy machines).
+    network_mode: bridge
+    ports:
+      - "127.0.0.1:16686:16686" # UI
+      - "127.0.0.1:4318:4318" # OTLP/HTTP

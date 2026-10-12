@@ -8,13 +8,13 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import type { Action, Entry, ThreadSummary, ThreadView } from "../core/domain.ts";
-import { LedgerEntry, LedgerRange } from "../core/ledger.ts";
+import { LedgerEntry, LedgerRange, prePushHook } from "../core/ledger.ts";
 import { SITE_DATA_MARKER } from "../core/ledgerSite.ts";
 import { ClaudeTranscripts } from "./ClaudeTranscripts.ts";
 import { CodexRollouts } from "./CodexRollouts.ts";
 import { CodexSessions } from "./CodexSessions.ts";
 import { Labeler } from "./Labeler.ts";
-import { Ledger } from "./Ledger.ts";
+import { Ledger, sealHook } from "./Ledger.ts";
 import { Sanitizer } from "./Sanitizer.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 import { ThreadStore } from "./ThreadStore.ts";
@@ -1047,6 +1047,37 @@ describe("Ledger", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.live("updates a hook it wrote when the script changes, as after an upgrade", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { repo } = yield* makeRepo;
+      const hookFile = path.join(repo, ".git", "hooks", "pre-push");
+      yield* Effect.gen(function* () {
+        const ledger = yield* Ledger;
+        yield* ledger.hook(repo, "install", "'/old/toolreader'");
+        assert.match(yield* ledger.hook(repo, "install", "'/new/toolreader'"), /^Updated /);
+        const script = yield* fs.readFileString(hookFile);
+        assert.include(script, "'/new/toolreader'");
+        assert.notInclude(script, "'/old/toolreader'");
+        // Written before hooks were sealed: ours only while it is exactly today's script.
+        yield* fs.writeFileString(hookFile, prePushHook("'/new/toolreader'"));
+        assert.match(yield* ledger.hook(repo, "install", "'/new/toolreader'"), /^Updated /);
+        yield* fs.writeFileString(hookFile, prePushHook("'/old/toolreader'"));
+        assert.include(
+          (yield* Effect.flip(ledger.hook(repo, "install", "'/new/toolreader'"))).message,
+          "changed",
+        );
+        yield* fs.writeFileString(hookFile, sealHook(prePushHook("'/new/toolreader'")));
+        assert.match(yield* ledger.hook(repo, "uninstall", "'/new/toolreader'"), /^Removed /);
+      }).pipe(
+        Effect.provide(
+          ledgerLayer({ dbPath: "/nonexistent/state.sqlite", codexHome: "/nonexistent" }),
+        ),
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.live("never overwrites or removes a hook the user changed", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -1057,7 +1088,7 @@ describe("Ledger", () => {
         const ledger = yield* Ledger;
         yield* ledger.hook(repo, "install", "'/bin/toolreader'");
         const script = yield* fs.readFileString(hookFile);
-        const edited = script.replace(/exit 0\n$/, "./check-before-push.sh || exit 1\nexit 0\n");
+        const edited = script.replace(/\nexit 0\n/, "\n./check-before-push.sh || exit 1\nexit 0\n");
         assert.notStrictEqual(edited, script);
         yield* fs.writeFileString(hookFile, edited);
 
