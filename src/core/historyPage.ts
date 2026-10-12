@@ -79,6 +79,18 @@ export function historyRange(input: {
             file: null,
             at: record.linkedAt,
           },
+          // What the agents said when they declared their links.
+          ...record.links.flatMap((l) =>
+            l.via === "asserted" && l.note
+              ? [
+                  {
+                    text: `${input.threads.get(l.threadId)?.thread.title ?? l.threadId}: ${l.note}`,
+                    file: null,
+                    at: record.linkedAt,
+                  },
+                ]
+              : [],
+          ),
         ],
         outputs: true,
         maxOutput: 0,

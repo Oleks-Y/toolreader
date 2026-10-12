@@ -25,7 +25,7 @@ export const ThreadRecordV1 = Schema.Struct({
 });
 export type ThreadRecord = typeof ThreadRecordV1.Type;
 
-export const LinkVia = Schema.Literals(["content", "trailer"]);
+export const LinkVia = Schema.Literals(["asserted", "content", "trailer"]);
 
 export const CommitRecordV1 = Schema.Struct({
   formatVersion: Schema.Literal(1),
@@ -44,6 +44,8 @@ export const CommitRecordV1 = Schema.Struct({
       turns: Schema.Array(Schema.String),
       via: LinkVia,
       lines: Schema.Number,
+      note: Schema.optional(Schema.String),
+      declaredBy: Schema.optional(Schema.String),
     }),
   ),
   linkedAt: Schema.String,
@@ -216,7 +218,7 @@ export function buildCommitRecord(input: {
     committedAt: input.committedAt,
     novel: input.history.novel,
     explained: input.history.explained,
-    links: input.history.links,
+    links: input.history.links.map((l) => (l.note ? { ...l, note: clean(l.note) } : l)),
     linkedAt: input.linkedAt,
     toolreaderVersion: input.toolreaderVersion,
   };

@@ -14,6 +14,13 @@ import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import packageJson from "../../../package.json" with { type: "json" };
+import {
+  applyDeclarations,
+  declarationsIn,
+  turnIds,
+  type Declared,
+  type ResolvedDeclaration,
+} from "../../core/declare.ts";
 import { addedLines, lineKey, linkByContent, type CommitLines } from "../../core/history.ts";
 import { LIMITS } from "../../core/historyApi.ts";
 import {
@@ -29,7 +36,7 @@ import { remoteWebUrl, SESSION_TRAILER, type LedgerRange } from "../../core/ledg
 import { ledgerSiteHtml, publicRange } from "../../core/ledgerSite.ts";
 import { redactor } from "../../core/proof.ts";
 import { threadSha } from "../recordHash.ts";
-import { RepoSessions, type SessionSource } from "../RepoSessions.ts";
+import { RepoSessions, type RepoSession, type SessionSource } from "../RepoSessions.ts";
 import { ServerConfig } from "../ServerConfig.ts";
 import { backendSettings, call, connect, HistoryFailed } from "./HistoryClient.ts";
 
@@ -64,6 +71,8 @@ export type SyncReport = {
   /** Threads sent, and threads the backend had as they are. */
   readonly sent: number;
   readonly unchanged: number;
+  /** Declarations about this range that couldn't be applied, and why. */
+  readonly ignored: ReadonlyArray<string>;
 };
 
 export class HistorySync extends Context.Service<
@@ -214,6 +223,85 @@ export class HistorySync extends Context.Service<
         return commits;
       });
 
+      /** A commit's `git patch-id --stable`, or null (a merge, or not in the repo). */
+      const patchId = (repo: string, sha: string) =>
+        Effect.gen(function* () {
+          const handle = yield* spawner.spawn(
+            ChildProcess.make("sh", [
+              "-c",
+              'git -C "$1" show --no-color "$2" | git patch-id --stable',
+              "sh",
+              repo,
+              sha,
+            ]),
+          );
+          const out = yield* handle.stdout.pipe(Stream.decodeText(), Stream.mkString);
+          yield* handle.exitCode;
+          return out.split(" ")[0]?.trim() || null;
+        }).pipe(
+          Effect.scoped,
+          Effect.orElseSucceed(() => null),
+        );
+
+      /**
+       * Each declaration about a commit of the range, with its SHA, thread and turn ids resolved.
+       * A SHA a rebase or amend replaced is followed by patch-id. What can't be resolved is reported.
+       */
+      const resolveDeclarations = Effect.fn("HistorySync.resolveDeclarations")(function* (
+        repo: string,
+        commits: ReadonlyArray<{ readonly sha: string; readonly subject: string }>,
+        declared: ReadonlyArray<Declared>,
+        named: (name: string) => ReadonlyArray<RepoSession>,
+      ) {
+        const resolved: ResolvedDeclaration[] = [];
+        const ignored: string[] = [];
+        const shas = commits.map((c) => c.sha);
+        let patchIds: Map<string, string> | null = null;
+        for (const d of declared) {
+          let sha = shas.find((s) => s.startsWith(d.sha)) ?? null;
+          if (!sha) {
+            // Not in the range as declared: rewritten since (same patch), or another range's.
+            const known = yield* git(
+              repo,
+              ["rev-parse", "--verify", "-q", `${d.sha}^{commit}`],
+              [1],
+            );
+            const pid = known.trim() ? yield* patchId(repo, known.trim()) : null;
+            if (!pid) continue;
+            patchIds ??= new Map(
+              (yield* Effect.forEach(shas, (s) =>
+                Effect.map(patchId(repo, s), (p) => [p, s] as const),
+              )).flatMap(([p, s]) => (p ? [[p, s] as const] : [])),
+            );
+            sha = patchIds.get(pid) ?? null;
+            if (!sha) continue;
+          }
+          const target = d.session ? named(d.session)[0] : named(d.by)[0];
+          const where = `${d.kind} ${sha.slice(0, 8)} (declared in turn ${d.turn} of ${d.by})`;
+          if (!target) {
+            ignored.push(`${where}: no session ${d.session ?? d.by} worked in this repo`);
+            continue;
+          }
+          const turns = turnIds(target.entries, d.turns ?? []);
+          if (d.kind === "link" && turns.length === 0) {
+            ignored.push(
+              `${where}: its turns ${d.turns?.join(",") ?? "(none named)"} aren't in that session`,
+            );
+            continue;
+          }
+          resolved.push({
+            kind: d.kind,
+            sha,
+            threadId: target.thread.id,
+            turns,
+            note: d.note,
+            by: named(d.by)[0]?.thread.id ?? d.by,
+            at: d.at,
+          });
+        }
+        return { resolved, ignored };
+      });
+
       const sync = Effect.fn("HistorySync.sync")(function* (
         repoArg: string,
         range: string,
@@ -231,11 +319,17 @@ export class HistorySync extends Context.Service<
         const loaded = yield* sessions
           .load(repo, options.source)
           .pipe(Effect.mapError((e) => new HistoryFailed({ message: e.message })));
-        const histories = linkByContent(
+        const matched = linkByContent(
           commits,
           loaded.sessions.map((s) => ({ id: s.thread.id, entries: s.entries })),
           (name) => loaded.named(name).map((s) => s.thread.id),
         );
+        // What agents declared (`history link`), found in their sessions, applied over that.
+        const declared = loaded.sessions.flatMap((s) => declarationsIn(s.thread.id, s.entries));
+        const { resolved, ignored } = yield* resolveDeclarations(repo, commits, declared, (name) =>
+          loaded.named(name),
+        );
+        const histories = matched.map((h) => applyDeclarations(h, resolved));
         const now = DateTime.formatIso(yield* DateTime.now);
         const records = histories.map((history, i) =>
           buildCommitRecord({
@@ -258,6 +352,7 @@ export class HistorySync extends Context.Service<
           commits: records.map((record) => ({ record, titles })),
           sent,
           unchanged,
+          ignored,
         });
         if (options.dryRun) return report(0, 0);
 

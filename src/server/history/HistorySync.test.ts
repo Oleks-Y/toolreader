@@ -299,5 +299,60 @@ describe("history sync", () => {
           }).pipe(Effect.provide(services(home, codexHome)));
         }).pipe(Effect.scoped),
     );
+
+    it.effect(
+      "applies what an agent declared: a link to another session's turns, and an unlink",
+      () =>
+        Effect.gen(function* () {
+          const { repo, home, codexHome } = yield* scenario;
+          const [client, store] = (yield* git(repo, ["rev-list", "main~2..main"])).split("\n");
+          // Another session split the work, and said where each commit came from.
+          const declare = (id: string, script: string, output: string) => ({
+            type: "CommandExecution",
+            id,
+            command: ["/bin/zsh", "-lc", script],
+            cwd: repo,
+            status: "completed",
+            aggregated_output: output,
+            exit_code: 0,
+          });
+          yield* writeRollout(codexHome, "splitter", repo, [
+            {
+              at: "2026-01-01T10:40:00.000Z",
+              item: {
+                type: "UserMessage",
+                id: "s1",
+                content: [{ type: "text", text: "Split it" }],
+              },
+            },
+            {
+              at: "2026-01-01T10:41:00.000Z",
+              item: declare(
+                "d1",
+                "toolreader history link --sha HEAD~1 --session codex:coder --turns 1 --note 'wrote the store'",
+                `history link: ${store}`,
+              ),
+            },
+            {
+              at: "2026-01-01T10:42:00.000Z",
+              item: declare(
+                "d2",
+                "npx toolreader history unlink --sha HEAD --session codex:coder",
+                `history unlink: ${client}`,
+              ),
+            },
+          ]);
+          const report = yield* Effect.flatMap(HistorySync, (h) =>
+            h.sync(repo, "main~2..main", { source: "codex-rollouts", dryRun: true }),
+          ).pipe(Effect.provide(services(home, codexHome)));
+          assert.deepStrictEqual(
+            report.commits.map(({ record }) =>
+              record.links.map((l) => [l.threadId, l.via, l.turns, l.note, l.declaredBy]),
+            ),
+            [[["codex:coder", "asserted", ["u1"], "wrote the store", "codex:splitter"]], []],
+          );
+          assert.deepStrictEqual(report.ignored, []);
+        }).pipe(Effect.scoped),
+    );
   });
 });

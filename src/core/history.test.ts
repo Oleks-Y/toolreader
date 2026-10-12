@@ -71,12 +71,17 @@ describe("history", () => {
       ],
       [work, other],
     );
-    assert.deepStrictEqual(store, {
+    const { hits, ...linked } = store!;
+    assert.deepStrictEqual(linked, {
       sha: "s1",
       novel: 1,
       explained: 1,
       links: [{ threadId: "work", turns: ["u1"], via: "content", lines: 1 }],
     });
+    assert.deepStrictEqual(
+      [...(hits?.get("work") ?? [])],
+      ["export function saveThread(record) {"],
+    );
     assert.deepStrictEqual([client?.novel, client?.explained], [2, 1]);
     assert.deepStrictEqual(
       client?.links.map((l) => [l.threadId, l.turns]),

@@ -33,7 +33,7 @@ function asView(link: LedgerLink, committedAt: string): ThreadView {
 
 /** How a link was found, for its tooltip. */
 const VIA_TEXT: Record<LinkVia, string> = {
-  asserted: "linked by hand",
+  asserted: "declared by the agent (history link)",
   trailer: "named by the commit's Agent-Session trailer",
   sha: "its git commit printed this SHA",
   session: "named by hand",

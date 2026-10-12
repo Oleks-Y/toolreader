@@ -10,6 +10,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { commitMsgHook, hookFile, prePushHook, sealHook } from "./historyHooks.ts";
+import { SKILL, sealSkill, skillFiles } from "./historySkill.ts";
 
 const sh = (cwd: string, args: ReadonlyArray<string>, env: Record<string, string> = {}) =>
   Effect.gen(function* () {
@@ -166,5 +167,31 @@ describe("history hooks", () => {
       );
       assert.isTrue(yield* fs.exists(file));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+  it.live(
+    "installs the agent skill for Claude Code and Codex, and leaves an edited one alone",
+    () =>
+      Effect.gen(function* () {
+        const { repo } = yield* setup;
+        const fs = yield* FileSystem.FileSystem;
+        const file = `${repo}/.claude/skills/toolreader-history/SKILL.md`;
+        assert.match(yield* skillFiles(repo, "install"), /^Installed /);
+        assert.include(yield* fs.readFileString(file), "toolreader history link --sha HEAD");
+        // Codex reads the same file through the link.
+        assert.strictEqual(
+          yield* fs.readFileString(`${repo}/.agents/skills/toolreader-history/SKILL.md`),
+          yield* fs.readFileString(file),
+        );
+        assert.match(yield* skillFiles(repo, "install"), /^Already installed/);
+        // Written by an older toolreader: replaced.
+        yield* fs.writeFileString(file, sealSkill(`${SKILL}An older rule.\n`));
+        assert.match(yield* skillFiles(repo, "install"), /^Updated /);
+        yield* fs.writeFileString(file, `${yield* fs.readFileString(file)}\nMy own rule.\n`);
+        assert.include(
+          (yield* Effect.flip(skillFiles(repo, "uninstall"))).message,
+          "leaving it alone",
+        );
+        assert.isTrue(yield* fs.exists(file));
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

@@ -46,7 +46,7 @@ const appLayer = <R>(
   codexSessions: Layer.Layer<CodexSessions, never, R>,
   codexHome: string | null = null,
 ) =>
-  Layer.mergeAll(Proofs.layer, HistorySync.layer.pipe(Layer.provide(RepoSessions.layer))).pipe(
+  Layer.mergeAll(Proofs.layer, HistorySync.layer.pipe(Layer.provideMerge(RepoSessions.layer))).pipe(
     Layer.provideMerge(
       Layer.mergeAll(
         codexSessions,

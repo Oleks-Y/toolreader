@@ -26,10 +26,17 @@ export type ThreadLink = {
   readonly threadId: string;
   /** Turns (`turnId`) whose edits added the commit's lines; empty for a trailer alone. */
   readonly turns: ReadonlyArray<string>;
-  /** `content`: its edits wrote the commit's lines; `trailer`: the commit names it. */
-  readonly via: "content" | "trailer";
+  /**
+   * `asserted`: an agent declared it (`history link`, core/declare.ts); `content`: its edits wrote
+   * the commit's lines; `trailer`: the commit names it.
+   */
+  readonly via: "asserted" | "content" | "trailer";
   /** The commit's novel lines these turns added. */
   readonly lines: number;
+  /** Why, as the declaring agent put it. */
+  readonly note?: string;
+  /** The session that declared it, when that isn't this thread. */
+  readonly declaredBy?: string;
 };
 
 export type CommitHistory = {
@@ -39,6 +46,8 @@ export type CommitHistory = {
   readonly explained: number;
   /** Most lines first. */
   readonly links: ReadonlyArray<ThreadLink>;
+  /** Each matched thread's novel lines, to recount `explained` when links change; never stored. */
+  readonly hits?: ReadonlyMap<string, ReadonlySet<string>>;
 };
 
 /** A line as matched: trimmed, inner whitespace collapsed. */
@@ -102,6 +111,7 @@ export function linkByContent(
     const until = Date.parse(c.committedAt) + CLOCK_SKEW_MS;
     const explained = new Set<string>();
     const links: ThreadLink[] = [];
+    const hits = new Map<string, Set<string>>();
     for (const thread of read) {
       const turns: string[] = [];
       const hit = new Set<string>();
@@ -117,12 +127,13 @@ export function linkByContent(
       }
       if (turns.length === 0 || (hit.size < MIN_LINES && hit.size * 2 < novel.size)) continue;
       for (const l of hit) explained.add(l);
+      hits.set(thread.id, hit);
       links.push({ threadId: thread.id, turns, via: "content", lines: hit.size });
     }
     for (const id of new Set(c.trailers.flatMap(named)))
       if (!links.some((l) => l.threadId === id))
         links.push({ threadId: id, turns: [], via: "trailer", lines: 0 });
     links.sort((a, b) => b.lines - a.lines);
-    return { sha: c.sha, novel: novel.size, explained: explained.size, links };
+    return { sha: c.sha, novel: novel.size, explained: explained.size, links, hits };
   });
 }

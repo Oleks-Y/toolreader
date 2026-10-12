@@ -4,6 +4,7 @@
 //                           [--source auto|t3|codex-app-server|codex-rollouts|claude-transcripts]
 //                           [--dry-run] [--hook]
 //   toolreader history site (--range A..B | --pr N) [--repo PATH] [--out DIR]
+//   toolreader history turns|link|unlink …                       (declareCli.ts)
 //   toolreader history hook install|uninstall [--repo PATH]    (historyHooks.ts)
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
@@ -18,6 +19,7 @@ import { redactText } from "../../core/proof.ts";
 import { CliApp } from "../app.ts";
 import { SESSION_SOURCES } from "../RepoSessions.ts";
 import { ServerConfig } from "../ServerConfig.ts";
+import { declareCommands } from "./declareCli.ts";
 import { HistoryFailed } from "./HistoryClient.ts";
 import { appendLog, causeMessage, installHooks, pending } from "./historyHooks.ts";
 import { HistorySync, type SyncReport } from "./HistorySync.ts";
@@ -80,9 +82,11 @@ export const reportLines = (report: SyncReport, dryRun: boolean): string[] => {
     lines.push(`${c.sha.slice(0, 8)} ${c.subject}`);
     for (const l of c.links)
       lines.push(
-        l.via === "trailer"
-          ? `  ✓ ${title(titles.get(l.threadId) ?? l.threadId)} (named by its trailer)`
-          : `  ✓ ${title(titles.get(l.threadId) ?? l.threadId)} (${l.turns.length} turn${l.turns.length === 1 ? "" : "s"}, ${l.lines} line${l.lines === 1 ? "" : "s"})`,
+        l.via === "asserted"
+          ? `  ✓ ${title(titles.get(l.threadId) ?? l.threadId)} (declared: ${l.turns.length} turn${l.turns.length === 1 ? "" : "s"}${l.note ? `, "${title(l.note)}"` : ""})`
+          : l.via === "trailer"
+            ? `  ✓ ${title(titles.get(l.threadId) ?? l.threadId)} (named by its trailer)`
+            : `  ✓ ${title(titles.get(l.threadId) ?? l.threadId)} (${l.turns.length} turn${l.turns.length === 1 ? "" : "s"}, ${l.lines} line${l.lines === 1 ? "" : "s"})`,
       );
     lines.push(
       c.links.length === 0
@@ -90,6 +94,7 @@ export const reportLines = (report: SyncReport, dryRun: boolean): string[] => {
         : `  ${c.explained} of its ${c.novel} new lines written by these agents`,
     );
   }
+  for (const why of report.ignored) lines.push(`! ignored ${title(why)}`);
   lines.push(
     dryRun
       ? "dry run: nothing sent"
@@ -267,6 +272,7 @@ export const historyCommand = Command.make("history").pipe(
   Command.withSubcommands([
     sync,
     site,
+    ...declareCommands,
     Command.make("hook").pipe(
       Command.withDescription("The git hooks that send history as you push"),
       Command.withSubcommands([installer("install"), installer("uninstall")]),

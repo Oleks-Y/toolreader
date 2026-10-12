@@ -21,6 +21,7 @@ import { SESSION_TRAILER } from "../../core/ledger.ts";
 import { redactText } from "../../core/proof.ts";
 import { ServerConfig } from "../ServerConfig.ts";
 import { HistoryFailed } from "./HistoryClient.ts";
+import { skillFiles } from "./historySkill.ts";
 
 export const HOOK_MARKER = "# toolreader history hook";
 /** The opt-in: hooks act only where this is true. */
@@ -210,6 +211,12 @@ export const installHooks = Effect.fn("historyHooks.install")(function* (
   out.push(
     yield* hookFile(repo, "commit-msg", commitMsgHook(), action).pipe(
       Effect.catch((e) => Effect.succeed(`commit-msg: ${e.message}`)),
+    ),
+  );
+  // The skill that has agents declare their own history; an edited one is a warning.
+  out.push(
+    yield* skillFiles(repo, action).pipe(
+      Effect.catch((e) => Effect.succeed(`skill: ${e.message}`)),
     ),
   );
   if (action === "install") {
