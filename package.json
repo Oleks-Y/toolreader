@@ -20,12 +20,13 @@
     "check": "vp check",
     "typecheck": "tsgo --noEmit -p tsconfig.json && tsgo --noEmit -p src/web/tsconfig.json",
     "export": "node src/server/bin.ts export",
-    "ledger": "node src/server/bin.ts ledger",
+    "history": "node src/server/bin.ts history",
     "prepack": "vp run build",
     "site:build": "vp build -c vite.site.config.ts && node scripts/site.ts"
   },
   "devDependencies": {
     "@effect/platform-node": "4.0.0-beta.103",
+    "@effect/sql-pg": "4.0.0-beta.103",
     "@effect/tsgo": "0.13.2",
     "@effect/vitest": "4.0.0-beta.103",
     "@oxlint/plugins": "^1.86.0",

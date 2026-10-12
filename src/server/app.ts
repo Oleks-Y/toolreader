@@ -7,10 +7,11 @@ import * as Layer from "effect/Layer";
 import { ClaudeTranscripts } from "./ClaudeTranscripts.ts";
 import { CodexRollouts } from "./CodexRollouts.ts";
 import { CodexSessions } from "./CodexSessions.ts";
+import { HistorySync } from "./history/HistorySync.ts";
 import { Labeler } from "./Labeler.ts";
-import { Ledger } from "./Ledger.ts";
 import * as NodeSqliteClient from "./NodeSqliteClient.ts";
 import { Proofs } from "./Proofs.ts";
+import { RepoSessions } from "./RepoSessions.ts";
 import { Sanitizer } from "./Sanitizer.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 import { ThreadStore } from "./ThreadStore.ts";
@@ -45,7 +46,7 @@ const appLayer = <R>(
   codexSessions: Layer.Layer<CodexSessions, never, R>,
   codexHome: string | null = null,
 ) =>
-  Layer.mergeAll(Proofs.layer, Ledger.layer).pipe(
+  Layer.mergeAll(Proofs.layer, HistorySync.layer.pipe(Layer.provideMerge(RepoSessions.layer))).pipe(
     Layer.provideMerge(
       Layer.mergeAll(
         codexSessions,
@@ -63,8 +64,8 @@ const appLayer = <R>(
 /** Every app service, plus the Node platform services they run on. */
 export const AppLive = appLayer(CodexSessions.layer);
 
-/** For the ledger CLI: starts `codex app-server` only when asked to read from it. */
-export const LedgerApp = (options: { appServer: boolean; codexHome: string | null }) =>
+/** For the history CLI: starts `codex app-server` only when asked to read from it. */
+export const CliApp = (options: { appServer: boolean; codexHome: string | null }) =>
   options.appServer
     ? appLayer(CodexSessions.layer, options.codexHome)
     : appLayer(CodexSessions.disabled, options.codexHome);

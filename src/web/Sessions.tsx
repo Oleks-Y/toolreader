@@ -72,7 +72,6 @@ export function Sessions() {
         <h1>toolreader</h1>
         <ThemePicker />
         <a href="#/file">open proof file</a>
-        <a href="#/ledger">commit ledger</a>
         <input
           autoFocus
           placeholder="Filter threads…"

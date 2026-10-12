@@ -1,4 +1,4 @@
-// Entry of the static ledger page: LedgerPage on the range `toolreader ledger site` inlined.
+// Entry of the static history page: LedgerPage on the range `toolreader history site` inlined.
 import * as Schema from "effect/Schema";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -17,6 +17,6 @@ const data = decodeRange(document.getElementById(SITE_DATA_ID)?.textContent ?? "
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <LedgerPage repo={data.repo} range={data.range} inline={data} />
+    <LedgerPage data={data} />
   </StrictMode>,
 );

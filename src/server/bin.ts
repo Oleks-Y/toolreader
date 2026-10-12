@@ -1,4 +1,5 @@
-// The `toolreader` CLI: `serve` (the viewer), `ledger sync|show|site|hook`, `export`.
+// The `toolreader` CLI: `serve` (the viewer), `export`, `history sync|site|hook`,
+// `backend serve|token`.
 // Published bundled (`vp pack` → dist/bin.mjs); in this repo, `node src/server/bin.ts <command>`.
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -8,9 +9,10 @@ import { Command } from "effect/unstable/cli";
 
 import packageJson from "../../package.json" with { type: "json" };
 import { AppLive } from "./app.ts";
+import { backendCommand } from "./backend/backendCli.ts";
 import { exportCommand } from "./export.ts";
+import { historyCommand } from "./history/historyCli.ts";
 import { HttpServerLive } from "./http.ts";
-import { ledgerCommand } from "./ledgerCli.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 
 const Announce = Layer.effectDiscard(
@@ -24,13 +26,13 @@ const serve = Command.make("serve", {}, () =>
   Layer.launch(Layer.mergeAll(HttpServerLive, Announce).pipe(Layer.provide(AppLive))),
 ).pipe(
   Command.withDescription(
-    "Serve the viewer on http://127.0.0.1:$PORT (default 4777): T3 and Codex sessions, and #/ledger",
+    "Serve the viewer on http://127.0.0.1:$PORT (default 4777): T3, Codex and Claude Code sessions",
   ),
 );
 
 Command.make("toolreader").pipe(
   Command.withDescription("What coding agents did: sessions, and agent history per commit"),
-  Command.withSubcommands([serve, ledgerCommand, exportCommand]),
+  Command.withSubcommands([serve, exportCommand, historyCommand, backendCommand]),
   Command.run({ version: packageJson.version }),
   Effect.provide(NodeServices.layer),
   NodeRuntime.runMain,

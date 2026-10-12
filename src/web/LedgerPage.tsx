@@ -9,18 +9,8 @@ import {
   type LinkVia,
 } from "../core/ledger.ts";
 import { ActionView } from "./ActionView.tsx";
-import { call, errorMessage } from "./client.ts";
 import { ThemePicker } from "./theme.tsx";
 import { fmtDay, fmtTime } from "./util.ts";
-
-/** `#/ledger?repo=…&range=…` */
-export function parseLedgerHash(hash: string): { repo: string; range: string } {
-  const query = new URLSearchParams(hash.split("?")[1] ?? "");
-  return { repo: query.get("repo") ?? "", range: query.get("range") ?? "" };
-}
-
-const ledgerHash = (repo: string, range: string) =>
-  `#/ledger?${new URLSearchParams({ repo, ...(range ? { range } : {}) }).toString()}`;
 
 /** A linked thread's history as a read-only thread, so the regular viewer can render it. */
 function asView(link: LedgerLink, committedAt: string): ThreadView {
@@ -43,98 +33,35 @@ function asView(link: LedgerLink, committedAt: string): ThreadView {
 
 /** How a link was found, for its tooltip. */
 const VIA_TEXT: Record<LinkVia, string> = {
-  asserted: "linked by hand (ledger link / review)",
+  asserted: "declared by the agent (history link)",
   trailer: "named by the commit's Agent-Session trailer",
   sha: "its git commit printed this SHA",
-  session: "named with sync --session",
+  session: "named by hand",
   time: "its git commit ran just before this commit",
   evidence: "it edited this commit's files",
+  content: "its edits wrote this commit's new lines",
 };
 
 /**
- * Agent history per commit for a repo range, read from the agent-ledger branch. With `inline`
- * (the static page of `ledger site`) it shows that range only and never calls the server.
+ * Agent history per commit for a range: the static page `history site` writes, with the range
+ * inlined. It never calls a server.
  */
-export function LedgerPage({
-  repo,
-  range,
-  inline,
-}: {
-  repo: string;
-  range: string;
-  inline?: LedgerRange;
-}) {
-  const [repos, setRepos] = useState<ReadonlyArray<{ path: string; title: string }>>([]);
-  const [data, setData] = useState<LedgerRange | null>(inline ?? null);
-  const [error, setError] = useState<string | null>(null);
-  const [draft, setDraft] = useState({ repo, range });
-
+export function LedgerPage({ data }: { data: LedgerRange }) {
   useEffect(() => {
-    document.title = inline ? `${inline.range} · agent ledger` : "commit ledger · toolreader";
-    if (!inline) call((api) => api.ledger.repos()).then(setRepos, () => setRepos([]));
+    document.title = `${data.range} · agent history`;
   }, []);
-  useEffect(() => {
-    setDraft({ repo, range });
-    if (!repo || inline) return;
-    setData(null);
-    setError(null);
-    call((api) => api.ledger.range({ query: { repo, ...(range ? { range } : {}) } })).then(
-      setData,
-      (e: unknown) => setError(errorMessage(e)),
-    );
-  }, [repo, range]);
-
-  const withHistory = data?.commits.filter((c) => (c.entry?.links.length ?? 0) > 0).length ?? 0;
+  const withHistory = data.commits.filter((c) => (c.entry?.links.length ?? 0) > 0).length;
   return (
     <main className="viewer">
       <header className="topbar">
-        {!inline && <a href="#/">← sessions</a>}
-        <h1>{inline ? "agent ledger" : "commit ledger"}</h1>
+        <h1>agent history</h1>
         <ThemePicker />
       </header>
-      {!inline && (
-        <form
-          className="ledger-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            location.hash = ledgerHash(draft.repo, draft.range);
-          }}
-        >
-          <input
-            list="ledger-repos"
-            placeholder="Repository path"
-            value={draft.repo}
-            onChange={(e) => setDraft({ ...draft, repo: e.target.value })}
-          />
-          <datalist id="ledger-repos">
-            {repos.map((r) => (
-              <option key={r.path} value={r.path}>
-                {r.title}
-              </option>
-            ))}
-          </datalist>
-          <input
-            placeholder="Range, e.g. main..HEAD (default: default branch..HEAD)"
-            value={draft.range}
-            onChange={(e) => setDraft({ ...draft, range: e.target.value })}
-          />
-          <button className="chip on" type="submit">
-            show
-          </button>
-        </form>
-      )}
-      {error && <div className="error">{error}</div>}
-      {repo && !data && !error && <p className="dim">loading…</p>}
-      {data && (
-        <p className="dim">
-          {data.range} · {data.commits.length} commits · {withHistory} with agent history
-          {withHistory < data.commits.length &&
-            !inline &&
-            " (run `toolreader ledger sync` to add missing ones)"}
-        </p>
-      )}
+      <p className="dim">
+        {data.range} · {data.commits.length} commits · {withHistory} with agent history
+      </p>
       <div className="ledger">
-        {data?.commits.map((c) => (
+        {data.commits.map((c) => (
           <CommitCard key={c.commit.sha} item={c} remoteUrl={data.remoteUrl} />
         ))}
       </div>

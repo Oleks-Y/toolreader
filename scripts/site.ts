@@ -42,7 +42,9 @@ const build = Effect.gen(function* () {
 
   let index = yield* fs.readFileString(path.join(site, "index.html"));
   for (const [marker, name] of index.matchAll(/<!--ci:([\w.-]+)-->/g)) {
-    const workflow = yield* fs.readFileString(path.join(root, "docs", "ci", name!));
+    // The ledger's example workflows went with the ledger; the site's rewrite drops their markers.
+    const file = path.join(root, "docs", "ci", name!);
+    const workflow = (yield* fs.exists(file)) ? yield* fs.readFileString(file) : "";
     index = index.replace(marker, () => escapeHtml(workflow.trimEnd()));
   }
   yield* fs.writeFileString(path.join(out, "index.html"), index);

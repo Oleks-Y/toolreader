@@ -1,25 +1,16 @@
 import { assert, describe, it } from "@effect/vitest";
 
-import type { Action, Entry } from "./domain.ts";
+import type { Action } from "./domain.ts";
 import * as Schema from "effect/Schema";
 
 import {
   buildEntry,
+  remoteWebUrl,
   clipOutputs,
   editedPaths,
   fileCoverage,
-  findCommitActions,
   isStale,
   LedgerEntry,
-  matchCommit,
-  madeEdits,
-  mergeEntries,
-  mergeLinks,
-  segmentByTime,
-  segmentFor,
-  sessionFromEnv,
-  sessionsBetween,
-  sessionSegment,
   type LedgerCommit,
   type LedgerLink,
 } from "./ledger.ts";
@@ -40,13 +31,6 @@ const action = (
   title: command,
   command,
   ...(output ? { output } : {}),
-});
-const user = (id: string, at: string): Entry => ({
-  type: "message",
-  id,
-  at,
-  role: "user",
-  text: id,
 });
 const thread = {
   id: "t",
@@ -74,148 +58,7 @@ const commit = (sha: string, committedAt: string): LedgerCommit => ({
   patchId: null,
 });
 
-const entries: Entry[] = [
-  user("u1", "2026-01-01T10:00:00Z"),
-  action("e1", "2026-01-01T10:01:00Z", "sed -i x a.ts"),
-  action("c1", "2026-01-01T10:02:00Z", "git add -A && git -c user.email=x commit -q -m one"),
-  action("e2", "2026-01-01T10:03:00Z", "sed -i y b.ts"),
-  action("bad", "2026-01-01T10:03:30Z", "git commit -m nope", "nothing to commit", "failed"),
-  user("u2", "2026-01-01T10:04:00Z"),
-  action(
-    "grep",
-    "2026-01-01T10:04:10Z",
-    "rg 'git commit' src && cat <<EOF\n/** `git commit` */\nEOF",
-  ),
-  action(
-    "c2",
-    "2026-01-01T10:05:00Z",
-    "git commit -m two",
-    "[feat/x 1a2b3c4] two\n 1 file changed\n[feat/x 5d6e7f8] three\n 1 file changed",
-  ),
-];
-
 describe("ledger", () => {
-  it("finds successful git commit actions and their printed SHAs", () => {
-    assert.deepStrictEqual(
-      findCommitActions(entries).map((a) => [a.action.id, a.shas]),
-      [
-        ["c1", []],
-        ["c2", ["1a2b3c4", "5d6e7f8"]],
-      ],
-    );
-    const wrapped = [
-      action("w", "2026-01-01T10:00:00Z", `/bin/zsh -lc "git commit -m 'feat: x'"`),
-      action("echo", "2026-01-01T10:00:00Z", `/bin/zsh -lc 'echo "git commit"'`),
-    ];
-    assert.deepStrictEqual(
-      findCommitActions(wrapped).map((a) => a.action.id),
-      ["w"],
-      "inside a shell wrapper",
-    );
-  });
-
-  it("matches by printed SHA first, else by the latest commit action shortly before the commit time", () => {
-    const actions = findCommitActions(entries);
-    assert.deepStrictEqual(
-      matchCommit(commit("1a2b3c4d5e6f", "2026-01-01T10:05:03Z"), actions)?.action.action.id,
-      "c2",
-    );
-    assert.deepStrictEqual(
-      matchCommit(commit("5d6e7f8a9b", "2026-01-01T10:05:04Z"), actions),
-      { action: actions[1]!, match: "sha" },
-      "second commit of one command",
-    );
-    const quiet = matchCommit(commit("ffff000", "2026-01-01T10:02:27Z"), actions);
-    assert.deepStrictEqual([quiet?.action.action.id, quiet?.match], ["c1", "time"]);
-    assert.strictEqual(
-      matchCommit(commit("eeee000", "2026-01-01T12:00:00Z"), actions),
-      null,
-      "too late",
-    );
-    assert.strictEqual(
-      matchCommit(commit("dddd000", "2026-01-01T09:59:00Z"), actions),
-      null,
-      "before any commit",
-    );
-  });
-
-  it("segments history between consecutive commits in a thread", () => {
-    const actions = findCommitActions(entries);
-    assert.deepStrictEqual(
-      segmentFor(entries, actions[0]!, actions).map((e) => e.id),
-      ["u1", "e1", "c1"],
-    );
-    assert.deepStrictEqual(
-      segmentFor(entries, actions[1]!, actions).map((e) => e.id),
-      // Starts mid-turn, so the turn's prompt (u1) comes back for context.
-      ["u1", "e2", "bad", "u2", "grep", "c2"],
-    );
-  });
-
-  it("drops leading discussion-only turns from a segment", () => {
-    const talk: Entry[] = [
-      action("c0", "2026-01-01T09:00:00Z", "git commit -q -m zero"),
-      user("q1", "2026-01-01T09:10:00Z"),
-      { type: "message", id: "a1", at: "2026-01-01T09:10:05Z", role: "assistant", text: "design…" },
-      user("q2", "2026-01-01T09:20:00Z"),
-      action("w1", "2026-01-01T09:21:00Z", "sed -i x a.ts"),
-      action("c1", "2026-01-01T09:22:00Z", "git commit -q -m one"),
-    ];
-    const actions = findCommitActions(talk);
-    assert.deepStrictEqual(
-      segmentFor(talk, actions[1]!, actions).map((e) => e.id),
-      ["q2", "w1", "c1"],
-    );
-  });
-
-  it("finds the sessions that ended between the previous commit and this one", () => {
-    // CI: `codex exec` edits (the sandbox blocks .git), a later step commits.
-    const edits: Entry[] = [
-      user("p", "2026-01-01T10:00:00Z"),
-      action("w1", "2026-01-01T10:01:00Z", "sed -i x a.ts"),
-      action("w2", "2026-01-01T10:02:00Z", "npm test"),
-    ];
-    const older = { entries: [action("o", "2026-01-01T08:00:00Z", "sed -i o a.ts")] };
-    const latest = { entries: edits };
-    const at = commit("abc", "2026-01-01T10:05:00Z");
-    assert.deepStrictEqual(sessionsBetween(at, "2026-01-01T09:00:00Z", [older, latest]), [latest]);
-    assert.deepStrictEqual(
-      sessionsBetween(at, null, [older, latest]),
-      [older, latest],
-      "first commit: no lower bound, and every candidate is returned",
-    );
-    assert.deepStrictEqual(
-      sessionsBetween(at, "2026-01-01T10:03:00Z", [latest]),
-      [],
-      "ended before the previous commit",
-    );
-    assert.deepStrictEqual(
-      sessionsBetween(commit("abc", "2026-01-01T10:01:30Z"), null, [latest]),
-      [],
-      "still running at commit time",
-    );
-    // Edits count, by tool or by a shell command that writes; reading and testing don't.
-    const run = (id: string, kind: Action["kind"], parts: Action["parts"] = []): Action => ({
-      ...action(id, "2026-01-01T10:00:00Z", id),
-      kind,
-      parts,
-    });
-    assert.isTrue(madeEdits([run("patch", "edit")]));
-    assert.isTrue(madeEdits([run("chain", "test", [{ kind: "edit", title: "write f.ts" }])]));
-    assert.isFalse(madeEdits([run("diff", "read"), run("test", "test")]));
-    assert.isFalse(madeEdits([{ ...run("bad", "edit"), status: "failed" }]));
-    // Only what came after the previous commit and after the session's own last commit action.
-    const mixed: Entry[] = [...entries, action("w3", "2026-01-01T10:20:00Z", "sed -i z c.ts")];
-    assert.deepStrictEqual(
-      sessionSegment(mixed, findCommitActions(mixed), "2026-01-01T10:06:00Z").map((e) => e.id),
-      ["u2", "w3"],
-    );
-    assert.deepStrictEqual(
-      sessionSegment(edits, [], "2026-01-01T10:00:30Z").map((e) => e.id),
-      ["p", "w1", "w2"],
-    );
-  });
-
   it("clips outputs to head and tail on character boundaries", () => {
     const long = action(
       "x",
@@ -287,53 +130,6 @@ describe("ledger", () => {
 });
 
 describe("several threads per commit", () => {
-  it("keeps one link per thread and role: the stronger via wins, an asserted link stays", () => {
-    const asserted = link("s1", { via: "asserted", entries: [] });
-    const merged = mergeLinks(
-      [asserted],
-      [link("s1", { via: "sha" }), link("s2", { via: "evidence" })],
-    );
-    assert.deepStrictEqual(
-      merged.map((l) => [l.thread.id, l.via, l.entries.length]),
-      [
-        ["s1", "asserted", 1],
-        ["s2", "evidence", 1],
-      ],
-      "an asserted link takes the history sync found",
-    );
-    assert.strictEqual(mergeLinks([link("s1", { via: "evidence" })], [link("s1")])[0]!.via, "time");
-    const longer = link("s1", { entries: [action("x", "t", "ls"), action("y", "t", "ls")] });
-    assert.strictEqual(mergeLinks([link("s1")], [longer])[0]!.entries.length, 2, "same via: newer");
-    // A coder reviewing its own commit keeps both links.
-    const self = mergeLinks(
-      [link("s1", { via: "sha" })],
-      [link("s1", { via: "asserted", role: "reviewer", reviewedSha: "a1" })],
-    );
-    assert.deepStrictEqual(
-      self.map((l) => l.role),
-      ["coder", "reviewer"],
-    );
-    // A repeated `ledger review` replaces its link only when it is the one just asserted.
-    const again = link("s1", { via: "asserted", role: "reviewer", reviewedSha: "b2", entries: [] });
-    assert.strictEqual(mergeLinks(self, [again])[1]!.reviewedSha, "a1");
-    assert.strictEqual(mergeLinks(self, [again], true)[1]!.reviewedSha, "b2");
-  });
-
-  it("keeps an unlinked thread out unless it is linked again by hand", () => {
-    const c = commit("a".repeat(40), "2026-01-01T10:00:00Z");
-    const base = buildEntry({ commit: c, links: [], paths: [], outputs: true, maxOutput: 0 });
-    const removed = { ...base, unlinked: ["s1"] };
-    // An older copy that still has the asserted link must not undo the unlink.
-    const stale = { ...base, links: [link("s1", { via: "asserted" })] };
-    assert.deepStrictEqual(mergeEntries(removed, stale).links, []);
-    assert.deepStrictEqual(mergeEntries(stale, removed).links, []);
-    const relinked = mergeEntries(removed, stale, ["s1"]);
-    assert.deepStrictEqual(
-      [relinked.links.map((l) => l.thread.id), relinked.unlinked],
-      [["s1"], []],
-    );
-  });
-
   it("puts each changed file in exactly one bucket", () => {
     const files = fileCoverage(
       ["a.ts", "b.ts", "c.ts"],
@@ -386,31 +182,11 @@ describe("several threads per commit", () => {
     assert.strictEqual(editedPaths([{ ...edit, status: "failed" }], ["src/a.ts"], roots).size, 0);
   });
 
-  it("takes history between the previous commit and this one", () => {
-    const entries = [
-      user("u0", "2026-01-01T08:00:00Z"),
-      action("a0", "2026-01-01T08:01:00Z", "ls"),
-      user("u1", "2026-01-01T09:00:00Z"),
-      action("a1", "2026-01-01T09:01:00Z", "ls"),
-      action("a2", "2026-01-01T11:00:00Z", "ls"),
-    ];
-    assert.deepStrictEqual(
-      segmentByTime(entries, "2026-01-01T08:30:00Z", "2026-01-01T10:00:00Z").map((e) => e.id),
-      ["u1", "a1"],
-    );
-  });
-
   it("marks a review stale on any commit but the one reviewed", () => {
     const review = link("r", { role: "reviewer", reviewedSha: "a1b2" });
     assert.isFalse(isStale(review, "a1b2"));
     assert.isTrue(isStale(review, "e4f5"));
     assert.isFalse(isStale(link("c"), "e4f5"), "only reviews go stale");
-  });
-
-  it("names the agent session from what the agent exports", () => {
-    assert.strictEqual(sessionFromEnv({ CODEX_THREAD_ID: "01a0" }), "codex:01a0");
-    assert.strictEqual(sessionFromEnv({ CLAUDE_CODE_SESSION_ID: "7c2e" }), "claude-code:7c2e");
-    assert.isNull(sessionFromEnv({}));
   });
 
   it("reads a v1 entry as one coder link", () => {
@@ -432,23 +208,13 @@ describe("several threads per commit", () => {
     );
   });
 
-  it("adds a note and a link to an entry, and adds nothing twice", () => {
-    const c = commit("a".repeat(40), "2026-01-01T10:00:00Z");
-    const empty = buildEntry({
-      commit: c,
-      links: [],
-      paths: ["a.ts"],
-      outputs: true,
-      maxOutput: 0,
-    });
-    assert.deepStrictEqual(empty.files, [{ path: "a.ts", bucket: "untracked" }]);
-    const fresh = {
-      ...empty,
-      links: [link("s1", { files: ["a.ts"] })],
-      notes: [{ text: "by hand", file: "a.ts", at: "2026-01-01T11:00:00Z" }],
-    };
-    const once = mergeEntries(empty, fresh);
-    assert.deepStrictEqual(once.files, [{ path: "a.ts", bucket: "attributed" }]);
-    assert.deepStrictEqual(mergeEntries(once, fresh), once);
+  it("names a repo by its remote, in every URL form git takes", () => {
+    for (const remote of [
+      "git@github.com:acme/app.git",
+      "https://github.com/acme/app.git",
+      "ssh://git@github.com/acme/app.git",
+      "ssh://git@github.com:22/acme/app",
+    ])
+      assert.strictEqual(remoteWebUrl(remote), "https://github.com/acme/app", remote);
   });
 });

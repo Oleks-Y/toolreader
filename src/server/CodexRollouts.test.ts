@@ -5,7 +5,6 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 
-import { findCommitActions } from "../core/ledger.ts";
 import { CodexRollouts } from "./CodexRollouts.ts";
 import { CodexSessions } from "./CodexSessions.ts";
 import { ServerConfig } from "./ServerConfig.ts";
@@ -79,7 +78,6 @@ describe("CodexRollouts", () => {
         yield* appServer.ready;
         const fromAppServer = yield* appServer.get(ID, {});
         assert.deepStrictEqual(fromRollout.entries, fromAppServer.entries);
-        assert.strictEqual(findCommitActions(fromRollout.entries).length, 4);
         assert.strictEqual(fromRollout.thread.title, fromAppServer.thread.title);
         assert.strictEqual((yield* Effect.flip(rollouts.get("nope", {})))._tag, "ThreadNotFound");
       }).pipe(
