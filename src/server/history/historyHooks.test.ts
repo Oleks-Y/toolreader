@@ -10,7 +10,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { commitMsgHook, hookFile, prePushHook, sealHook } from "./historyHooks.ts";
-import { SKILL, sealSkill, skillFiles } from "./historySkill.ts";
+import { commitSkill, SKILL, sealSkill, skillFiles } from "./historySkill.ts";
 
 const sh = (cwd: string, args: ReadonlyArray<string>, env: Record<string, string> = {}) =>
   Effect.gen(function* () {
@@ -193,5 +193,28 @@ describe("history hooks", () => {
         );
         assert.isTrue(yield* fs.exists(file));
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+  it.live("commits the skill's files and nothing else, then their removal", () =>
+    Effect.gen(function* () {
+      const { repo } = yield* setup;
+      const fs = yield* FileSystem.FileSystem;
+      const git = (args: string) =>
+        sh(repo, ["-c", `git -c user.name=a -c user.email=a@b ${args}`]).pipe(
+          Effect.map((r) => r.out),
+        );
+      yield* fs.writeFileString(`${repo}/mine.txt`, "staged by me\n");
+      yield* git("add mine.txt");
+      yield* skillFiles(repo, "install");
+      assert.strictEqual(yield* commitSkill(repo, "install"), "Committed the skill.");
+      assert.strictEqual(yield* commitSkill(repo, "install"), "The skill is committed as it is.");
+      assert.deepStrictEqual((yield* git("show --name-only --format= HEAD")).split("\n"), [
+        ".agents/skills/toolreader-history",
+        ".claude/skills/toolreader-history/SKILL.md",
+      ]);
+      assert.strictEqual(yield* git("diff --cached --name-only"), "mine.txt");
+      yield* skillFiles(repo, "uninstall");
+      assert.strictEqual(yield* commitSkill(repo, "uninstall"), "Committed its removal.");
+      assert.strictEqual(yield* git("ls-files .claude .agents"), "");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

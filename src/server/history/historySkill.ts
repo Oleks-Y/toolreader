@@ -1,13 +1,15 @@
-// The agent skill `history hook install` puts in a repo, so agents declare their own history
+// The agent skill `history skill install` puts in a repo, so agents declare their own history
 // (core/declare.ts): `.claude/skills/toolreader-history/SKILL.md` (Claude Code), linked from
 // `.agents/skills/toolreader-history` (Codex), as this repo keeps its own skills. Unlike the hooks,
-// it is meant to be committed: every agent that works in the repo then gets it. Like the hooks, it
-// carries a hash of its text, so an upgrade replaces ours and an edited one is left alone.
+// it is meant to be committed (`--commit`): every agent that works in the repo then gets it. Like
+// the hooks, it carries a hash of its text, so an upgrade replaces ours and an edited one is left
+// alone.
 import * as NodeCrypto from "node:crypto";
 
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { HistoryFailed } from "./HistoryClient.ts";
 
@@ -99,7 +101,7 @@ export const skillFiles = Effect.fn("historySkill.files")(
         });
       if (current !== null) yield* fs.remove(dir, { recursive: true });
       if (linkOurs) yield* fs.remove(link);
-      return current === null ? `No skill at ${file}.` : `Removed ${file} (commit the removal).`;
+      return current === null ? `No skill at ${file}.` : `Removed ${file}.`;
     }
     if (current !== null && !ours)
       return yield* new HistoryFailed({
@@ -116,8 +118,60 @@ export const skillFiles = Effect.fn("historySkill.files")(
       yield* fs.symlink(target, link);
     }
     return fresh
-      ? `${current === null ? "Installed" : "Updated"} the agent skill ${file}: commit it, so every agent in this repo gets it.`
+      ? `${current === null ? "Installed" : "Updated"} the agent skill ${file}.`
       : `Already installed: ${file}.`;
+  },
+  Effect.catchTag("PlatformError", (e) => Effect.fail(new HistoryFailed({ message: e.message }))),
+);
+
+/** The skill's paths in a repo, as `git add` takes them. */
+export const SKILL_PATHS = [
+  `.claude/skills/${SKILL_NAME}`,
+  `.agents/skills/${SKILL_NAME}`,
+] as const;
+
+/** Whether the repo has the skill (as committed by anyone, edited or not). */
+export const hasSkill = (repo: string) =>
+  Effect.flatMap(Path.Path, (path) =>
+    Effect.flatMap(FileSystem.FileSystem, (fs) =>
+      fs.exists(path.join(repo, SKILL_PATHS[0], "SKILL.md")),
+    ),
+  ).pipe(Effect.orElseSucceed(() => false));
+
+/**
+ * Commits the skill's files (or their removal), and nothing else; a no-op when the repo already
+ * has them as they are.
+ */
+export const commitSkill = Effect.fn("historySkill.commit")(
+  function* (repo: string, action: "install" | "uninstall") {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const git = (args: ReadonlyArray<string>) =>
+      spawner.exitCode(ChildProcess.make("git", ["-C", repo, ...args]));
+    const staged = yield* git(
+      action === "install"
+        ? ["add", "--", ...SKILL_PATHS]
+        : ["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", ...SKILL_PATHS],
+    );
+    if (staged !== ChildProcessSpawner.ExitCode(0))
+      return yield* new HistoryFailed({ message: `staging the skill failed in ${repo}` });
+    if (
+      (yield* git(["diff", "--cached", "--quiet", "--", ...SKILL_PATHS])) ===
+      ChildProcessSpawner.ExitCode(0)
+    )
+      return action === "install" ? "The skill is committed as it is." : "Nothing to commit.";
+    const code = yield* git([
+      "commit",
+      "-q",
+      "-m",
+      action === "install"
+        ? "chore: agent history skill (toolreader)"
+        : "chore: remove the agent history skill (toolreader)",
+      "--",
+      ...SKILL_PATHS,
+    ]);
+    if (code !== ChildProcessSpawner.ExitCode(0))
+      return yield* new HistoryFailed({ message: `git commit failed in ${repo} (exit ${code})` });
+    return action === "install" ? "Committed the skill." : "Committed its removal.";
   },
   Effect.catchTag("PlatformError", (e) => Effect.fail(new HistoryFailed({ message: e.message }))),
 );

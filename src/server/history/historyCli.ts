@@ -5,6 +5,7 @@
 //                           [--dry-run] [--hook]
 //   toolreader history site (--range A..B | --pr N) [--repo PATH] [--out DIR]
 //   toolreader history turns|link|unlink …                       (declareCli.ts)
+//   toolreader history skill install|uninstall [--repo PATH] [--commit]   (historySkill.ts)
 //   toolreader history hook install|uninstall [--repo PATH]    (historyHooks.ts)
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
@@ -21,6 +22,7 @@ import { SESSION_SOURCES } from "../RepoSessions.ts";
 import { ServerConfig } from "../ServerConfig.ts";
 import { declareCommands } from "./declareCli.ts";
 import { HistoryFailed } from "./HistoryClient.ts";
+import { commitSkill, SKILL_PATHS, skillFiles } from "./historySkill.ts";
 import { appendLog, causeMessage, installHooks, pending } from "./historyHooks.ts";
 import { HistorySync, type SyncReport } from "./HistorySync.ts";
 
@@ -267,12 +269,50 @@ const installer = (action: "install" | "uninstall") =>
     ),
   );
 
+const skillCommand = (action: "install" | "uninstall") =>
+  Command.make(
+    action,
+    {
+      repo: Flag.string("repo").pipe(
+        Flag.withDescription("Repository (any path inside it)"),
+        Flag.withDefault("."),
+      ),
+      commit: Flag.boolean("commit").pipe(
+        Flag.withDescription("Commit the skill's files (and nothing else)"),
+      ),
+    },
+    Effect.fn(`toolreader history skill ${action}`)(function* ({ repo, commit }) {
+      const top = (yield* run((yield* Path.Path).resolve(repo), "git", [
+        "rev-parse",
+        "--show-toplevel",
+      ])).trim();
+      yield* Console.log(yield* skillFiles(top, action));
+      if (commit) yield* Console.log(yield* commitSkill(top, action));
+      else
+        yield* Console.log(
+          action === "install"
+            ? `Commit it so every agent here gets it: git add ${SKILL_PATHS.join(" ")} && git commit (or pass --commit)`
+            : "Commit the removal (or pass --commit).",
+        );
+    }),
+  ).pipe(
+    Command.withDescription(
+      action === "install"
+        ? "Add the agent skill that has agents declare which turns produced each commit (Claude Code and Codex)"
+        : "Remove the agent skill (left alone if edited)",
+    ),
+  );
+
 export const historyCommand = Command.make("history").pipe(
   Command.withDescription("Agent history per commit, kept on the history backend"),
   Command.withSubcommands([
     sync,
     site,
     ...declareCommands,
+    Command.make("skill").pipe(
+      Command.withDescription("The agent skill, committed once per repo"),
+      Command.withSubcommands([skillCommand("install"), skillCommand("uninstall")]),
+    ),
     Command.make("hook").pipe(
       Command.withDescription("The git hooks that send history as you push"),
       Command.withSubcommands([installer("install"), installer("uninstall")]),

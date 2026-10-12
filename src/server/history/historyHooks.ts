@@ -21,7 +21,7 @@ import { SESSION_TRAILER } from "../../core/ledger.ts";
 import { redactText } from "../../core/proof.ts";
 import { ServerConfig } from "../ServerConfig.ts";
 import { HistoryFailed } from "./HistoryClient.ts";
-import { skillFiles } from "./historySkill.ts";
+import { hasSkill } from "./historySkill.ts";
 
 export const HOOK_MARKER = "# toolreader history hook";
 /** The opt-in: hooks act only where this is true. */
@@ -213,12 +213,10 @@ export const installHooks = Effect.fn("historyHooks.install")(function* (
       Effect.catch((e) => Effect.succeed(`commit-msg: ${e.message}`)),
     ),
   );
-  // The skill that has agents declare their own history; an edited one is a warning.
-  out.push(
-    yield* skillFiles(repo, action).pipe(
-      Effect.catch((e) => Effect.succeed(`skill: ${e.message}`)),
-    ),
-  );
+  if (action === "install" && !(yield* hasSkill(repo)))
+    out.push(
+      "No agent skill here yet: `toolreader history skill install --commit` adds it, so agents declare their own history.",
+    );
   if (action === "install") {
     yield* git(repo, ["config", OPT_IN_KEY, "true"]);
     out.push(`Set ${OPT_IN_KEY}=true: pushes to origin send their agent history.`);

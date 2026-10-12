@@ -42,7 +42,8 @@ Agent history per commit: which agent turns wrote each commit, kept on a history
 ```bash
 toolreader backend serve [--port 4780]                          # the backend, on Postgres at TOOLREADER_DATABASE_URL
 toolreader backend token create --workspace team --name laptop  # prints a token, once
-toolreader history hook install [--repo .]                      # opt in: hooks, plus the agent skill below
+toolreader history hook install [--repo .]                      # opt in: this clone's hooks
+toolreader history skill install [--repo .] [--commit]          # the agent skill below, committed once per repo
 toolreader history link --sha HEAD [--turns 3-5,9] [--note …]   # from an agent: these turns produced that commit
 toolreader history turns [--session ID]                         # the turns to choose from
 toolreader history sync --range main..HEAD [--dry-run]          # or by hand (--pr N, --sha X)
@@ -51,7 +52,7 @@ toolreader history site --pr 42 [--out DIR]                     # the PR's page:
 
 `~/.toolreader/config.json` names the backend: `{"backend": {"url": "https://…", "token": "trk_…", "workspace": "team"}}`, or `TOOLREADER_BACKEND_URL`, `_TOKEN` and `_WORKSPACE`. Plain `http://` only to this machine: the token goes with every request.
 
-Agents declare their own history: right after a commit, or after splitting, squashing or rebasing, an agent runs `history link` with the turns that produced the commit, in its own session or another (`--session`), and a note; `history unlink` takes a wrong link back. The command stores nothing: it checks what it's told and prints the commit's full SHA, and `history sync` finds it in the agent's session history. `history hook install` also writes the skill that tells agents to do it, `.claude/skills/toolreader-history/SKILL.md`, linked from `.agents/skills/` for Codex; commit it. A declared link comes first and replaces what matching found for that thread.
+Agents declare their own history: right after a commit, or after splitting, squashing or rebasing, an agent runs `history link` with the turns that produced the commit, in its own session or another (`--session`), and a note; `history unlink` takes a wrong link back. The command stores nothing: it checks what it's told and prints the commit's full SHA, and `history sync` finds it in the agent's session history. `history skill install --commit` adds and commits the skill that tells agents to do it, `.claude/skills/toolreader-history/SKILL.md`, linked from `.agents/skills/` for Codex. Hooks are per clone; the skill is in the repo, so every agent working in it gets it. A declared link comes first and replaces what matching found for that thread.
 
 Without a declaration, a commit is linked to the agent turns whose edits added its lines, lines its parent didn't have, wherever and whenever those turns ran: in another worktree, days before the commit, before a rebase, a squash or a stack split from one branch, under a file name the commit has since moved. The page shows each link as its episode (the turns that wrote the lines and the short runs between them) and how many of the commit's new lines its agents wrote. An `Agent-Session: codex:<id>` trailer, which the `commit-msg` hook adds inside an agent session, names a thread outright. Each linked thread goes to the backend whole, once, redacted (secrets `[redacted]`, the home directory `~`), and again only when it grew; a commit's links are replaced whenever it is linked again.
 
