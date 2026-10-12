@@ -10,7 +10,16 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { commitMsgHook, hookFile, prePushHook, sealHook } from "./historyHooks.ts";
-import { commitSkill, SKILL, sealSkill, skillFiles } from "./historySkill.ts";
+import {
+  commitSkill,
+  dirtyPaths,
+  INSTALLED_PATHS,
+  installSkill,
+  REMIND_COMMAND,
+  SKILL,
+  sealSkill,
+  skillFiles,
+} from "./historySkill.ts";
 
 const sh = (cwd: string, args: ReadonlyArray<string>, env: Record<string, string> = {}) =>
   Effect.gen(function* () {
@@ -194,7 +203,7 @@ describe("history hooks", () => {
         assert.isTrue(yield* fs.exists(file));
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
-  it.live("commits the skill's files and nothing else, then their removal", () =>
+  it.live("installs the skill, rule and reminder around what's there, and commits only those", () =>
     Effect.gen(function* () {
       const { repo } = yield* setup;
       const fs = yield* FileSystem.FileSystem;
@@ -202,19 +211,58 @@ describe("history hooks", () => {
         sh(repo, ["-c", `git -c user.name=a -c user.email=a@b ${args}`]).pipe(
           Effect.map((r) => r.out),
         );
+      const read = (p: string) => fs.readFileString(`${repo}/${p}`);
+      yield* fs.makeDirectory(`${repo}/.claude`, { recursive: true });
+      yield* fs.writeFileString(`${repo}/AGENTS.md`, "# Team rules\n\nBe kind.\n");
+      yield* fs.writeFileString(
+        `${repo}/.claude/settings.json`,
+        '{"permissions":{"allow":["Bash(ls)"]}}\n',
+      );
+      yield* git("add -A && git -c user.name=a -c user.email=a@b commit -qm rules");
       yield* fs.writeFileString(`${repo}/mine.txt`, "staged by me\n");
       yield* git("add mine.txt");
-      yield* skillFiles(repo, "install");
-      assert.strictEqual(yield* commitSkill(repo, "install"), "Committed the skill.");
-      assert.strictEqual(yield* commitSkill(repo, "install"), "The skill is committed as it is.");
-      assert.deepStrictEqual((yield* git("show --name-only --format= HEAD")).split("\n"), [
+
+      const installed = yield* installSkill(repo, "install");
+      assert.deepStrictEqual(installed.failed, []);
+      assert.include(
+        yield* read("AGENTS.md"),
+        "# Team rules\n\nBe kind.\n\n<!-- toolreader-history",
+      );
+      assert.include(yield* read("AGENTS.md"), "toolreader history link --sha HEAD");
+      assert.include(yield* read("CLAUDE.md"), "toolreader history link --sha HEAD");
+      const settings = (yield* read(".claude/settings.json")) as string;
+      assert.include(settings, '"Bash(ls)"');
+      assert.include(settings, REMIND_COMMAND);
+      assert.deepStrictEqual(yield* dirtyPaths(repo, INSTALLED_PATHS), [
+        ".claude/skills/toolreader-history",
         ".agents/skills/toolreader-history",
-        ".claude/skills/toolreader-history/SKILL.md",
+        "AGENTS.md",
+        "CLAUDE.md",
+        ".claude/settings.json",
       ]);
+      assert.strictEqual(
+        yield* commitSkill(repo, "install", INSTALLED_PATHS),
+        "Committed the skill.",
+      );
       assert.strictEqual(yield* git("diff --cached --name-only"), "mine.txt");
-      yield* skillFiles(repo, "uninstall");
-      assert.strictEqual(yield* commitSkill(repo, "uninstall"), "Committed its removal.");
-      assert.strictEqual(yield* git("ls-files .claude .agents"), "");
+      // Again: nothing changes.
+      assert.isTrue(
+        (yield* installSkill(repo, "install")).lines.every((l) => l.startsWith("Already")),
+      );
+      assert.strictEqual(
+        yield* commitSkill(repo, "install", INSTALLED_PATHS),
+        "The skill is committed as it is.",
+      );
+
+      yield* installSkill(repo, "uninstall");
+      assert.strictEqual(yield* read("AGENTS.md"), "# Team rules\n\nBe kind.\n");
+      assert.isFalse(yield* fs.exists(`${repo}/CLAUDE.md`));
+      assert.notInclude((yield* read(".claude/settings.json")) as string, "toolreader");
+      assert.strictEqual(
+        yield* commitSkill(repo, "uninstall", INSTALLED_PATHS),
+        "Committed its removal.",
+      );
+      assert.strictEqual(yield* git("ls-files .agents .claude/skills CLAUDE.md"), "");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

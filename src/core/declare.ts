@@ -195,3 +195,20 @@ export function applyDeclarations(
     ],
   };
 }
+
+/**
+ * Whether a shell command runs `git commit` (past `-C dir`, `-c k=v` and other global flags; not
+ * `--dry-run`): what Claude Code's hook reminds the agent to declare after.
+ */
+export function isGitCommit(command: string): boolean {
+  return splitCommand(unwrapShell(command)).some((pipeline) =>
+    pipeline.some((words) => {
+      let i = 0;
+      while (i < words.length && /^[A-Za-z_]\w*=/.test(words[i]!)) i++;
+      if (words[i]?.replace(/^.*\//, "") !== "git") return false;
+      i++;
+      while (i < words.length && words[i]!.startsWith("-")) i += /^-[Cc]$/.test(words[i]!) ? 2 : 1;
+      return words[i] === "commit" && !words.includes("--dry-run");
+    }),
+  );
+}

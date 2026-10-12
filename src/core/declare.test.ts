@@ -3,6 +3,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   applyDeclarations,
   declarationsIn,
+  isGitCommit,
   parseDeclaration,
   parseTurns,
   turnIds,
@@ -141,5 +142,20 @@ describe("declare", () => {
       { threadId: "t4", turns: ["w1"], via: "asserted", lines: 0, declaredBy: "t1" },
       { threadId: "t2", turns: ["v1"], via: "content", lines: 2 },
     ]);
+  });
+  it("tells a git commit from other commands", () => {
+    for (const yes of [
+      'git commit -m "x"',
+      "cd repo && git -C sub -c user.name=a commit --amend --no-edit",
+      "/bin/zsh -lc 'git add -A && git commit -qm wip'",
+    ])
+      assert.isTrue(isGitCommit(yes), yes);
+    for (const no of [
+      "git commit --dry-run",
+      "git log --grep commit",
+      "echo git commit",
+      "git status",
+    ])
+      assert.isFalse(isGitCommit(no), no);
   });
 });

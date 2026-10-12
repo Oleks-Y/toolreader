@@ -12,10 +12,13 @@ import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
+import * as Stdio from "effect/Stdio";
+import * as Stream from "effect/Stream";
 import { Command, Flag } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { declaredLine, declarationsIn, parseTurns } from "../../core/declare.ts";
+import { declaredLine, declarationsIn, isGitCommit, parseTurns } from "../../core/declare.ts";
 import { redactText } from "../../core/proof.ts";
 import { splitTurns } from "../../core/tree.ts";
 import { CliApp } from "../app.ts";
@@ -199,4 +202,50 @@ const unlink = Command.make(
   }),
 ).pipe(Command.withDescription("Declare that a session didn't produce a commit"));
 
-export const declareCommands = [turns, link, unlink] as const;
+const ToolUse = Schema.Struct({
+  tool_name: Schema.optional(Schema.String),
+  tool_input: Schema.optional(Schema.Struct({ command: Schema.optional(Schema.String) })),
+});
+const decodeToolUse = Schema.decodeUnknownOption(Schema.fromJsonString(ToolUse));
+const Reminder = Schema.fromJsonString(
+  Schema.Struct({
+    hookSpecificOutput: Schema.Struct({
+      hookEventName: Schema.Literal("PostToolUse"),
+      additionalContext: Schema.String,
+    }),
+  }),
+);
+const encodeReminder = Schema.encodeSync(Reminder);
+
+/**
+ * Claude Code's `PostToolUse` hook (`history skill install` registers it in
+ * `.claude/settings.json`): after a Bash command that ran `git commit`, it puts a reminder to
+ * declare in the agent's context. Silent otherwise, and it never fails the agent's command.
+ */
+const remind = Command.make(
+  "remind",
+  {},
+  Effect.fn("toolreader history remind")(function* () {
+    const input = yield* Effect.flatMap(Stdio.Stdio, (stdio) =>
+      stdio.stdin.pipe(Stream.decodeText(), Stream.mkString),
+    ).pipe(Effect.orElseSucceed(() => ""));
+    const use = Option.getOrNull(decodeToolUse(input));
+    const command = use?.tool_input?.command;
+    if (use?.tool_name !== "Bash" || !command || !isGitCommit(command)) return;
+    yield* Console.log(
+      encodeReminder({
+        hookSpecificOutput: {
+          hookEventName: "PostToolUse",
+          additionalContext:
+            'You just made a git commit. Declare which of your turns produced it: `toolreader history link --sha HEAD --note "<what these turns did>"` (add `--turns 3-5` when only some did; `toolreader history turns` lists them). The toolreader-history skill has the details.',
+        },
+      }),
+    );
+  }),
+).pipe(
+  Command.withDescription(
+    "Claude Code's hook after each Bash command: reminds the agent to declare a commit it just made",
+  ),
+);
+
+export const declareCommands = [turns, link, unlink, remind] as const;

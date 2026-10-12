@@ -22,7 +22,7 @@ import { SESSION_SOURCES } from "../RepoSessions.ts";
 import { ServerConfig } from "../ServerConfig.ts";
 import { declareCommands } from "./declareCli.ts";
 import { HistoryFailed } from "./HistoryClient.ts";
-import { commitSkill, SKILL_PATHS, skillFiles } from "./historySkill.ts";
+import { commitSkill, dirtyPaths, INSTALLED_PATHS, installSkill } from "./historySkill.ts";
 import { appendLog, causeMessage, installHooks, pending } from "./historyHooks.ts";
 import { HistorySync, type SyncReport } from "./HistorySync.ts";
 
@@ -278,7 +278,9 @@ const skillCommand = (action: "install" | "uninstall") =>
         Flag.withDefault("."),
       ),
       commit: Flag.boolean("commit").pipe(
-        Flag.withDescription("Commit the skill's files (and nothing else)"),
+        Flag.withDescription(
+          "Commit what this changed, and nothing else (a file with other uncommitted changes is left to you)",
+        ),
       ),
     },
     Effect.fn(`toolreader history skill ${action}`)(function* ({ repo, commit }) {
@@ -286,20 +288,26 @@ const skillCommand = (action: "install" | "uninstall") =>
         "rev-parse",
         "--show-toplevel",
       ])).trim();
-      yield* Console.log(yield* skillFiles(top, action));
-      if (commit) yield* Console.log(yield* commitSkill(top, action));
-      else
+      // Edits of yours in AGENTS.md or settings.json are never swept into our commit.
+      const dirty = yield* dirtyPaths(top, INSTALLED_PATHS);
+      const { lines, failed } = yield* installSkill(top, action);
+      for (const line of lines) yield* Console.log(line);
+      for (const why of failed) yield* Console.log(`! ${why}`);
+      const ours = INSTALLED_PATHS.filter((p) => !dirty.includes(p));
+      if (commit) {
+        yield* Console.log(yield* commitSkill(top, action, ours));
+        for (const p of dirty)
+          yield* Console.log(`  ${p} had other uncommitted changes: commit it yourself`);
+      } else
         yield* Console.log(
-          action === "install"
-            ? `Commit it so every agent here gets it: git add ${SKILL_PATHS.join(" ")} && git commit (or pass --commit)`
-            : "Commit the removal (or pass --commit).",
+          `Commit ${action === "install" ? "these" : "the removal"} so every agent here gets ${action === "install" ? "them" : "it"} (or pass --commit).`,
         );
     }),
   ).pipe(
     Command.withDescription(
       action === "install"
-        ? "Add the agent skill that has agents declare which turns produced each commit (Claude Code and Codex)"
-        : "Remove the agent skill (left alone if edited)",
+        ? "Have agents declare which turns produced each commit: the skill, a rule in AGENTS.md and CLAUDE.md, and Claude Code's reminder after each commit"
+        : "Remove the skill, the rule and the reminder (each left alone if edited)",
     ),
   );
 

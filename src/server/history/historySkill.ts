@@ -9,6 +9,7 @@ import * as NodeCrypto from "node:crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { HistoryFailed } from "./HistoryClient.ts";
@@ -124,6 +125,158 @@ export const skillFiles = Effect.fn("historySkill.files")(
   Effect.catchTag("PlatformError", (e) => Effect.fail(new HistoryFailed({ message: e.message }))),
 );
 
+/**
+ * The rule every session of an agent reads (AGENTS.md for Codex, CLAUDE.md for Claude Code): a
+ * skill is only read when the agent thinks of it, this is always in context. A block of its own,
+ * sealed by its hash, so an upgrade replaces ours and an edited one is left alone.
+ */
+export const RULE = `## Agent history
+
+After each commit you make in this repository, declare which of your turns produced it:
+\`toolreader history link --sha HEAD --note "<what these turns did>"\`. When you split, squash or
+rebase commits, declare where each one came from. The \`${SKILL_NAME}\` skill has the details.
+`;
+const RULE_START = "<!-- toolreader-history sha256 ";
+const RULE_END = "<!-- /toolreader-history -->";
+const RULE_BLOCK =
+  /<!-- toolreader-history sha256 ([0-9a-f]{64}) -->\n([\s\S]*?)<!-- \/toolreader-history -->\n?/;
+const ruleBlock = (text: string) => `${RULE_START}${sha256(text)} -->\n${text}${RULE_END}\n`;
+
+/** Adds, updates or removes the rule block in one instructions file. */
+const ruleFile = Effect.fn("historySkill.rule")(function* (
+  file: string,
+  action: "install" | "uninstall",
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const current = (yield* fs.exists(file)) ? yield* fs.readFileString(file) : null;
+  const found = current === null ? null : RULE_BLOCK.exec(current);
+  const ours = found !== null && sha256(found[2]!) === found[1];
+  if (found && !ours)
+    return yield* new HistoryFailed({
+      message: `${file}: its toolreader-history rule was edited; leaving it alone.`,
+    });
+  if (action === "uninstall") {
+    if (!found || current === null) return `No rule in ${file}.`;
+    const rest = current.replace(RULE_BLOCK, "").replace(/\n+$/, "\n");
+    if (rest.trim() === "") yield* fs.remove(file);
+    else yield* fs.writeFileString(file, rest);
+    return `Removed the rule from ${file}.`;
+  }
+  const block = ruleBlock(RULE);
+  if (found?.[0] === block) return `Already in ${file}.`;
+  const next =
+    current === null
+      ? block
+      : found
+        ? current.replace(RULE_BLOCK, block)
+        : `${current.replace(/\n*$/, "")}\n\n${block}`;
+  yield* fs.writeFileString(file, next);
+  return `${found ? "Updated" : "Added"} the rule in ${file}.`;
+});
+
+/** What Claude Code runs after each Bash command: a reminder when it was a `git commit`. */
+export const REMIND_COMMAND =
+  "command -v toolreader >/dev/null 2>&1 && toolreader history remind || true";
+const Settings = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown), { space: 2 });
+const decodeSettings = Schema.decodeUnknownEffect(Settings);
+const encodeSettings = Schema.encodeEffect(Settings);
+type Entry = { matcher?: unknown; hooks?: Array<{ command?: unknown }> };
+const isOurs = (e: Entry) =>
+  Array.isArray(e.hooks) &&
+  e.hooks.length > 0 &&
+  e.hooks.every(
+    (h) => typeof h.command === "string" && h.command.includes("toolreader history remind"),
+  );
+
+/** Adds or removes the `PostToolUse` hook in `.claude/settings.json`, keeping everything else. */
+const claudeHook = Effect.fn("historySkill.claudeHook")(function* (
+  file: string,
+  action: "install" | "uninstall",
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const current = (yield* fs.exists(file)) ? yield* fs.readFileString(file) : null;
+  const settings: Record<string, unknown> =
+    current === null
+      ? {}
+      : {
+          ...(yield* decodeSettings(current).pipe(
+            Effect.mapError(
+              () => new HistoryFailed({ message: `${file} isn't JSON; leaving it alone.` }),
+            ),
+          )),
+        };
+  const hooks = (
+    settings.hooks && typeof settings.hooks === "object" ? { ...(settings.hooks as object) } : {}
+  ) as Record<string, unknown>;
+  const entries = (Array.isArray(hooks.PostToolUse) ? hooks.PostToolUse : []) as Entry[];
+  const others = entries.filter((e) => !isOurs(e));
+  const mine = { matcher: "Bash", hooks: [{ type: "command", command: REMIND_COMMAND }] };
+  const had = entries.find(isOurs);
+  if (
+    action === "install" &&
+    had &&
+    had.hooks?.[0]?.command === REMIND_COMMAND &&
+    had.hooks.length === 1
+  )
+    return `Already in ${file}.`;
+  if (action === "uninstall" && !had) return `No reminder hook in ${file}.`;
+  const next = action === "install" ? [...others, mine] : others;
+  if (next.length > 0) hooks.PostToolUse = next;
+  else delete hooks.PostToolUse;
+  if (Object.keys(hooks).length > 0) settings.hooks = hooks;
+  else delete settings.hooks;
+  if (Object.keys(settings).length === 0) {
+    if (current !== null) yield* fs.remove(file);
+  } else {
+    yield* fs.makeDirectory(path.dirname(file), { recursive: true });
+    yield* fs.writeFileString(file, `${yield* encodeSettings(settings).pipe(Effect.orDie)}\n`);
+  }
+  return action === "install"
+    ? `${had ? "Updated" : "Added"} the commit reminder hook in ${file} (Claude Code).`
+    : `Removed the commit reminder hook from ${file}.`;
+});
+
+/**
+ * Everything \`history skill install\` puts in a repo: the skill, the rule in AGENTS.md and
+ * CLAUDE.md (once, when CLAUDE.md is a link to AGENTS.md), and Claude Code's reminder hook. Each
+ * part reports on its own; one left alone (edited) doesn't stop the others. Returns the lines to
+ * print and the paths it changed, for \`--commit\`.
+ */
+export const installSkill = Effect.fn("historySkill.install")(function* (
+  repo: string,
+  action: "install" | "uninstall",
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const lines: string[] = [];
+  const failed: string[] = [];
+  const part = <R>(effect: Effect.Effect<string, { readonly message: string }, R>) =>
+    effect.pipe(
+      Effect.map((line) => lines.push(line)),
+      Effect.catch((e) => Effect.sync(() => failed.push(e.message))),
+    );
+  yield* part(skillFiles(repo, action));
+  const agents = path.join(repo, "AGENTS.md");
+  const claude = path.join(repo, "CLAUDE.md");
+  yield* part(ruleFile(agents, action));
+  const sameFile =
+    (yield* fs.realPath(claude).pipe(Effect.orElseSucceed(() => ""))) ===
+    (yield* fs.realPath(agents).pipe(Effect.orElseSucceed(() => "-")));
+  if (!sameFile) yield* part(ruleFile(claude, action));
+  yield* part(claudeHook(path.join(repo, ".claude", "settings.json"), action));
+  return { lines, failed };
+});
+
+/** Every path \`installSkill\` may change, as \`git add\` takes them. */
+export const INSTALLED_PATHS = [
+  `.claude/skills/${SKILL_NAME}`,
+  `.agents/skills/${SKILL_NAME}`,
+  "AGENTS.md",
+  "CLAUDE.md",
+  ".claude/settings.json",
+] as const;
+
 /** The skill's paths in a repo, as `git add` takes them. */
 export const SKILL_PATHS = [
   `.claude/skills/${SKILL_NAME}`,
@@ -138,24 +291,44 @@ export const hasSkill = (repo: string) =>
     ),
   ).pipe(Effect.orElseSucceed(() => false));
 
+/** Paths of `paths` with uncommitted changes of their own (modified, staged or untracked). */
+export const dirtyPaths = Effect.fn("historySkill.dirty")(function* (
+  repo: string,
+  paths: ReadonlyArray<string>,
+) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const out = yield* spawner
+    .string(ChildProcess.make("git", ["-C", repo, "status", "--porcelain", "--", ...paths]))
+    .pipe(Effect.orElseSucceed(() => ""));
+  return paths.filter((p) =>
+    out.split("\n").some((l) => l.slice(3).replace(/\/$/, "").startsWith(p)),
+  );
+});
+
 /**
- * Commits the skill's files (or their removal), and nothing else; a no-op when the repo already
- * has them as they are.
+ * Commits `paths` (what the install changed, or removed), and nothing else; a no-op when the repo
+ * already has them as they are.
  */
 export const commitSkill = Effect.fn("historySkill.commit")(
-  function* (repo: string, action: "install" | "uninstall") {
+  function* (repo: string, action: "install" | "uninstall", paths: ReadonlyArray<string>) {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const git = (args: ReadonlyArray<string>) =>
       spawner.exitCode(ChildProcess.make("git", ["-C", repo, ...args]));
-    const staged = yield* git(
-      action === "install"
-        ? ["add", "--", ...SKILL_PATHS]
-        : ["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", ...SKILL_PATHS],
-    );
-    if (staged !== ChildProcessSpawner.ExitCode(0))
+    // Only what exists or git knows: `git add` refuses a path that is neither.
+    const known: string[] = [];
+    for (const p of paths)
+      if (
+        (yield* fs.exists(path.join(repo, p))) ||
+        (yield* git(["ls-files", "--error-unmatch", "--", p])) === ChildProcessSpawner.ExitCode(0)
+      )
+        known.push(p);
+    if (known.length === 0) return "Nothing to commit.";
+    if ((yield* git(["add", "-A", "--", ...known])) !== ChildProcessSpawner.ExitCode(0))
       return yield* new HistoryFailed({ message: `staging the skill failed in ${repo}` });
     if (
-      (yield* git(["diff", "--cached", "--quiet", "--", ...SKILL_PATHS])) ===
+      (yield* git(["diff", "--cached", "--quiet", "--", ...known])) ===
       ChildProcessSpawner.ExitCode(0)
     )
       return action === "install" ? "The skill is committed as it is." : "Nothing to commit.";
@@ -167,7 +340,7 @@ export const commitSkill = Effect.fn("historySkill.commit")(
         ? "chore: agent history skill (toolreader)"
         : "chore: remove the agent history skill (toolreader)",
       "--",
-      ...SKILL_PATHS,
+      ...known,
     ]);
     if (code !== ChildProcessSpawner.ExitCode(0))
       return yield* new HistoryFailed({ message: `git commit failed in ${repo} (exit ${code})` });
