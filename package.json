@@ -2,6 +2,7 @@
   "name": "toolreader",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "bin": {
     "toolreader": "./dist/bin.mjs"
   },
