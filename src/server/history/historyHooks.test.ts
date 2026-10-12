@@ -233,12 +233,15 @@ describe("history hooks", () => {
       const settings = (yield* read(".claude/settings.json")) as string;
       assert.include(settings, '"Bash(ls)"');
       assert.include(settings, REMIND_COMMAND);
+      // Codex: the same hook, in its own file.
+      assert.include((yield* read(".codex/hooks.json")) as string, REMIND_COMMAND);
       assert.deepStrictEqual(yield* dirtyPaths(repo, INSTALLED_PATHS), [
         ".claude/skills/toolreader-history",
         ".agents/skills/toolreader-history",
         "AGENTS.md",
         "CLAUDE.md",
         ".claude/settings.json",
+        ".codex/hooks.json",
       ]);
       assert.strictEqual(
         yield* commitSkill(repo, "install", INSTALLED_PATHS),
@@ -257,6 +260,7 @@ describe("history hooks", () => {
       yield* installSkill(repo, "uninstall");
       assert.strictEqual(yield* read("AGENTS.md"), "# Team rules\n\nBe kind.\n");
       assert.isFalse(yield* fs.exists(`${repo}/CLAUDE.md`));
+      assert.isFalse(yield* fs.exists(`${repo}/.codex/hooks.json`));
       assert.notInclude((yield* read(".claude/settings.json")) as string, "toolreader");
       assert.strictEqual(
         yield* commitSkill(repo, "uninstall", INSTALLED_PATHS),

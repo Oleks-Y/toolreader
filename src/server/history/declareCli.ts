@@ -204,7 +204,12 @@ const unlink = Command.make(
 
 const ToolUse = Schema.Struct({
   tool_name: Schema.optional(Schema.String),
-  tool_input: Schema.optional(Schema.Struct({ command: Schema.optional(Schema.String) })),
+  // Claude Code sends the command as a string; Codex may send its argv.
+  tool_input: Schema.optional(
+    Schema.Struct({
+      command: Schema.optional(Schema.Union([Schema.String, Schema.Array(Schema.String)])),
+    }),
+  ),
 });
 const decodeToolUse = Schema.decodeUnknownOption(Schema.fromJsonString(ToolUse));
 const Reminder = Schema.fromJsonString(
@@ -218,8 +223,8 @@ const Reminder = Schema.fromJsonString(
 const encodeReminder = Schema.encodeSync(Reminder);
 
 /**
- * Claude Code's `PostToolUse` hook (`history skill install` registers it in
- * `.claude/settings.json`): after a Bash command that ran `git commit`, it puts a reminder to
+ * The `PostToolUse` hook of Claude Code and Codex (`history skill install` registers it in
+ * `.claude/settings.json` and `.codex/hooks.json`): after a Bash command that ran `git commit`, it puts a reminder to
  * declare in the agent's context. Silent otherwise, and it never fails the agent's command.
  */
 const remind = Command.make(
@@ -230,7 +235,14 @@ const remind = Command.make(
       stdio.stdin.pipe(Stream.decodeText(), Stream.mkString),
     ).pipe(Effect.orElseSucceed(() => ""));
     const use = Option.getOrNull(decodeToolUse(input));
-    const command = use?.tool_input?.command;
+    const given = use?.tool_input?.command;
+    // An argv: its shell script when it is `sh -c …`, else the words.
+    const command =
+      typeof given === "string" || given === undefined
+        ? given
+        : given.length >= 3 && /^-\w*c$/.test(given[1]!)
+          ? given.slice(2).join(" ")
+          : given.join(" ");
     if (use?.tool_name !== "Bash" || !command || !isGitCommit(command)) return;
     yield* Console.log(
       encodeReminder({
@@ -244,7 +256,7 @@ const remind = Command.make(
   }),
 ).pipe(
   Command.withDescription(
-    "Claude Code's hook after each Bash command: reminds the agent to declare a commit it just made",
+    "The agents' hook after each Bash command: reminds the agent to declare a commit it just made",
   ),
 );
 

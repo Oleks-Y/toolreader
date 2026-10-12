@@ -188,10 +188,14 @@ const isOurs = (e: Entry) =>
     (h) => typeof h.command === "string" && h.command.includes("toolreader history remind"),
   );
 
-/** Adds or removes the `PostToolUse` hook in `.claude/settings.json`, keeping everything else. */
-const claudeHook = Effect.fn("historySkill.claudeHook")(function* (
+/**
+ * Adds or removes the `PostToolUse` hook in a hooks file, keeping everything else in it: Claude
+ * Code's `.claude/settings.json` and Codex's `.codex/hooks.json` take the same shape.
+ */
+const reminderHook = Effect.fn("historySkill.reminderHook")(function* (
   file: string,
   action: "install" | "uninstall",
+  agent: "Claude Code" | "Codex",
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -233,13 +237,14 @@ const claudeHook = Effect.fn("historySkill.claudeHook")(function* (
     yield* fs.writeFileString(file, `${yield* encodeSettings(settings).pipe(Effect.orDie)}\n`);
   }
   return action === "install"
-    ? `${had ? "Updated" : "Added"} the commit reminder hook in ${file} (Claude Code).`
+    ? `${had ? "Updated" : "Added"} the commit reminder hook in ${file} (${agent}${agent === "Codex" ? ": approve it once with /hooks" : ""}).`
     : `Removed the commit reminder hook from ${file}.`;
 });
 
 /**
  * Everything \`history skill install\` puts in a repo: the skill, the rule in AGENTS.md and
- * CLAUDE.md (once, when CLAUDE.md is a link to AGENTS.md), and Claude Code's reminder hook. Each
+ * CLAUDE.md (once, when CLAUDE.md is a link to AGENTS.md), and the reminder hook for Claude Code
+ * and Codex. Each
  * part reports on its own; one left alone (edited) doesn't stop the others. Returns the lines to
  * print and the paths it changed, for \`--commit\`.
  */
@@ -264,7 +269,8 @@ export const installSkill = Effect.fn("historySkill.install")(function* (
     (yield* fs.realPath(claude).pipe(Effect.orElseSucceed(() => ""))) ===
     (yield* fs.realPath(agents).pipe(Effect.orElseSucceed(() => "-")));
   if (!sameFile) yield* part(ruleFile(claude, action));
-  yield* part(claudeHook(path.join(repo, ".claude", "settings.json"), action));
+  yield* part(reminderHook(path.join(repo, ".claude", "settings.json"), action, "Claude Code"));
+  yield* part(reminderHook(path.join(repo, ".codex", "hooks.json"), action, "Codex"));
   return { lines, failed };
 });
 
@@ -275,6 +281,7 @@ export const INSTALLED_PATHS = [
   "AGENTS.md",
   "CLAUDE.md",
   ".claude/settings.json",
+  ".codex/hooks.json",
 ] as const;
 
 /** The skill's paths in a repo, as `git add` takes them. */
