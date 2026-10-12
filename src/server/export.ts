@@ -37,7 +37,15 @@ export const exportCommand = Command.make(
       Flag.withDescription("Print the JSON instead of writing a file"),
     ),
   },
-  Effect.fn(function* ({ threadId, turns, from, to, noOutputs, repo, stdout }) {
+  Effect.fn("toolreader export")(function* ({
+    threadId,
+    turns,
+    from,
+    to,
+    noOutputs,
+    repo,
+    stdout,
+  }) {
     const parsedTurns = Option.flatMap(turns, parseTurns);
     if (Option.isSome(turns) && Option.isNone(parsedTurns)) {
       return yield* new InvalidProofScope({

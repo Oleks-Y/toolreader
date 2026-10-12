@@ -12,6 +12,7 @@ import { exportCommand } from "./export.ts";
 import { HttpServerLive } from "./http.ts";
 import { ledgerCommand } from "./ledgerCli.ts";
 import { ServerConfig } from "./ServerConfig.ts";
+import { withTracing } from "./Trace.ts";
 
 const Announce = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -32,6 +33,7 @@ Command.make("toolreader").pipe(
   Command.withDescription("What coding agents did: sessions, and agent history per commit"),
   Command.withSubcommands([serve, ledgerCommand, exportCommand]),
   Command.run({ version: packageJson.version }),
+  withTracing(packageJson.version),
   Effect.provide(NodeServices.layer),
   NodeRuntime.runMain,
 );

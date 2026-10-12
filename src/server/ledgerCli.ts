@@ -116,7 +116,7 @@ const sync = Command.make(
     ),
     sanitizeAgent: agentFlag("sanitize-agent"),
   },
-  Effect.fn(function* ({
+  Effect.fn("toolreader ledger sync")(function* ({
     repo,
     range,
     source,
@@ -178,7 +178,7 @@ const sync = Command.make(
 const show = Command.make(
   "show",
   { repo, range },
-  Effect.fn(function* ({ repo, range }) {
+  Effect.fn("toolreader ledger show")(function* ({ repo, range }) {
     // Its output goes to CI logs and job summaries: print the public view.
     const view = yield* Effect.gen(function* () {
       const { home } = yield* ServerConfig;
@@ -208,7 +208,7 @@ const site = Command.make(
       Flag.withDefault("ledger-site"),
     ),
   },
-  Effect.fn(function* ({ repo, range, out }) {
+  Effect.fn("toolreader ledger site")(function* ({ repo, range, out }) {
     const { file, view } = yield* Effect.flatMap(Ledger, (ledger) =>
       ledger.site(repo, Option.getOrNull(range), out),
     ).pipe(Effect.provide(offline));
@@ -238,7 +238,7 @@ const sanitize = Command.make(
       Flag.withDescription("Replace origin's agent-ledger too, unless it moved since it was read"),
     ),
   },
-  Effect.fn(function* ({ repo, mode, agent, push }) {
+  Effect.fn("toolreader ledger sanitize")(function* ({ repo, mode, agent, push }) {
     const result = yield* Effect.flatMap(Ledger, (ledger) =>
       ledger.sanitize(repo, { mode: Option.getOrNull(mode), agent: onOff(agent), push }),
     ).pipe(Effect.provide(offline));
@@ -268,7 +268,7 @@ const hook = Command.make(
       ),
     ),
   },
-  Effect.fn(function* ({ action, repo, commit }) {
+  Effect.fn("toolreader ledger hook")(function* ({ action, repo, commit }) {
     // The hook runs this same CLI (the script node started: bin.ts, or the bundled dist/bin.mjs),
     // with absolute paths so it works from any shell.
     const path = yield* Path.Path;
@@ -314,7 +314,7 @@ function explainLines(entry: LedgerEntry | null, sha: string): string[] {
 const explain = Command.make(
   "explain",
   { repo, rev },
-  Effect.fn(function* ({ repo, rev }) {
+  Effect.fn("toolreader ledger explain")(function* ({ repo, rev }) {
     const view = yield* Effect.gen(function* () {
       const { home } = yield* ServerConfig;
       const ledger = yield* Ledger;
@@ -348,7 +348,7 @@ const link = Command.make(
       Flag.withDefault("coder"),
     ),
   },
-  Effect.fn(function* ({ repo, rev, session, role }) {
+  Effect.fn("toolreader ledger link")(function* ({ repo, rev, session, role }) {
     const result = yield* runAssert(repo, rev, {
       link: { session, role, reviewed: role === "reviewer" },
     });
@@ -359,7 +359,7 @@ const link = Command.make(
 const unlink = Command.make(
   "unlink",
   { repo, rev, session: sessionFlag },
-  Effect.fn(function* ({ repo, rev, session }) {
+  Effect.fn("toolreader ledger unlink")(function* ({ repo, rev, session }) {
     const { entry } = yield* runAssert(repo, rev, { unlink: session });
     yield* Console.log(
       `${entry.commit.sha.slice(0, 8)}: ${entry.links.length} threads left\n${LOCAL_ONLY}`,
@@ -378,7 +378,7 @@ const note = Command.make(
       Flag.optional,
     ),
   },
-  Effect.fn(function* ({ repo, rev, text, file }) {
+  Effect.fn("toolreader ledger note")(function* ({ repo, rev, text, file }) {
     const { entry } = yield* runAssert(repo, rev, {
       note: { text, file: Option.getOrNull(file) },
     });
@@ -398,7 +398,7 @@ const review = Command.make(
       Flag.optional,
     ),
   },
-  Effect.fn(function* ({ repo, rev, session: named }) {
+  Effect.fn("toolreader ledger review")(function* ({ repo, rev, session: named }) {
     const session = Option.getOrNull(named) ?? sessionFromEnv(process.env);
     if (!session)
       return yield* new LedgerFailed({
