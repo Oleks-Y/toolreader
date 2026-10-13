@@ -10,6 +10,7 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
 import { InvalidProofScope, ToolreaderApi } from "../core/api.ts";
+import { Blame } from "./Blame.ts";
 import { CLAUDE_ID_PREFIX, ClaudeTranscripts } from "./ClaudeTranscripts.ts";
 import { CODEX_ID_PREFIX, CodexSessions } from "./CodexSessions.ts";
 import { Labeler } from "./Labeler.ts";
@@ -79,6 +80,15 @@ const ThreadsHandlers = HttpApiBuilder.group(
   }),
 );
 
+const BlameHandlers = HttpApiBuilder.group(
+  ToolreaderApi,
+  "blame",
+  Effect.fn(function* (handlers) {
+    const blame = yield* Blame;
+    return handlers.handle("line", ({ query }) => blame.line(query.url));
+  }),
+);
+
 const LabelsHandlers = HttpApiBuilder.group(
   ToolreaderApi,
   "labels",
@@ -120,7 +130,7 @@ const StaticRoute = HttpRouter.add(
 );
 
 const ApiRoutes = HttpApiBuilder.layer(ToolreaderApi).pipe(
-  Layer.provide([ThreadsHandlers, LabelsHandlers]),
+  Layer.provide([ThreadsHandlers, LabelsHandlers, BlameHandlers]),
 );
 
 export const HttpServerLive = Layer.unwrap(
