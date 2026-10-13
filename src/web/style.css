@@ -729,3 +729,48 @@ a.chip {
   margin: 4px 0;
   color: var(--dim);
 }
+
+/* Blame page: the linked threads' actions that edited a line, the rest folded. */
+.blame-form {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0;
+}
+.blame-form input {
+  flex: 1;
+  font: inherit;
+  padding: 5px 8px;
+}
+.blame-head {
+  margin: 8px 0;
+}
+/* Focus (the blame page): why a row is shown, in a gutter left of its row (inside the turn, which clips). */
+.tree.focus .row {
+  margin-left: 96px;
+}
+.tree.focus .row-wrap {
+  position: relative;
+}
+.why {
+  position: absolute;
+  left: 0;
+  width: 90px;
+  top: 3px;
+  text-align: right;
+  font: 11.5px var(--mono);
+  color: var(--dim);
+  white-space: nowrap;
+}
+.row-wrap.mark-wrote > .row {
+  box-shadow: inset 3px 0 var(--write);
+  background: color-mix(in srgb, var(--write) 14%, transparent);
+}
+.row-wrap.mark-wrote > .why {
+  color: var(--write);
+}
+.row-wrap.mark-maybe > .row {
+  box-shadow: inset 3px 0 color-mix(in srgb, var(--write) 45%, transparent);
+}
+.row.hidden-run .icon {
+  color: var(--faint);
+}
