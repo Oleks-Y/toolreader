@@ -4,6 +4,7 @@
 //                           [--source auto|t3|codex-app-server|codex-rollouts|claude-transcripts]
 //                           [--dry-run] [--hook]
 //   toolreader history site (--range A..B | --pr N) [--repo PATH] [--out DIR]
+//   toolreader history audit [--repo PATH] [--source …]           (core/audit.ts)
 //   toolreader history turns|link|unlink …                       (declareCli.ts)
 //   toolreader history skill install|uninstall [--repo PATH] [--commit]   (historySkill.ts)
 //   toolreader history hook install|uninstall [--repo PATH]    (historyHooks.ts)
@@ -16,9 +17,10 @@ import * as Stream from "effect/Stream";
 import { Command, Flag } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
+import { auditLines, auditSessions } from "../../core/audit.ts";
 import { redactText } from "../../core/proof.ts";
 import { CliApp } from "../app.ts";
-import { SESSION_SOURCES } from "../RepoSessions.ts";
+import { RepoSessions, SESSION_SOURCES } from "../RepoSessions.ts";
 import { ServerConfig } from "../ServerConfig.ts";
 import { declareCommands } from "./declareCli.ts";
 import { HistoryFailed } from "./HistoryClient.ts";
@@ -249,6 +251,40 @@ const site = Command.make(
   ),
 );
 
+const audit = Command.make(
+  "audit",
+  {
+    repo: Flag.string("repo").pipe(
+      Flag.withDescription("Repository (any path inside it)"),
+      Flag.withDefault("."),
+    ),
+    source: Flag.choice("source", SESSION_SOURCES).pipe(
+      Flag.withDescription("Where sessions come from, as for sync"),
+      Flag.withDefault("auto"),
+    ),
+  },
+  Effect.fn("toolreader history audit")(function* (flags) {
+    const repo = (yield* Path.Path).resolve(flags.repo);
+    const loaded = yield* Effect.flatMap(RepoSessions, (r) => r.load(repo, flags.source)).pipe(
+      Effect.mapError((e) => new HistoryFailed({ message: e.message })),
+      Effect.provide(CliApp({ appServer: flags.source === "codex-app-server", codexHome: null })),
+    );
+    const audit = auditSessions(
+      loaded.sessions.map((s) => ({
+        provider: s.thread.provider ?? s.thread.source,
+        subagent: s.thread.parent !== null,
+        entries: s.entries,
+        snapshot: s.snapshot,
+      })),
+    );
+    for (const line of auditLines(audit, loaded.unread.length)) yield* Console.log(line);
+  }),
+).pipe(
+  Command.withDescription(
+    "Count what this repo's sessions recorded (starting state, exit codes, exact edits), without printing any of it",
+  ),
+);
+
 const installer = (action: "install" | "uninstall") =>
   Command.make(
     action,
@@ -317,6 +353,7 @@ export const historyCommand = Command.make("history").pipe(
   Command.withSubcommands([
     sync,
     site,
+    audit,
     ...declareCommands,
     Command.make("skill").pipe(
       Command.withDescription("The agent skill, committed once per repo"),
