@@ -6,7 +6,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 import { Check } from "./checks.ts";
-import { Entry, Labels, SessionOrigin, SessionSnapshot } from "./domain.ts";
+import { Entry, Labels, SessionOrigin, SessionSnapshot, snapshotValues } from "./domain.ts";
 import type { CommitHistory } from "./history.ts";
 import { clipOutputs, LedgerThread } from "./ledger.ts";
 import { redactEntries, redactLabels, redactor, redactText } from "./proof.ts";
@@ -209,9 +209,13 @@ export function buildThreadRecord(input: {
     labels: redactLabels(input.labels, clean),
     ...(input.snapshot
       ? {
-          snapshot: Object.fromEntries(
-            Object.entries(input.snapshot).map(([k, v]) => [k, clean(v ?? "")]),
-          ) as SessionSnapshot,
+          // Its values redacted; its manifest version and statuses as they are.
+          snapshot: {
+            ...input.snapshot,
+            ...Object.fromEntries(
+              Object.entries(snapshotValues(input.snapshot)).map(([k, v]) => [k, clean(v)]),
+            ),
+          },
         }
       : {}),
     ...(input.origin

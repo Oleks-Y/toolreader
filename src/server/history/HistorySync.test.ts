@@ -14,6 +14,7 @@ import * as HttpServer from "effect/unstable/http/HttpServer";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { ThreadNotFound } from "../../core/api.ts";
+import { snapshotValues } from "../../core/domain.ts";
 import { SITE_DATA_MARKER } from "../../core/ledgerSite.ts";
 import { BackendRoutes } from "../backend/Backend.ts";
 import { HistoryStore } from "../backend/HistoryStore.ts";
@@ -334,11 +335,13 @@ describe("history sync", () => {
             assert.match(thread?.origin?.file ?? "", /^sessions\/2026\/01\/01\/rollout-.*\.jsonl$/);
             assert.match(thread?.origin?.sha256 ?? "", /^[0-9a-f]{64}$/);
             // With how the session started, as its rollout recorded it.
-            assert.deepStrictEqual(thread?.snapshot, {
+            assert.deepStrictEqual(snapshotValues(thread!.snapshot!), {
               startCommit: yield* git(repo, ["rev-parse", "main~2"]),
               branch: "main",
+              cwd: repo.replace(home, "~"),
               clientVersion: "0.130.0",
             });
+            assert.strictEqual(thread?.snapshot?.provenance?.["startCommit"], "recorded");
 
             // Read back as the range's page.
             yield* fs.makeDirectory(`${home}/dist/site`, { recursive: true });

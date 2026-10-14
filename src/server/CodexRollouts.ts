@@ -11,9 +11,15 @@ import * as Stream from "effect/Stream";
 
 import { ThreadNotFound } from "../core/api.ts";
 import { codexThreadToRows, isoFromSeconds } from "../core/codex.ts";
-import type { Labels, SessionSnapshot, ThreadSummary, ThreadView } from "../core/domain.ts";
+import {
+  extendSnapshot,
+  type Labels,
+  type SessionSnapshot,
+  type ThreadSummary,
+  type ThreadView,
+} from "../core/domain.ts";
 import { normalize } from "../core/normalize.ts";
-import { readRollout, rolloutMeta } from "../core/rolloutThread.ts";
+import { readRollout, rolloutMeta, type RolloutSession } from "../core/rolloutThread.ts";
 import { CODEX_ID_PREFIX } from "./CodexSessions.ts";
 import { sha256 } from "./recordHash.ts";
 import { ServerConfig } from "./ServerConfig.ts";
@@ -25,6 +31,16 @@ export const ROLLOUT_DIRS = ["sessions", "archived_sessions"];
 /** A session another one spawned: `history sync` reads these too, since their edits land in commits. */
 export type Subagent = { readonly summary: ThreadSummary; readonly parent: string | null };
 const ROLLOUT = /(?:^|\/)rollout-[^/]*\.jsonl$/;
+
+/** The session's snapshot with the hash of its instructions (never the text). */
+const withInstructions = (session: RolloutSession) =>
+  session.instructions
+    ? extendSnapshot(
+        session.snapshot,
+        { instructionsSha: sha256(session.instructions) },
+        "recorded",
+      )
+    : session.snapshot;
 
 export class CodexRollouts extends Context.Service<
   CodexRollouts,
@@ -165,7 +181,7 @@ export class CodexRollouts extends Context.Service<
           },
           entries,
           labels,
-          snapshot: session.snapshot,
+          snapshot: withInstructions(session),
           origin: {
             reader: "codex-rollout" as const,
             // Relative to $CODEX_HOME: the path above it can name the machine's user.
@@ -181,7 +197,10 @@ export class CodexRollouts extends Context.Service<
         if (!known) return null;
         const text = yield* fs.readFileString(known.file).pipe(Effect.option);
         return Option.isSome(text)
-          ? (readRollout(text.value.split("\n"), known.file)?.snapshot ?? null)
+          ? Option.match(Option.fromNullishOr(readRollout(text.value.split("\n"), known.file)), {
+              onNone: () => null,
+              onSome: withInstructions,
+            })
           : null;
       });
 

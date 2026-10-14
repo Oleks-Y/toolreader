@@ -1,9 +1,9 @@
 // What a repo's sessions actually record, per provider (`history audit`): how many carry each
 // snapshot field, how many commands kept an exit code, how many edits know their real lines.
 // Counts only, never values, so the output can be shared.
-import { SessionSnapshot, type Entry } from "./domain.ts";
+import { SNAPSHOT_FIELDS, type Entry, type SessionSnapshot, type SnapshotField } from "./domain.ts";
 
-export const SNAPSHOT_FIELDS = Object.keys(SessionSnapshot.fields) as Array<keyof SessionSnapshot>;
+export { SNAPSHOT_FIELDS };
 
 export type AuditSession = {
   readonly provider: string;
@@ -16,7 +16,7 @@ export type ProviderAudit = {
   readonly provider: string;
   readonly sessions: number;
   readonly subagents: number;
-  readonly fields: Readonly<Record<keyof SessionSnapshot, number>>;
+  readonly fields: Readonly<Record<SnapshotField, number>>;
   /** Shell commands, and those whose exit code was recorded (the rest only say ok or failed). */
   readonly commands: number;
   readonly withExitCode: number;
@@ -45,7 +45,7 @@ export function auditSessions(sessions: ReadonlyArray<AuditSession>): ProviderAu
             f,
             group.filter((s) => s.snapshot?.[f] !== undefined).length,
           ]),
-        ) as Record<keyof SessionSnapshot, number>,
+        ) as Record<SnapshotField, number>,
         commands: commands.length,
         withExitCode: commands.filter((a) => a.exitCode !== undefined).length,
         edits: edits.length,

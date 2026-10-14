@@ -67,6 +67,21 @@ const CLEAN_TREE = /nothing to commit,? working tree clean/;
 /** Kinds that only look: anything else may have changed files. */
 const LOOKS = new Set(["read", "search", "test", "web", "agent"]);
 
+const DIRTY_TREE = /Changes not staged for commit|Changes to be committed|Untracked files:/;
+
+/** `clean` or `dirty` as git last showed the tree before the session's first edit, if it did. */
+export function treeShownIn(entries: ReadonlyArray<Entry>): "clean" | "dirty" | undefined {
+  let shown: "clean" | "dirty" | undefined;
+  for (const e of entries) {
+    if (e.type !== "action") continue;
+    if (e.files?.length) break;
+    if (e.kind !== "git") continue;
+    if (CLEAN_TREE.test(e.output ?? "")) shown = "clean";
+    else if (DIRTY_TREE.test(e.output ?? "")) shown = "dirty";
+  }
+  return shown;
+}
+
 /** Whether `path` (as an edit names it) is `name` (as a command names it). */
 const samePath = (path: string, name: string) =>
   path === name || path.endsWith(`/${name.replace(/^\.\//, "")}`);
