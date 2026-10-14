@@ -17,6 +17,7 @@ const session = (id: string, cwd: string, isSidechain = false) =>
       type: "user",
       sessionId: id,
       cwd,
+      gitBranch: "main",
       uuid: "u1",
       timestamp: "2026-10-07T12:00:00.000Z",
       message: { content: "list files" },
@@ -120,6 +121,9 @@ describe("ClaudeTranscripts", () => {
 
         const missing = yield* claude.get("owned", {}).pipe(Effect.flip);
         assert.strictEqual(missing._tag, "ThreadNotFound");
+        // T3 keeps no starting state, so a session it runs is still read for that.
+        assert.deepStrictEqual(yield* claude.snapshot("owned"), { branch: "main" });
+        assert.isNull(yield* claude.snapshot("nowhere"));
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.provide(NodeServices.layer)),
   );

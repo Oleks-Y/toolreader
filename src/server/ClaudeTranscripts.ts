@@ -15,7 +15,13 @@ import {
   claudeTranscriptMeta,
   claudeTranscriptToRows,
 } from "../core/claudeTranscript.ts";
-import type { Labels, ThreadHead, ThreadSummary, ThreadView } from "../core/domain.ts";
+import type {
+  Labels,
+  SessionSnapshot,
+  ThreadHead,
+  ThreadSummary,
+  ThreadView,
+} from "../core/domain.ts";
 import { normalize } from "../core/normalize.ts";
 import type { Subagent } from "./CodexRollouts.ts";
 import { ServerConfig } from "./ServerConfig.ts";
@@ -38,6 +44,8 @@ export class ClaudeTranscripts extends Context.Service<
     /** `id` is the bare session id (without the `claude:` prefix). */
     readonly get: (id: string, labels: Labels) => Effect.Effect<ThreadView, ThreadNotFound>;
     readonly head: (id: string) => Effect.Effect<ThreadHead, ThreadNotFound>;
+    /** How a session started, from its transcript, T3's included (T3 doesn't keep this). */
+    readonly snapshot: (id: string) => Effect.Effect<SessionSnapshot | null>;
   }
 >()("toolreader/server/ClaudeTranscripts") {
   static readonly layer = Layer.effect(
@@ -50,6 +58,8 @@ export class ClaudeTranscripts extends Context.Service<
       const root = path.join(config.claudeHome, "projects");
       /** Session id → transcript file, filled by `list`. */
       const files = new Map<string, string>();
+      /** The same for sessions T3 runs: read only for their snapshot. */
+      const owned = new Map<string, string>();
 
       const summary = (
         id: string,
@@ -90,14 +100,18 @@ export class ClaudeTranscripts extends Context.Service<
         );
 
       const list = Effect.gen(function* () {
-        const owned = yield* store.claudeSessionIds;
+        const t3 = yield* store.claudeSessionIds;
         const names = yield* fs
           .readDirectory(root, { recursive: true })
           .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
         // Top-level files only: subagent transcripts live in `<session>/subagents/`.
         const found = names.flatMap((name) => {
           const id = SESSION_FILE.exec(name)?.[1];
-          return id && !owned.has(id) ? [{ id, file: path.join(root, name) }] : [];
+          if (!id) return [];
+          const file = path.join(root, name);
+          if (!t3.has(id)) return [{ id, file }];
+          owned.set(id, file);
+          return [];
         });
         const summaries = yield* Effect.forEach(
           found,
@@ -186,7 +200,15 @@ export class ClaudeTranscripts extends Context.Service<
         };
       });
 
-      return ClaudeTranscripts.of({ list, subagents, get, head });
+      const snapshot = Effect.fn("ClaudeTranscripts.snapshot")(function* (id: string) {
+        if (files.size + owned.size === 0) yield* list;
+        const file = files.get(id) ?? owned.get(id);
+        if (!file) return null;
+        const text = yield* fs.readFileString(file).pipe(Effect.option);
+        return Option.isSome(text) ? claudeSnapshot(text.value.split("\n")) : null;
+      });
+
+      return ClaudeTranscripts.of({ list, subagents, snapshot, get, head });
     }),
   );
 }

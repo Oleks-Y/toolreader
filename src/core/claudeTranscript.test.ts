@@ -92,7 +92,6 @@ describe("claudeTranscript", () => {
       {
         branch: "fix/x",
         clientVersion: "2.1.0",
-        modelProvider: "anthropic",
         model: "claude-opus-5-5",
         permissionMode: "plan",
       },

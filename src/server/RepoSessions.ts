@@ -163,6 +163,16 @@ export class RepoSessions extends Context.Service<
       const load = Effect.fn("RepoSessions.load")(function* (repo: string, source: SessionSource) {
         const { sources, found, roots } = yield* sessionsFor(repo, source);
         const { nativeIds, parents } = yield* store.lineage;
+        // A T3 thread's provider session, whose own files say how it started.
+        const nativeOf = new Map<string, string>();
+        for (const [native, id] of nativeIds) if (!nativeOf.has(id)) nativeOf.set(id, native);
+        const snapshotOf = (t: ThreadSummary) => {
+          const native = t.source === "t3" ? nativeOf.get(t.id) : undefined;
+          if (!native) return Effect.succeed(null);
+          if (t.provider === "codex") return rollouts.snapshot(native);
+          if (t.provider === "claudeAgent") return claude.snapshot(native);
+          return Effect.succeed(null);
+        };
         const sessions: RepoSession[] = [];
         const unread: Array<{ id: string; title: string }> = [];
         for (const { summary, load, root, parent } of found) {
@@ -178,7 +188,7 @@ export class RepoSessions extends Context.Service<
             root,
             entries,
             labels: { ...view.value.labels },
-            snapshot: view.value.snapshot,
+            snapshot: view.value.snapshot ?? (yield* snapshotOf(t)) ?? undefined,
             thread: {
               id: t.id,
               title: t.title,

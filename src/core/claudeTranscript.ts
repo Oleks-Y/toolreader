@@ -117,7 +117,7 @@ export function claudeSnapshot(lines: ReadonlyArray<string>): SessionSnapshot {
     startCommit: undefined,
     branch: first((l) => l.gitBranch),
     clientVersion: first((l) => l.version),
-    modelProvider: "anthropic",
+    modelProvider: undefined,
     // Synthetic placeholders (`<synthetic>`) aren't a model.
     model: first((l) =>
       l.type === "assistant" && !l.message?.model?.startsWith("<") ? l.message?.model : null,
