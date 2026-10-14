@@ -452,6 +452,7 @@ export const StoredBlame = Schema.Struct({
   path: Schema.String,
   hunk: Schema.Struct({ header: Schema.String, text: Schema.String }),
   threadIds: Schema.Array(Schema.String),
+  evidenceHash: Schema.optional(Schema.String),
   pieces: Schema.Array(BlamePiece),
   main: Schema.Struct({ id: Schema.String, p: Schema.Number }),
   model: Schema.String,
@@ -509,4 +510,26 @@ export function marksOf(
       if (e.type === "action" && !marks.has(e.id) && namesFile(e, result.path))
         marks.set(e.id, { tone: "touched", why: "names file" });
   return marks;
+}
+
+/** Map an unchanged line on the new side of a patch to its position on the old side. */
+export function originalLine(patch: string, line: number): number | null {
+  let offset = 0;
+  for (const hunk of hunksOf(`--- a/file\n+++ b/file\n${patch}`)) {
+    const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(hunk.header);
+    if (!match) return null;
+    let old = Number(match[1]) + (match[2] === "0" ? 1 : 0);
+    let next = Number(match[3]) + (match[4] === "0" ? 1 : 0);
+    if (line < next) return line + offset;
+    for (const text of hunk.text.split("\n")) {
+      if (text.startsWith("\\")) continue;
+      if (!text.startsWith("-")) {
+        if (next === line) return text.startsWith("+") ? null : old;
+        next++;
+      }
+      if (!text.startsWith("+")) old++;
+    }
+    offset = old - next;
+  }
+  return line + offset;
 }

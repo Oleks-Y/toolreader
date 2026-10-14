@@ -245,7 +245,7 @@ export class BrowseApi extends HttpApiGroup.make("browse")
       success: Schema.Struct({ repos: Schema.Array(RepoSummary) }),
       error: BackendFailed,
     }),
-    // Linked commits, newest first; `before` is the oldest `committedAt` of the last page.
+    // Linked commits, newest first; `before` is the last SHA of the previous page.
     HttpApiEndpoint.get("ledger", "/workspaces/:ws/repos/:repo/commits", {
       params: { ...ws, repo: Repo },
       query: {

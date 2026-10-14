@@ -12,6 +12,7 @@ import {
   buildRequest,
   hunksOf,
   oddsOf,
+  originalLine,
   parseLineLink,
   piecesOf,
   SystemOneResponse,
@@ -20,7 +21,6 @@ import {
   type StoredBlame,
 } from "../../core/blame.ts";
 import type { Entry } from "../../core/domain.ts";
-import { lineKey } from "../../core/history.ts";
 import { episode } from "../../core/historyPage.ts";
 import { redactor } from "../../core/proof.ts";
 import * as backend from "./backend.ts";
@@ -34,21 +34,24 @@ export class BlameFailed extends Error {}
 
 const fileHash = (path: string) => NodeCrypto.createHash("sha256").update(path).digest("hex");
 
-/** The hunk of `detail` that adds `text` to `path`, and that line's number in the commit. */
-function hunkWith(detail: github.CommitDetail, path: string, text: string) {
+/** Select the added occurrence at the blamed commit's original line number. */
+export function hunkWith(detail: github.CommitDetail, path: string, line: number) {
   const file = detail.files.find((f) => f.filename === path);
   if (!file?.patch) return null;
-  const diff = `diff --git a/${path} b/${path}\n--- a/${file.previous_filename ?? path}\n+++ b/${path}\n${file.patch}`;
-  const want = lineKey(text);
+  const diff = `--- ${JSON.stringify(`a/${file.previous_filename ?? path}`)}\n+++ ${JSON.stringify(`b/${path}`)}\n${file.patch}`;
   for (const hunk of hunksOf(diff)) {
     let at = Number(/\+(\d+)/.exec(hunk.header)?.[1] ?? 0);
-    for (const l of hunk.text.split("\n")) {
-      if (l.startsWith("+") && lineKey(l.slice(1)) === want) return { hunk, line: at };
-      if (!l.startsWith("-")) at++;
+    for (const text of hunk.text.split("\n")) {
+      if (text.startsWith("\\")) continue;
+      if (text.startsWith("+") && at === line) return { hunk, line };
+      if (!text.startsWith("-")) at++;
     }
   }
   return null;
 }
+
+export const evidenceHash = (links: unknown, threads: unknown) =>
+  NodeCrypto.createHash("sha256").update(JSON.stringify({ links, threads })).digest("hex");
 
 export async function blameLine(user: User, url: string): Promise<BlameResult> {
   const link = parseLineLink(url);
@@ -76,12 +79,26 @@ export async function blameLine(user: User, url: string): Promise<BlameResult> {
   const path = paths.find((p) => fileHash(p) === link.fileHash);
   if (!path) throw new BlameFailed("The linked file isn't among the files this diff changes");
 
-  const text = (await github.fileAt(user.token, repo, path, rev)).split("\n")[link.line - 1];
+  const selectedFile = await github.fileAt(user.token, repo, path, rev);
+  const text = selectedFile.split("\n")[link.line - 1];
   if (text === undefined) throw new BlameFailed(`${path} has no line ${link.line}`);
   const sha = await github.blameCommit(user.token, repo, rev, path, link.line);
   if (!sha) throw new BlameFailed("GitHub's blame found no commit for that line");
   const detail = await github.commit(user.token, repo, sha);
-  const found = hunkWith(detail, path, text);
+  let originalPath = path;
+  let at: number | null = link.line;
+  if (sha !== rev) {
+    const changed = (await github.compareFiles(user.token, repo, sha, rev)).find(
+      (f) => f.filename === path,
+    );
+    originalPath = changed?.previous_filename ?? path;
+    const originalFile = await github.fileAt(user.token, repo, originalPath, sha);
+    if (originalFile !== selectedFile)
+      at = changed?.patch ? originalLine(changed.patch, link.line) : null;
+    if (at === null || originalFile.split("\n")[at - 1] !== text)
+      throw new BlameFailed("GitHub's diff cannot map this line to its original position");
+  }
+  const found = at === null ? null : hunkWith(detail, originalPath, at);
   if (!found) throw new BlameFailed(`Commit ${sha.slice(0, 8)} has no hunk that adds that line`);
 
   const [record] = await backend.commits(repo, [sha]);
@@ -89,22 +106,28 @@ export async function blameLine(user: User, url: string): Promise<BlameResult> {
     throw new BlameFailed(`No agent thread is linked to ${sha.slice(0, 8)}`);
   const records = await backend.threads(record.links.map((l) => l.threadId));
   const byId = new Map(records.map((t) => [t.thread.id, t]));
+  const evidence = evidenceHash(
+    record.links,
+    records.toSorted((a, b) => a.thread.id.localeCompare(b.thread.id)),
+  );
+  const cached = await backend.storedBlame(repo, sha, originalPath, found.hunk.header, BLAME_MODEL);
   const answer =
-    (await backend.storedBlame(repo, sha, path, found.hunk.header, BLAME_MODEL)) ??
+    (cached?.evidenceHash === evidence ? cached : null) ??
     (await ask(
       repo,
       sha,
       record.subject,
       record.committedAt,
-      path,
+      originalPath,
       found.hunk,
       record.links,
       byId,
+      evidence,
     ));
   return {
     repoUrl: link.repoUrl,
     commit: { sha, subject: record.subject, committedAt: record.committedAt },
-    path,
+    path: originalPath,
     line: found.line,
     hunk: { header: found.hunk.header, text: found.hunk.text },
     threads: record.links.flatMap((l) => {
@@ -131,6 +154,7 @@ async function ask(
   hunk: Hunk,
   links: ReadonlyArray<{ readonly threadId: string; readonly turns: ReadonlyArray<string> }>,
   byId: ReadonlyMap<string, { readonly entries: ReadonlyArray<Entry> }>,
+  evidence: string,
 ): Promise<StoredBlame> {
   const key = typesafeKey();
   if (!key) throw new BlameFailed("The server has no TypeSafe key (TYPESAFE_API_KEY)");
@@ -159,6 +183,7 @@ async function ask(
     path,
     hunk: { header: hunk.header, text: hunk.text },
     threadIds: [...new Set(links.map((l) => l.threadId))],
+    evidenceHash: evidence,
     ...odds,
     model: decoded.model,
     inputTokens: decoded.usage.input_tokens ?? 0,

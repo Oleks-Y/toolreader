@@ -490,8 +490,15 @@ export class HistoryStore extends Context.Service<
           SELECT payload FROM commits
           WHERE workspace_id = ${ws} AND repo = ${repo}
             AND jsonb_array_length(payload->'links') > 0
-            ${before === null ? sql`` : sql`AND (payload->>'committedAt')::timestamptz < ${before}::timestamptz`}
-          ORDER BY (payload->>'committedAt')::timestamptz DESC LIMIT ${limit}`.pipe(
+            ${
+              before === null
+                ? sql``
+                : sql`AND ((payload->>'committedAt')::timestamptz, sha) < (
+              SELECT (payload->>'committedAt')::timestamptz, sha FROM commits
+              WHERE workspace_id = ${ws} AND repo = ${repo} AND sha = ${before}
+            )`
+            }
+          ORDER BY (payload->>'committedAt')::timestamptz DESC, sha DESC LIMIT ${limit}`.pipe(
           Effect.flatMap(decodePayloadRows),
           Effect.mapError(failed),
         );
@@ -536,7 +543,8 @@ export class HistoryStore extends Context.Service<
             model: record.model,
             payload: forJsonb(encodeBlameJson(record)),
           })}
-          ON CONFLICT DO NOTHING`.pipe(Effect.mapError(failed));
+          ON CONFLICT (workspace_id, repo, sha, hunk, model) DO UPDATE
+            SET payload = excluded.payload, created_at = now()`.pipe(Effect.mapError(failed));
       }, bounded);
 
       const workspace = Effect.fn("HistoryStore.workspace")(function* (slug: string) {

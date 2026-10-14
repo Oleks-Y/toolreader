@@ -96,6 +96,7 @@ const decodeRepo = Schema.decodeUnknownSync(Repo);
 const decodePulls = Schema.decodeUnknownSync(Schema.Array(Pull));
 const decodePull = Schema.decodeUnknownSync(Pull);
 const decodePullCommits = Schema.decodeUnknownSync(Schema.Array(PullCommit));
+const decodeCompare = Schema.decodeUnknownSync(Schema.Struct({ files: Schema.Array(FileEntry) }));
 const decodeFiles = Schema.decodeUnknownSync(Schema.Array(FileEntry));
 const decodeCommit = Schema.decodeUnknownSync(CommitDetail);
 const decodeBlame = Schema.decodeUnknownSync(BlameRanges);
@@ -126,8 +127,17 @@ export const pull = (token: string, repo: string, n: number) =>
   get(decodePull, token, `/repos/${repo}/pulls/${n}`);
 
 /** A PR's commits, oldest first (GitHub lists up to 250). */
-export const pullCommits = (token: string, repo: string, n: number) =>
-  get(decodePullCommits, token, `/repos/${repo}/pulls/${n}/commits?per_page=100`);
+export async function pullCommits(token: string, repo: string, n: number) {
+  const commits: Array<typeof PullCommit.Type> = [];
+  for (let page = 1; ; page++) {
+    const response = await request(
+      token,
+      `/repos/${repo}/pulls/${n}/commits?per_page=100&page=${page}`,
+    );
+    commits.push(...decodePullCommits(await response.json()));
+    if (!response.headers.get("link")?.includes('rel="next"')) return commits;
+  }
+}
 
 /** The files a PR changes (paths only), up to 3000. */
 export async function pullFiles(token: string, repo: string, n: number): Promise<string[]> {
@@ -192,3 +202,7 @@ export async function blameCommit(
   );
   return range?.commit.oid ?? null;
 }
+
+/** Changes between the blamed commit and the selected revision, including rename paths. */
+export const compareFiles = (token: string, repo: string, from: string, to: string) =>
+  get(decodeCompare, token, `/repos/${repo}/compare/${from}...${to}`).then((r) => r.files);
