@@ -263,6 +263,12 @@ describe("Backend", () => {
           ),
           "Forbidden",
         );
+        // Removed from the pilot: refused at once.
+        assert.isTrue(yield* Effect.flatMap(HistoryStore, (s) => s.removeMember("gh", "sam")));
+        assert.strictEqual(
+          yield* tag(sam.history.commits({ params: app, payload: shas })),
+          "Forbidden",
+        );
         const stranger = yield* clientWith(headers("gho_nobody"));
         assert.strictEqual(
           yield* tag(stranger.history.commits({ params: app, payload: shas })),

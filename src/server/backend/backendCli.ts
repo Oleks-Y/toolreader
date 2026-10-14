@@ -3,7 +3,7 @@
 //   toolreader backend serve [--port N]                       (default 4780, 127.0.0.1 only)
 //   toolreader backend token create --workspace SLUG --name NAME
 //   toolreader backend token revoke --workspace SLUG --name NAME
-//   toolreader backend member add --workspace SLUG --github LOGIN
+//   toolreader backend member add|remove --workspace SLUG --github LOGIN
 //   toolreader backend thread delete --workspace SLUG --id THREAD
 // TOOLREADER_RETENTION_DAYS, when set, removes threads stored longer ago than that, hourly.
 // GitHub sign-in is on when TOOLREADER_GITHUB_CLIENT_ID names the OAuth or GitHub App people sign
@@ -150,6 +150,24 @@ const deleteThread = Command.make(
   ),
 );
 
+const removeMember = Command.make(
+  "remove",
+  {
+    workspace: Flag.string("workspace").pipe(Flag.withSchema(Slug)),
+    github: Flag.string("github").pipe(Flag.withDescription("Their GitHub login")),
+  },
+  Effect.fn("toolreader backend member remove")(function* ({ workspace, github }) {
+    const was = yield* Effect.flatMap(HistoryStore, (s) => s.removeMember(workspace, github)).pipe(
+      Effect.provide(BackendApp),
+    );
+    yield* Console.log(
+      was
+        ? `${github} can no longer sign in to ${workspace}`
+        : `${github} wasn't a member of ${workspace}`,
+    );
+  }),
+).pipe(Command.withDescription("Stop a GitHub login signing in to the workspace"));
+
 export const backendCommand = Command.make("backend").pipe(
   Command.withDescription("The history backend, on Postgres (TOOLREADER_DATABASE_URL)"),
   Command.withSubcommands([
@@ -160,7 +178,7 @@ export const backendCommand = Command.make("backend").pipe(
     ),
     Command.make("member").pipe(
       Command.withDescription("Who may sign in with GitHub"),
-      Command.withSubcommands([addMember]),
+      Command.withSubcommands([addMember, removeMember]),
     ),
     Command.make("thread").pipe(
       Command.withDescription("Stored threads"),
