@@ -24,7 +24,7 @@ import {
 import { checksFor } from "../../core/checks.ts";
 import { readsFor } from "../../core/coverage.ts";
 import { addedLines, lineKey, linkByContent, type CommitLines } from "../../core/history.ts";
-import { LIMITS } from "../../core/historyApi.ts";
+import { LIMITS, type Evidence } from "../../core/historyApi.ts";
 import {
   buildCommitRecord,
   buildThreadRecord,
@@ -87,6 +87,8 @@ export class HistorySync extends Context.Service<
       range: string,
       options: SyncOptions,
     ) => Effect.Effect<SyncReport, HistoryFailed>;
+    /** A citation (`thread#entry@version`) read back from the backend, scoped to this repo. */
+    readonly show: (repo: string, cite: string) => Effect.Effect<Evidence, HistoryFailed>;
     /** The range's page (the ledger viewer, inlined) from what the backend has; writes `out/index.html`. */
     readonly site: (
       repo: string,
@@ -564,7 +566,47 @@ export class HistorySync extends Context.Service<
         Effect.provide(FetchHttpClient.layer),
       );
 
-      return HistorySync.of({ sync, site });
+      /** The repo's backend name (owner/name of its origin) and a client for the backend. */
+      const remote = Effect.fn("HistorySync.remote")(function* (repoArg: string) {
+        const repo = (yield* git(repoArg, ["rev-parse", "--show-toplevel"])).trim();
+        const origin = (yield* git(repo, ["remote", "get-url", "origin"], [2])).trim();
+        const web = remoteWebUrl(origin || null);
+        if (!web)
+          return yield* new HistoryFailed({
+            message: `${repo} has no origin on a git host: the backend names repos owner/name`,
+          });
+        const settings = yield* backendSettings("reader").pipe(
+          Effect.provideService(ServerConfig, config),
+          Effect.provideService(FileSystem.FileSystem, fs),
+        );
+        const api = yield* connect(settings);
+        return {
+          api,
+          params: { ws: settings.workspace, repo: repoKey(web) },
+        };
+      });
+
+      const show = Effect.fn("HistorySync.show")(function* (repoArg: string, cite: string) {
+        const m = /^(.+)#([^#@]+)(?:@([0-9a-f]+))?$/.exec(cite);
+        if (!m)
+          return yield* new HistoryFailed({
+            message: `Not a citation: ${cite.slice(0, 80)} (thread#entry@version, as search prints it)`,
+          });
+        const { api, params } = yield* remote(repoArg);
+        return yield* call(
+          api.history.evidence({
+            params: { ws: params.ws },
+            payload: {
+              threadId: m[1]!,
+              entryId: m[2]!,
+              ...(m[3] ? { version: m[3] } : {}),
+              repo: params.repo,
+            },
+          }),
+        );
+      }, Effect.provide(FetchHttpClient.layer));
+
+      return HistorySync.of({ sync, site, show });
     }),
   );
 }

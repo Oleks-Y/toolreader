@@ -262,6 +262,21 @@ const HistoryHandlers = HttpApiBuilder.group(
           return { result: yield* store.putCommit(record).pipe(Effect.mapError(putFailed)) };
         }),
       )
+      .handle("evidence", ({ payload }) =>
+        Effect.gen(function* () {
+          const caller = yield* Caller;
+          if (caller.github) {
+            // A sign-in reads only what's linked to a repo GitHub lets it read: else withheld.
+            if (!payload.repo) return { status: "withheld" as const };
+            const ok = yield* github
+              .canRead(caller.github.token, payload.repo)
+              .pipe(Effect.mapError(failed));
+            if (!ok) return { status: "withheld" as const };
+          }
+          const store = yield* scoped;
+          return yield* store.evidence(payload).pipe(Effect.mapError(failed));
+        }),
+      )
       .handle("commits", ({ params, payload }) =>
         readable(params.repo).pipe(
           Effect.andThen(Effect.flatMap(scoped, (s) => s.commits(params.repo, payload.shas))),
