@@ -35,7 +35,7 @@ import {
   type ThreadRecord,
 } from "../../core/historyRecord.ts";
 import { historyRange } from "../../core/historyPage.ts";
-import { remoteWebUrl, SESSION_TRAILER, type LedgerRange } from "../../core/ledger.ts";
+import { remoteWebUrl, repoKey, SESSION_TRAILER, type LedgerRange } from "../../core/ledger.ts";
 import { ledgerSiteHtml, publicRange } from "../../core/ledgerSite.ts";
 import { redactor } from "../../core/proof.ts";
 import { threadSha } from "../recordHash.ts";
@@ -343,7 +343,7 @@ export class HistorySync extends Context.Service<
           return yield* new HistoryFailed({
             message: `${repo} has no origin on a git host: the backend names repos owner/name`,
           });
-        const repoName = new URL(web).pathname.slice(1);
+        const repoName = repoKey(web);
         const commits = yield* commitsIn(repo, range);
         const loaded = yield* sessions
           .load(repo, options.source)
@@ -496,7 +496,7 @@ export class HistorySync extends Context.Service<
             return yield* new HistoryFailed({
               message: `${repo} has no origin on a git host: the backend names repos owner/name`,
             });
-          const repoName = new URL(web).pathname.slice(1);
+          const repoName = repoKey(web);
           // One commit at a time, the subject last: a subject may hold any character.
           const shas = (yield* git(repo, [
             "rev-list",
@@ -611,7 +611,7 @@ export class HistorySync extends Context.Service<
             params: { ws: settings.workspace },
             payload: {
               text,
-              ...(options.all ? {} : { repo: new URL(web!).pathname.slice(1) }),
+              ...(options.all ? {} : { repo: repoKey(web!) }),
               limit: options.limit,
             },
           }),
@@ -634,7 +634,7 @@ export class HistorySync extends Context.Service<
         const api = yield* connect(settings);
         return {
           api,
-          params: { ws: settings.workspace, repo: new URL(web).pathname.slice(1) },
+          params: { ws: settings.workspace, repo: repoKey(web) },
         };
       });
 
