@@ -22,6 +22,7 @@ import {
   type CommitRecord,
   type ThreadRecord,
 } from "../../core/historyRecord.ts";
+import { hunkKey, StoredBlame } from "../../core/blame.ts";
 import { forJsonb, sha256, threadSha } from "../recordHash.ts";
 
 export class HistoryStoreFailed extends Schema.TaggedErrorClass<HistoryStoreFailed>()(
@@ -68,6 +69,16 @@ const CallerRow = Schema.Struct({
   workspace: Schema.String,
 });
 const decodeCallerRows = Schema.decodeUnknownEffect(Schema.Array(CallerRow));
+const RepoRow = Schema.Struct({
+  repo: Schema.String,
+  commits: Schema.NumberFromString,
+  threads: Schema.NumberFromString,
+  latest: Schema.String,
+});
+const decodeRepoRows = Schema.decodeUnknownEffect(Schema.Array(RepoRow));
+export type RepoSummary = typeof RepoRow.Type;
+const decodeBlame = Schema.decodeUnknownResult(StoredBlame);
+const encodeBlameJson = Schema.encodeSync(Schema.fromJsonString(StoredBlame));
 const encodeThreadJson = Schema.encodeSync(Schema.fromJsonString(ThreadRecordV1));
 const encodeCommitJson = Schema.encodeSync(Schema.fromJsonString(CommitRecordV1));
 
@@ -137,6 +148,22 @@ export type WorkspaceStore = {
     repo: string,
     shas: ReadonlyArray<string>,
   ) => Effect.Effect<ReadonlyArray<CommitRecord>, HistoryStoreFailed>;
+  /** Repos with linked commits: how many commits and threads, and the newest commit's time. */
+  readonly repos: () => Effect.Effect<ReadonlyArray<RepoSummary>, HistoryStoreFailed>;
+  /** A repo's linked commits, newest first: `limit` of them committed before `before`. */
+  readonly ledger: (
+    repo: string,
+    before: string | null,
+    limit: number,
+  ) => Effect.Effect<ReadonlyArray<CommitRecord>, HistoryStoreFailed>;
+  readonly blame: (
+    repo: string,
+    sha: string,
+    hunk: string,
+    model: string,
+  ) => Effect.Effect<Option.Option<StoredBlame>, HistoryStoreFailed>;
+  /** Keeps the first answer for a hunk: a second, concurrent one is dropped. */
+  readonly putBlame: (blame: StoredBlame) => Effect.Effect<void, HistoryStoreFailed>;
 };
 
 export class HistoryStore extends Context.Service<
@@ -270,6 +297,79 @@ export class HistoryStore extends Context.Service<
         );
       }, bounded);
 
+      const repos = Effect.fn("HistoryStore.repos")(function* (ws: string) {
+        return yield* sql`
+          SELECT c.repo, count(DISTINCT c.sha)::text AS commits,
+                 count(DISTINCT link->>'threadId')::text AS threads,
+                 to_char(max((c.payload->>'committedAt')::timestamptz) AT TIME ZONE 'UTC',
+                         'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS latest
+          FROM commits c, jsonb_array_elements(c.payload->'links') AS link
+          WHERE c.workspace_id = ${ws}
+          GROUP BY c.repo ORDER BY latest DESC`.pipe(
+          Effect.flatMap(decodeRepoRows),
+          Effect.mapError(failed),
+        );
+      }, bounded);
+
+      const ledger = Effect.fn("HistoryStore.ledger")(function* (
+        ws: string,
+        repo: string,
+        before: string | null,
+        limit: number,
+      ) {
+        const rows = yield* sql`
+          SELECT payload FROM commits
+          WHERE workspace_id = ${ws} AND repo = ${repo}
+            AND jsonb_array_length(payload->'links') > 0
+            ${before === null ? sql`` : sql`AND (payload->>'committedAt')::timestamptz < ${before}::timestamptz`}
+          ORDER BY (payload->>'committedAt')::timestamptz DESC LIMIT ${limit}`.pipe(
+          Effect.flatMap(decodePayloadRows),
+          Effect.mapError(failed),
+        );
+        return yield* read(
+          rows.map((r) => r.payload),
+          readCommit,
+        );
+      }, bounded);
+
+      const blame = Effect.fn("HistoryStore.blame")(function* (
+        ws: string,
+        repo: string,
+        sha: string,
+        hunk: string,
+        model: string,
+      ) {
+        const [row] = yield* sql`
+          SELECT payload FROM blames
+          WHERE workspace_id = ${ws} AND repo = ${repo} AND sha = ${sha}
+            AND hunk = ${hunk} AND model = ${model}`.pipe(
+          Effect.flatMap(decodePayloadRows),
+          Effect.mapError(failed),
+        );
+        if (!row) return Option.none<StoredBlame>();
+        return Result.match(decodeBlame(row.payload), {
+          onSuccess: Option.some,
+          // Written by another build: ask again rather than fail the page.
+          onFailure: () => Option.none<StoredBlame>(),
+        });
+      }, bounded);
+
+      const putBlame = Effect.fn("HistoryStore.putBlame")(function* (
+        ws: string,
+        record: StoredBlame,
+      ) {
+        yield* sql`
+          INSERT INTO blames ${sql.insert({
+            workspace_id: ws,
+            repo: record.repo,
+            sha: record.sha,
+            hunk: hunkKey(record.path, record.hunk.header),
+            model: record.model,
+            payload: forJsonb(encodeBlameJson(record)),
+          })}
+          ON CONFLICT DO NOTHING`.pipe(Effect.mapError(failed));
+      }, bounded);
+
       const workspace = Effect.fn("HistoryStore.workspace")(function* (slug: string) {
         // The no-op update makes RETURNING give the row that was already there.
         const [row] = yield* sql`
@@ -321,6 +421,10 @@ export class HistoryStore extends Context.Service<
           threads: (ids) => threads(ws, ids),
           putCommit: (record) => putCommit(writer, record),
           commits: (repo, shas) => commits(ws, repo, shas),
+          repos: () => repos(ws),
+          ledger: (repo, before, limit) => ledger(ws, repo, before, limit),
+          blame: (repo, sha, hunk, model) => blame(ws, repo, sha, hunk, model),
+          putBlame: (record) => putBlame(ws, record),
         };
       };
 
