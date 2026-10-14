@@ -23,6 +23,8 @@ const FileSettings = Schema.Struct({
     Schema.Struct({
       url: Schema.optional(Schema.String),
       token: Schema.optional(Schema.String),
+      /** A person's GitHub sign-in (`history login`): what reads and decisions go as. */
+      githubToken: Schema.optional(Schema.String),
       workspace: Schema.optional(Schema.String),
     }),
   ),
@@ -37,12 +39,8 @@ export type BackendSettings = {
   readonly workspace: string;
 };
 
-/**
- * `backend` in ~/.toolreader/config.json (`url`, `token`, `workspace`), each overridden by
- * TOOLREADER_BACKEND_URL, _TOKEN and _WORKSPACE. Hooks read the file: they may not get the shell's
- * environment. Plain http only to this machine: the token goes in every request.
- */
-export const backendSettings = Effect.fn("HistoryClient.settings")(function* () {
+/** What config.json and the environment say about the backend, the URL checked. */
+const configured = Effect.fn("HistoryClient.configured")(function* () {
   const config = yield* ServerConfig;
   const fs = yield* FileSystem.FileSystem;
   const file = config.userConfigPath;
@@ -58,28 +56,51 @@ export const backendSettings = Effect.fn("HistoryClient.settings")(function* () 
       Effect.orElseSucceed(() => undefined),
     );
   const url = (yield* env("TOOLREADER_BACKEND_URL")) ?? fromFile.url;
-  const token = (yield* env("TOOLREADER_BACKEND_TOKEN")) ?? fromFile.token;
-  const workspace = (yield* env("TOOLREADER_BACKEND_WORKSPACE")) ?? fromFile.workspace;
-  if (!url || !token || !workspace)
-    return yield* new HistoryFailed({
-      message: `No history backend: set backend.url, backend.token and backend.workspace in ${file}`,
-    });
-  const parsed = URL.canParse(url) ? new URL(url) : null;
+  const parsed = url && URL.canParse(url) ? new URL(url) : null;
   if (
-    !parsed ||
+    url &&
     !(
-      parsed.protocol === "https:" ||
-      (parsed.protocol === "http:" && LOOPBACK.has(parsed.hostname))
+      parsed &&
+      (parsed.protocol === "https:" ||
+        (parsed.protocol === "http:" && LOOPBACK.has(parsed.hostname)))
     )
   )
     return yield* new HistoryFailed({
       message: `The backend URL must be https:// (http:// only on this machine): ${file}`,
     });
   return {
-    url: url.replace(/\/+$/, ""),
-    token: Redacted.make(token),
-    workspace,
-  } satisfies BackendSettings;
+    file,
+    url: url?.replace(/\/+$/, ""),
+    token: (yield* env("TOOLREADER_BACKEND_TOKEN")) ?? fromFile.token,
+    githubToken: fromFile.githubToken,
+    workspace: (yield* env("TOOLREADER_BACKEND_WORKSPACE")) ?? fromFile.workspace,
+  };
+});
+
+/** The backend's URL alone: what `history login` needs before there is any token. */
+export const backendUrl = Effect.fn("HistoryClient.url")(function* () {
+  const { url, file } = yield* configured();
+  if (!url)
+    return yield* new HistoryFailed({ message: `No history backend: set backend.url in ${file}` });
+  return url;
+});
+
+/**
+ * `backend` in ~/.toolreader/config.json (`url`, `token`, `workspace`), each overridden by
+ * TOOLREADER_BACKEND_URL, _TOKEN and _WORKSPACE. Hooks read the file: they may not get the shell's
+ * environment. Plain http only to this machine: the token goes in every request. A `reader`
+ * (search, site, insights) goes as the GitHub sign-in when there is one, else the workspace token.
+ */
+export const backendSettings = Effect.fn("HistoryClient.settings")(function* (
+  as: "writer" | "reader" = "writer",
+) {
+  const { file, url, token, githubToken, workspace } = yield* configured();
+  const bearer = (as === "reader" ? githubToken : undefined) ?? token;
+  if (!url || !bearer || !workspace)
+    return yield* new HistoryFailed({
+      message: `No history backend: set backend.url, backend.workspace and backend.token (or sign in: history login) in ${file}`,
+    });
+  return { url, token: Redacted.make(bearer), workspace } satisfies BackendSettings;
 });
 
 /**

@@ -40,11 +40,13 @@ export class HistoryRefused extends Schema.TaggedErrorClass<HistoryRefused>()("H
 /** `same`: it was there with this content already. */
 export type PutResult = "inserted" | "updated" | "same";
 
-/** Who writes: the workspace, the token (null: tests and tools) and the client's version. */
+/** Who writes: the workspace, the token (null: tests, tools, GitHub sign-ins) and the client's version. */
 export type Writer = {
   readonly workspaceId: string;
   readonly tokenId: string | null;
   readonly client: string;
+  /** Who decides on findings, when not a token: `github:<login>`. */
+  readonly actor?: string | undefined;
 };
 
 /** A bearer token's owner, as `authenticate` finds it. */
@@ -125,8 +127,10 @@ export type WorkspaceStore = {
   readonly putThread: (
     record: ThreadRecord,
   ) => Effect.Effect<PutResult, HistoryStoreFailed | HistoryRefused>;
+  /** With `repo`, only those linked to its commits. */
   readonly threads: (
     ids: ReadonlyArray<string>,
+    repo?: string | undefined,
   ) => Effect.Effect<ReadonlyArray<ThreadRecord>, HistoryStoreFailed>;
   /** Replaces the commit's links: a commit linked again says everything about it again. */
   readonly putCommit: (
@@ -151,6 +155,16 @@ export class HistoryStore extends Context.Service<
       workspace: string,
       name: string,
     ) => Effect.Effect<string, HistoryStoreFailed>;
+    /** Lets a GitHub login sign in to the workspace (created if needed). */
+    readonly addMember: (
+      workspace: string,
+      login: string,
+    ) => Effect.Effect<void, HistoryStoreFailed>;
+    /** The workspace, when the GitHub login is one of its members. */
+    readonly member: (
+      workspace: string,
+      login: string,
+    ) => Effect.Effect<Option.Option<{ readonly workspaceId: string }>, HistoryStoreFailed>;
     /** The live token's owner; marks it used. */
     readonly authenticate: (
       token: string,
@@ -236,13 +250,20 @@ export class HistoryStore extends Context.Service<
         return new Map(rows.map((r) => [r.id, r.contentSha]));
       }, bounded);
 
+      const linkedTo = (ws: string, repo: string) => sql`
+        SELECT DISTINCT l->>'threadId' FROM commits c, jsonb_array_elements(c.payload->'links') l
+        WHERE c.workspace_id = ${ws} AND c.repo = ${repo}`;
+
       const threads = Effect.fn("HistoryStore.threads")(function* (
         ws: string,
         ids: ReadonlyArray<string>,
+        repo?: string | undefined,
       ) {
         if (ids.length === 0) return [];
+        const inRepo = repo ? sql`AND id IN (${linkedTo(ws, repo)})` : sql``;
         const rows = yield* sql`
-          SELECT payload FROM threads WHERE workspace_id = ${ws} AND id IN ${sql.in(ids)}`.pipe(
+          SELECT payload FROM threads
+          WHERE workspace_id = ${ws} AND id IN ${sql.in(ids)} ${inRepo}`.pipe(
           Effect.flatMap(decodePayloadRows),
           Effect.mapError(failed),
         );
@@ -291,6 +312,26 @@ export class HistoryStore extends Context.Service<
         return token;
       }, bounded);
 
+      const addMember = Effect.fn("HistoryStore.addMember")(function* (
+        slug: string,
+        login: string,
+      ) {
+        const ws = yield* workspace(slug);
+        yield* sql`
+          INSERT INTO members (workspace_id, github_login) VALUES (${ws}, ${login.toLowerCase()})
+          ON CONFLICT DO NOTHING`.pipe(Effect.mapError(failed));
+      }, bounded);
+
+      const member = Effect.fn("HistoryStore.member")(function* (slug: string, login: string) {
+        const [row] = yield* sql`
+          SELECT w.id::text AS id FROM members m JOIN workspaces w ON w.id = m.workspace_id
+          WHERE w.slug = ${slug} AND m.github_login = ${login.toLowerCase()}`.pipe(
+          Effect.flatMap(decodeIdRows),
+          Effect.mapError(failed),
+        );
+        return Option.map(Option.fromNullishOr(row), (r) => ({ workspaceId: r.id }));
+      }, bounded);
+
       const authenticate = Effect.fn("HistoryStore.authenticate")(function* (token: string) {
         // `last_used_at` is written at most once a minute: concurrent requests with one token
         // don't queue on its row.
@@ -318,13 +359,13 @@ export class HistoryStore extends Context.Service<
         return {
           hashes: (ids) => hashes(ws, ids),
           putThread: (record) => putThread(writer, record),
-          threads: (ids) => threads(ws, ids),
+          threads: (ids, repo) => threads(ws, ids, repo),
           putCommit: (record) => putCommit(writer, record),
           commits: (repo, shas) => commits(ws, repo, shas),
         };
       };
 
-      return HistoryStore.of({ at, workspace, createToken, authenticate });
+      return HistoryStore.of({ at, workspace, createToken, addMember, member, authenticate });
     }),
   );
 }
