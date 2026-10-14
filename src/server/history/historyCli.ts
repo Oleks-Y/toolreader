@@ -97,6 +97,7 @@ export const reportLines = (report: SyncReport, dryRun: boolean): string[] => {
     );
   }
   for (const why of report.ignored) lines.push(`! ignored ${title(why)}`);
+  for (const u of report.unread) lines.push(`! couldn't read ${u.id} (${title(u.title)})`);
   lines.push(
     dryRun
       ? "dry run: nothing sent"

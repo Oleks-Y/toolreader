@@ -73,6 +73,8 @@ export type SyncReport = {
   readonly unchanged: number;
   /** Declarations about this range that couldn't be applied, and why. */
   readonly ignored: ReadonlyArray<string>;
+  /** Sessions in this repo that couldn't be read, so weren't linked (titles redacted). */
+  readonly unread: ReadonlyArray<{ readonly id: string; readonly title: string }>;
 };
 
 export class HistorySync extends Context.Service<
@@ -353,6 +355,7 @@ export class HistorySync extends Context.Service<
           sent,
           unchanged,
           ignored,
+          unread: loaded.unread.map((u) => ({ id: u.id, title: clean(u.title) })),
         });
         if (options.dryRun) return report(0, 0);
 

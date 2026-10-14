@@ -13,6 +13,7 @@ import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServer from "effect/unstable/http/HttpServer";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
+import { ThreadNotFound } from "../../core/api.ts";
 import { SITE_DATA_MARKER } from "../../core/ledgerSite.ts";
 import { BackendRoutes } from "../backend/Backend.ts";
 import { HistoryStore } from "../backend/HistoryStore.ts";
@@ -26,6 +27,7 @@ import { RepoSessions } from "../RepoSessions.ts";
 import { ServerConfig } from "../ServerConfig.ts";
 import { ThreadStore } from "../ThreadStore.ts";
 import { HistorySync } from "./HistorySync.ts";
+import { reportLines } from "./historyCli.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -155,11 +157,28 @@ const scenario = Effect.gen(function* () {
   return { repo, home, codexHome };
 });
 
+/** The real rollout reader, listing one more session in the repo that can't be read. */
+const withUnreadable = Layer.effect(
+  CodexRollouts,
+  Effect.map(CodexRollouts, (real) =>
+    CodexRollouts.of({
+      list: Effect.map(real.list, (all) => [
+        ...all,
+        { ...all[0]!, id: "codex:broken", title: "Fix the flaky test" },
+      ]),
+      get: (id, labels) =>
+        id === "broken"
+          ? Effect.fail(new ThreadNotFound({ threadId: "codex:broken" }))
+          : real.get(id, labels),
+    }),
+  ),
+).pipe(Layer.provide(CodexRollouts.layer));
+
 /** The sync over the real rollout reader (no T3), with `home` as the user's home. */
-const services = (home: string, codexHome: string) =>
+const services = (home: string, codexHome: string, rollouts = CodexRollouts.layer) =>
   HistorySync.layer.pipe(
     Layer.provide(RepoSessions.layer),
-    Layer.provide([CodexRollouts.layer, ClaudeTranscripts.layer]),
+    Layer.provide([rollouts, ClaudeTranscripts.layer]),
     Layer.provide([
       Layer.succeed(
         ServerConfig,
@@ -353,6 +372,27 @@ describe("history sync", () => {
           );
           assert.deepStrictEqual(report.ignored, []);
         }).pipe(Effect.scoped),
+    );
+
+    it.effect("reports a session it couldn't read instead of dropping it", () =>
+      Effect.gen(function* () {
+        const { repo, home, codexHome } = yield* scenario;
+        const report = yield* Effect.flatMap(HistorySync, (h) =>
+          h.sync(repo, "main~2..main", { source: "codex-rollouts", dryRun: true }),
+        ).pipe(Effect.provide(services(home, codexHome, withUnreadable)));
+        assert.deepStrictEqual(report.unread, [
+          { id: "codex:broken", title: "Fix the flaky test" },
+        ]);
+        // The sessions that could be read are still linked.
+        assert.deepStrictEqual(
+          report.commits.map(({ record }) => record.links.map((l) => l.threadId)),
+          [["codex:coder"], ["codex:coder"]],
+        );
+        assert.include(
+          reportLines(report, true),
+          "! couldn't read codex:broken (Fix the flaky test)",
+        );
+      }).pipe(Effect.scoped),
     );
   });
 });

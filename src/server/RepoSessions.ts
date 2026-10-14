@@ -47,6 +47,8 @@ export type Loaded = {
   /** The repo's worktrees. */
   readonly roots: ReadonlyArray<string>;
   readonly sessions: ReadonlyArray<RepoSession>;
+  /** Sessions that worked here but couldn't be read: reported, so a gap isn't taken for absence. */
+  readonly unread: ReadonlyArray<{ readonly id: string; readonly title: string }>;
   /** The sessions a name means: a thread id, `codex:<id>`, or what an agent exports (`claude-code:<id>`). */
   readonly named: (name: string) => ReadonlyArray<RepoSession>;
 };
@@ -149,10 +151,14 @@ export class RepoSessions extends Context.Service<
         const { sources, found, roots } = yield* sessionsFor(repo, source);
         const { nativeIds, parents } = yield* store.lineage;
         const sessions: RepoSession[] = [];
+        const unread: Array<{ id: string; title: string }> = [];
         for (const { summary, load, root } of found) {
           const labels = yield* labeler.forThread(summary.id);
           const view = yield* load(labels).pipe(Effect.option);
-          if (Option.isNone(view)) continue;
+          if (Option.isNone(view)) {
+            unread.push({ id: summary.id, title: summary.title });
+            continue;
+          }
           const { entries, thread: t } = view.value;
           if (!entries.some((e) => e.type === "action")) continue;
           sessions.push({
@@ -182,7 +188,7 @@ export class RepoSessions extends Context.Service<
           ]);
           return sessions.filter((s) => ids.has(s.thread.id));
         };
-        return { sources, sessions, named, roots };
+        return { sources, sessions, unread, named, roots };
       });
 
       return RepoSessions.of({ load });
