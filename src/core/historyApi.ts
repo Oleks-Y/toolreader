@@ -10,6 +10,7 @@ import * as HttpApiMiddleware from "effect/unstable/httpapi/HttpApiMiddleware";
 import * as HttpApiSecurity from "effect/unstable/httpapi/HttpApiSecurity";
 
 import { CommitRecordV1, REJECT_REASONS, REPO_MAX, ThreadRecordV1 } from "./historyRecord.ts";
+import { Finding, FINDING_STATUSES } from "./insights.ts";
 
 export const API_VERSION = 1;
 /** Every request names the client's version (package.json's) in this header. */
@@ -66,6 +67,19 @@ export class UpgradeRequired extends Schema.TaggedErrorClass<UpgradeRequired>()(
   "UpgradeRequired",
   { message: Schema.String, minClient: Schema.String },
   { httpApiStatus: 426 },
+) {}
+
+export class NotFound extends Schema.TaggedErrorClass<NotFound>()(
+  "NotFound",
+  { message: Schema.String },
+  { httpApiStatus: 404 },
+) {}
+
+/** The request doesn't fit what's stored (a finding's lifecycle): 409, and says why. */
+export class Conflict extends Schema.TaggedErrorClass<Conflict>()(
+  "Conflict",
+  { message: Schema.String },
+  { httpApiStatus: 409 },
 ) {}
 
 /** The backend failed (its database): retry later. Never quotes record text. */
@@ -206,6 +220,33 @@ export class HistoryApi extends HttpApiGroup.make("history")
         truncated: Schema.Boolean,
       }),
       error: BackendFailed,
+    }),
+    // Runs the Insights detectors (core/insights.ts) over the threads linked to the repo's commits
+    // and keeps what they found: new findings as `detected`, known ones with fresh evidence.
+    HttpApiEndpoint.post("detect", "/workspaces/:ws/repos/:repo/insights/detect", {
+      params: { ...ws, repo: Repo },
+      success: Schema.Struct({ found: Schema.Number, added: Schema.Number }),
+      error: BackendFailed,
+    }),
+    HttpApiEndpoint.post("findings", "/workspaces/:ws/repos/:repo/insights/query", {
+      params: { ...ws, repo: Repo },
+      payload: Schema.Struct({
+        statuses: Schema.optional(Schema.Array(Schema.Literals(FINDING_STATUSES))),
+      }),
+      success: Schema.Struct({ findings: Schema.Array(Finding) }),
+      error: BackendFailed,
+    }),
+    // Moves a finding along its lifecycle, recording who, when and why; 409 for a move the
+    // lifecycle doesn't allow.
+    HttpApiEndpoint.post("transition", "/workspaces/:ws/repos/:repo/insights/transition", {
+      params: { ...ws, repo: Repo },
+      payload: Schema.Struct({
+        id: Text.check(Schema.isMaxLength(64)),
+        to: Schema.Literals(FINDING_STATUSES),
+        why: Text.check(Schema.isMinLength(1), Schema.isMaxLength(2000)),
+      }),
+      success: Schema.Struct({ finding: Finding }),
+      error: [NotFound, Conflict, BackendFailed],
     }),
     HttpApiEndpoint.post("commits", "/workspaces/:ws/repos/:repo/commits/query", {
       params: { ...ws, repo: Repo },

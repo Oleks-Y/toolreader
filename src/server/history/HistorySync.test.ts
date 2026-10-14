@@ -471,6 +471,81 @@ describe("history sync", () => {
       }).pipe(Effect.scoped),
     );
 
+    it.effect("finds a failure two sessions hit, and keeps the decision on it", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { repo, home, codexHome } = yield* scenario;
+        // Two more sessions, each writing a file the next commits hold, each tripping on `vp`.
+        for (const [id, file, at] of [
+          ["one", "one.ts", "11:00"],
+          ["two", "two.ts", "12:00"],
+        ] as const) {
+          const content = `export const ${id}Handler = () => "${id} handled here";\n`;
+          yield* writeRollout(codexHome, id, repo, [
+            {
+              at: `2026-01-01T${at}:00.000Z`,
+              item: {
+                type: "CommandExecution",
+                id: `${id}-fail`,
+                command: ["/bin/zsh", "-lc", "vp test"],
+                cwd: repo,
+                status: "failed",
+                aggregated_output: "zsh:1: command not found: vp",
+                exit_code: 127,
+              },
+            },
+            {
+              at: `2026-01-01T${at}:30.000Z`,
+              item: {
+                type: "FileChange",
+                id: `${id}-edit`,
+                status: "completed",
+                changes: { [path.join(repo, file)]: { type: "add", content } },
+              },
+            },
+          ]);
+          yield* fs.writeFileString(path.join(repo, file), content);
+          yield* git(repo, ["add", file]);
+          yield* git(repo, ["commit", "-q", "-m", `feat: ${file}`], `2026-01-01T${at}:59Z`);
+        }
+        yield* Effect.gen(function* () {
+          const history = yield* HistorySync;
+          const server = yield* HttpServer.HttpServer;
+          const port = server.address._tag === "TcpAddress" ? server.address.port : 0;
+          const token = yield* Effect.flatMap(HistoryStore, (s) => s.createToken("acme-i", "ci"));
+          yield* fs.makeDirectory(`${home}/.toolreader`, { recursive: true });
+          yield* fs.writeFileString(
+            `${home}/.toolreader/config.json`,
+            encodeJson({
+              backend: { url: `http://127.0.0.1:${port}`, token, workspace: "acme-i" },
+            }),
+          );
+          yield* history.sync(repo, "main~2..main", { source: "codex-rollouts", dryRun: false });
+
+          const first = yield* history.insights(repo, { detect: true, statuses: ["detected"] });
+          const failure = first.findings.find((f) => f.detector === "recurring-failure");
+          assert.deepStrictEqual(
+            [failure?.subject, failure?.sessions, first.added! > 0],
+            ["test: zsh:#: command not found: vp", 2, true],
+          );
+          const decided = yield* history.decide(repo, failure!.id, "rejected", "known: use npx vp");
+          assert.deepStrictEqual(
+            decided.events.map((e) => [e.to, e.by, e.why]),
+            [["rejected", "ci", "known: use npx vp"]],
+          );
+          // Run again: nothing new, and the rejected one stays out of what's open.
+          const again = yield* history.insights(repo, { detect: true, statuses: ["detected"] });
+          assert.strictEqual(again.added, 0);
+          assert.isFalse(again.findings.some((f) => f.id === failure!.id));
+          const wrong = yield* history
+            .decide(repo, failure!.id, "evaluated", "x")
+            .pipe(Effect.flip);
+          assert.include(wrong.message, "Conflict");
+        }).pipe(Effect.provide(services(home, codexHome)));
+      }).pipe(Effect.scoped),
+    );
+
     it.effect("reports a session it couldn't read instead of dropping it", () =>
       Effect.gen(function* () {
         const { repo, home, codexHome } = yield* scenario;

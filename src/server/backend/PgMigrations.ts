@@ -10,9 +10,13 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { HistoryStoreFailed } from "./HistoryStore.ts";
 import Migration0001 from "./Migrations/001_History.ts";
+import Migration0002 from "./Migrations/002_Findings.ts";
 
 /** Every migration, in order. Append a new one here and add its case to the upgrade tests. */
-export const migrationEntries = [[1, "History", Migration0001]] as const;
+export const migrationEntries = [
+  [1, "History", Migration0001],
+  [2, "Findings", Migration0002],
+] as const;
 
 const TABLE = "toolreader_migrations";
 

@@ -5,6 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import type { Entry } from "../../core/domain.ts";
+import type { Detection } from "../../core/insights.ts";
 import { threadSha } from "../recordHash.ts";
 import { HistoryStore } from "./HistoryStore.ts";
 import { PgMigrationsLive } from "./PgMigrations.ts";
@@ -156,6 +157,56 @@ describe("HistoryStore", () => {
         assert.deepStrictEqual((yield* find("1_0")).hits, []);
         const page = yield* find("retr", undefined, 2);
         assert.deepStrictEqual([page.hits.length, page.truncated], [2, true]);
+      }),
+    );
+
+    it.effect("keeps findings with their decisions; a new run updates evidence, not status", () =>
+      Effect.gen(function* () {
+        const hs = yield* HistoryStore;
+        const ws = yield* hs.workspace("insights");
+        const token = yield* hs.createToken("insights", "alex-laptop");
+        const caller = Option.getOrThrow(yield* hs.authenticate(token));
+        const store = hs.at({ workspaceId: ws, tokenId: caller.tokenId, client: "0.1.0" });
+        const detection = (sessions: number): Detection => ({
+          key: "recurring-failure:test: zsh: command not found: vp",
+          detector: "recurring-failure",
+          subject: "test: zsh: command not found: vp",
+          sessions,
+          occurrences: [{ threadId: "t1", entryId: "a1", at: "2026-01-01T10:00:00Z" }],
+          pattern: "p",
+          suggestion: "s",
+        });
+        assert.deepStrictEqual(yield* store.putDetections("acme/app", [detection(2)]), {
+          found: 1,
+          added: 1,
+        });
+        const [f] = yield* store.findings("acme/app");
+        assert.deepStrictEqual([f!.status, f!.sessions, f!.id.length], ["detected", 2, 10]);
+
+        const rejected = yield* store.transition("acme/app", f!.id, "rejected", "we know");
+        assert.deepStrictEqual(
+          rejected.events.map((e) => [e.from, e.to, e.by, e.why]),
+          [["detected", "rejected", "alex-laptop", "we know"]],
+        );
+        // Found again with more sessions: the evidence grows, the decision stands.
+        assert.deepStrictEqual(yield* store.putDetections("acme/app", [detection(3)]), {
+          found: 1,
+          added: 0,
+        });
+        const [again] = yield* store.findings("acme/app");
+        assert.deepStrictEqual([again!.status, again!.sessions], ["rejected", 3]);
+        assert.deepStrictEqual(yield* store.findings("acme/app", ["detected"]), []);
+
+        const refused = yield* store
+          .transition("acme/app", f!.id, "accepted", "x")
+          .pipe(Effect.flip);
+        assert.strictEqual(refused._tag, "FindingConflict");
+        const missing = yield* store
+          .transition("acme/app", "nope", "proposed", "x")
+          .pipe(Effect.flip);
+        assert.strictEqual(missing._tag, "FindingMissing");
+        // Another repo, another set of findings.
+        assert.deepStrictEqual(yield* store.findings("acme/other"), []);
       }),
     );
   });

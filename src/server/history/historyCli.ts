@@ -6,6 +6,8 @@
 //   toolreader history site (--range A..B | --pr N) [--repo PATH] [--out DIR]
 //   toolreader history audit [--repo PATH] [--source …]           (core/audit.ts)
 //   toolreader history search TEXT [--repo PATH] [--all] [--limit N]
+//   toolreader history insights [--repo PATH] [--no-detect] [--status S]… [--limit N]
+//   toolreader history insight propose|accept|reject|modify|implemented|monitor|evaluate ID --why TEXT
 //   toolreader history turns|link|unlink …                       (declareCli.ts)
 //   toolreader history skill install|uninstall [--repo PATH] [--commit]   (historySkill.ts)
 //   toolreader history hook install|uninstall [--repo PATH]    (historyHooks.ts)
@@ -29,6 +31,7 @@ import { HistoryFailed } from "./HistoryClient.ts";
 import { commitSkill, dirtyPaths, INSTALLED_PATHS, installSkill } from "./historySkill.ts";
 import { appendLog, causeMessage, installHooks, pending } from "./historyHooks.ts";
 import type { SearchHit } from "../../core/historyApi.ts";
+import { FINDING_STATUSES, type Finding, type FindingStatus } from "../../core/insights.ts";
 import { HistorySync, type SyncReport } from "./HistorySync.ts";
 
 const PullRequest = Schema.Struct({ baseRefOid: Schema.String, headRefOid: Schema.String });
@@ -321,6 +324,98 @@ const search = Command.make(
   ),
 );
 
+/** Statuses still open to a decision or follow-up: what `insights` lists by default. */
+const OPEN: ReadonlyArray<FindingStatus> = [
+  "detected",
+  "proposed",
+  "accepted",
+  "modified",
+  "implemented",
+  "monitoring",
+];
+
+/** A finding, as `history insights` prints it. */
+export const findingLines = (f: Finding): string[] => [
+  `${f.id} · ${f.status} · ${f.detector} · ${f.sessions} sessions`,
+  `  ${short(title(f.subject))}`,
+  `  ${title(f.pattern)}`,
+  `  next: ${title(f.suggestion)}`,
+  ...f.occurrences.slice(0, 3).map((o) => `  cite ${o.threadId}#${o.entryId}`),
+  ...(f.events.length > 0
+    ? [
+        `  last: ${f.events.at(-1)!.from} → ${f.events.at(-1)!.to} by ${f.events.at(-1)!.by}: ${title(f.events.at(-1)!.why)}`,
+      ]
+    : []),
+];
+
+const insights = Command.make(
+  "insights",
+  {
+    repo: Flag.string("repo").pipe(
+      Flag.withDescription("Repository (any path inside it)"),
+      Flag.withDefault("."),
+    ),
+    noDetect: Flag.boolean("no-detect").pipe(
+      Flag.withDescription("List what's stored without running the detectors first"),
+    ),
+    status: Flag.choice("status", FINDING_STATUSES).pipe(
+      Flag.withDescription("Only findings in this status (repeatable); default: the open ones"),
+      Flag.atLeast(0),
+    ),
+    limit: Flag.integer("limit").pipe(
+      Flag.withDescription("Findings to show, most sessions first"),
+      Flag.withDefault(10),
+    ),
+  },
+  Effect.fn("toolreader history insights")(function* (flags) {
+    const repo = (yield* Path.Path).resolve(flags.repo);
+    const statuses = flags.status.length > 0 ? flags.status : OPEN;
+    const { findings, added } = yield* Effect.flatMap(HistorySync, (h) =>
+      h.insights(repo, { detect: !flags.noDetect, statuses }),
+    ).pipe(Effect.provide(CliApp({ appServer: false, codexHome: null })));
+    for (const f of findings.slice(0, flags.limit))
+      for (const line of findingLines(f)) yield* Console.log(line);
+    yield* Console.log(
+      `${findings.length} finding${findings.length === 1 ? "" : "s"} (${statuses.join(", ")})${findings.length > flags.limit ? `, ${flags.limit} shown` : ""}${added === null ? "" : `; ${added} new this run`}`,
+    );
+  }),
+).pipe(
+  Command.withDescription(
+    "Run Project Insights over this repo's history on the backend (recurring failures, repeated investigations) and list the findings",
+  ),
+);
+
+/** Each lifecycle step as a command, and the status it moves a finding to. */
+const DECISIONS = {
+  propose: "proposed",
+  accept: "accepted",
+  reject: "rejected",
+  modify: "modified",
+  implemented: "implemented",
+  monitor: "monitoring",
+  evaluate: "evaluated",
+} as const satisfies Record<string, FindingStatus>;
+
+const decision = (action: keyof typeof DECISIONS) =>
+  Command.make(
+    action,
+    {
+      id: Argument.string("id").pipe(Argument.withDescription("The finding, as insights lists it")),
+      why: Flag.string("why").pipe(Flag.withDescription("Why: kept with the finding")),
+      repo: Flag.string("repo").pipe(
+        Flag.withDescription("Repository (any path inside it)"),
+        Flag.withDefault("."),
+      ),
+    },
+    Effect.fn(`toolreader history insight ${action}`)(function* (flags) {
+      const repo = (yield* Path.Path).resolve(flags.repo);
+      const finding = yield* Effect.flatMap(HistorySync, (h) =>
+        h.decide(repo, flags.id, DECISIONS[action], flags.why),
+      ).pipe(Effect.provide(CliApp({ appServer: false, codexHome: null })));
+      for (const line of findingLines(finding)) yield* Console.log(line);
+    }),
+  ).pipe(Command.withDescription(`Mark a finding ${DECISIONS[action]}, with why`));
+
 const audit = Command.make(
   "audit",
   {
@@ -424,6 +519,13 @@ export const historyCommand = Command.make("history").pipe(
     sync,
     site,
     search,
+    insights,
+    Command.make("insight").pipe(
+      Command.withDescription("Decide on a finding: each step is kept with who, when and why"),
+      Command.withSubcommands(
+        (Object.keys(DECISIONS) as Array<keyof typeof DECISIONS>).map(decision),
+      ),
+    ),
     audit,
     ...declareCommands,
     Command.make("skill").pipe(
