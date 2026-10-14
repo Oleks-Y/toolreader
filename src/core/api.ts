@@ -78,8 +78,8 @@ export class LabelsApi extends HttpApiGroup.make("labels")
 // Which pieces of an agent's history wrote a line of a GitHub diff (core/blame.ts). Asks TypeSafe.
 export class BlameApi extends HttpApiGroup.make("blame")
   .add(
-    HttpApiEndpoint.get("line", "/blame", {
-      query: { url: Schema.String },
+    HttpApiEndpoint.post("line", "/blame", {
+      payload: Schema.Struct({ url: Schema.String, sendsSessionText: Schema.Literal(true) }),
       success: BlameResult,
       error: BlameFailed.pipe(HttpApiSchema.status(422)),
     }),

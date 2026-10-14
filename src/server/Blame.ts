@@ -33,14 +33,13 @@ import {
   type BlameResult,
 } from "../core/blame.ts";
 import { episode } from "../core/historyPage.ts";
-import { remoteWebUrl } from "../core/ledger.ts";
+import { buildEntry, remoteWebUrl } from "../core/ledger.ts";
 import { redactor } from "../core/proof.ts";
-import { textSanitizer } from "../core/sanitize.ts";
 import { ClaudeTranscripts } from "./ClaudeTranscripts.ts";
 import { CodexRollouts } from "./CodexRollouts.ts";
 import { HistorySync } from "./history/HistorySync.ts";
 import { RepoSessions } from "./RepoSessions.ts";
-import { machineValues } from "./Sanitizer.ts";
+import { Sanitizer } from "./Sanitizer.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 import { ThreadStore } from "./ThreadStore.ts";
 
@@ -50,6 +49,38 @@ const decodeResponse = HttpClientResponse.schemaBodyJson(SystemOneResponse);
 
 /** GitHub's diff anchor for a file: the hex SHA-256 of its path. */
 const fileHash = (path: string) => NodeCrypto.createHash("sha256").update(path).digest("hex");
+
+/** Apply publication rules to the exact strings sent in a blame provider request. */
+export const sanitizeBlameRequest = Effect.fn("Blame.sanitizeRequest")(function* (
+  repo: string,
+  input: Parameters<typeof buildRequest>[0],
+  redactText: (text: string) => string,
+) {
+  const sanitizer = yield* Sanitizer;
+  const texts: string[] = [];
+  buildRequest(input, (text) => {
+    texts.push(redactText(text));
+    return text;
+  });
+  const sanitized = yield* sanitizer.sanitize(
+    repo,
+    [
+      buildEntry({
+        commit: { sha: "blame", subject: input.subject, committedAt: "", patchId: null },
+        links: [],
+        paths: [],
+        outputs: true,
+        maxOutput: 100_000,
+        notes: texts.map((text) => ({ text, file: null, at: "" })),
+      }),
+    ],
+    { mode: "anonymize", agent: null },
+  );
+  const cleaned = new Map(
+    texts.map((text, i) => [text, sanitized.entries[0]?.notes[i]?.text ?? ""]),
+  );
+  return buildRequest(input, (text) => cleaned.get(redactText(text)) ?? "");
+});
 
 export class Blame extends Context.Service<
   Blame,
@@ -65,6 +96,7 @@ export class Blame extends Context.Service<
       const claude = yield* ClaudeTranscripts;
       const history = yield* HistorySync;
       const sessions = yield* RepoSessions;
+      const sanitizer = yield* Sanitizer;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -236,20 +268,20 @@ export class Blame extends Context.Service<
         // machine's identities, as a published ledger is anonymized.
         const roots = loaded.roots.toSorted((a, b) => b.length - a.length);
         const { clean: redact } = redactor(config.home);
-        const local = yield* machineValues(config.home, [], repo).pipe(
-          Effect.provideService(FileSystem.FileSystem, fs),
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        );
-        const anonymize = textSanitizer({
+        const redactText = (s: string) =>
+          redact(roots.reduce((t, r) => t.split(`${r}/`).join(""), s));
+        const request = yield* sanitizeBlameRequest(
           repo,
-          home: config.home,
-          allow: [],
-          names: local.identities.filter((n) => n !== config.home),
-          spans: [],
-        });
-        const clean = (s: string) =>
-          anonymize(redact(roots.reduce((t, r) => t.split(`${r}/`).join(""), s))).text;
-        const request = buildRequest({ subject: record.subject, hunk, pieces }, clean);
+          {
+            subject: record.subject,
+            hunk,
+            pieces,
+          },
+          redactText,
+        ).pipe(
+          Effect.provideService(Sanitizer, sanitizer),
+          Effect.mapError((e) => fail(e.message)),
+        );
 
         const response = yield* HttpClientRequest.post(ENDPOINT).pipe(
           HttpClientRequest.bearerToken(yield* apiKey),

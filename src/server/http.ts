@@ -9,7 +9,7 @@ import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
-import { InvalidProofScope, ToolreaderApi } from "../core/api.ts";
+import { BlameFailed, InvalidProofScope, ToolreaderApi } from "../core/api.ts";
 import { Blame } from "./Blame.ts";
 import { CLAUDE_ID_PREFIX, ClaudeTranscripts } from "./ClaudeTranscripts.ts";
 import { CODEX_ID_PREFIX, CodexSessions } from "./CodexSessions.ts";
@@ -80,12 +80,23 @@ const ThreadsHandlers = HttpApiBuilder.group(
   }),
 );
 
+/** Reject cross-origin requests before any GitHub, session or provider work starts. */
+export const handleBlameRequest = Effect.fn("http.blame")(function* (
+  payload: { readonly url: string; readonly sendsSessionText: true },
+  blame: Blame["Service"],
+) {
+  const request = yield* HttpServerRequest.HttpServerRequest;
+  if (request.headers.origin !== `http://${request.headers.host}`)
+    return yield* new BlameFailed({ message: "Blame requires a same-origin request" });
+  return yield* blame.line(payload.url);
+});
+
 const BlameHandlers = HttpApiBuilder.group(
   ToolreaderApi,
   "blame",
   Effect.fn(function* (handlers) {
     const blame = yield* Blame;
-    return handlers.handle("line", ({ query }) => blame.line(query.url));
+    return handlers.handle("line", ({ payload }) => handleBlameRequest(payload, blame));
   }),
 );
 

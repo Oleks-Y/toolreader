@@ -21,6 +21,37 @@ export type Hunk = {
   readonly text: string;
 };
 
+/** Git patch headers use C quoting and an optional tab separator. */
+export function patchPath(header: string): string {
+  const raw = header.startsWith('"') ? header : header.split("\t")[0]!;
+  let path = raw;
+  if (raw.startsWith('"')) {
+    const bytes: number[] = [];
+    for (let i = 1; i < raw.length && raw[i] !== '"'; i++) {
+      let char = raw[i]!;
+      if (char === "\\") {
+        const octal = /^[0-7]{1,3}/.exec(raw.slice(i + 1));
+        if (octal) {
+          bytes.push(parseInt(octal[0], 8));
+          i += octal[0].length;
+          continue;
+        }
+        char = raw[++i]!;
+        char =
+          (
+            { n: "\n", t: "\t", r: "\r", b: "\b", f: "\f", v: "\v", a: "\x07" } as Record<
+              string,
+              string
+            >
+          )[char] ?? char;
+      }
+      bytes.push(...new TextEncoder().encode(char));
+    }
+    path = new TextDecoder().decode(new Uint8Array(bytes));
+  }
+  return path.replace(/^[ab]\//, "");
+}
+
 /** The hunks of `git diff-tree -p` output, ids `H1…` in order. Binary files have none. */
 export function hunksOf(diff: string): Hunk[] {
   const hunks: Array<{ path: string; header: string; lines: string[] }> = [];
@@ -31,9 +62,9 @@ export function hunksOf(diff: string): Hunk[] {
     if (line.startsWith("diff --git ")) {
       current = null;
       from = path = "";
-    } else if (!current && line.startsWith("--- ")) from = line.slice(4).replace(/^a\//, "");
+    } else if (!current && line.startsWith("--- ")) from = patchPath(line.slice(4));
     else if (!current && line.startsWith("+++ ")) {
-      const to = line.slice(4).replace(/^b\//, "");
+      const to = patchPath(line.slice(4));
       path = to === "/dev/null" ? from : to;
     } else if (line.startsWith("@@") && path) {
       current = { path, header: line, lines: [] };
