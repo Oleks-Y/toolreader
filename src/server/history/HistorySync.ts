@@ -372,6 +372,7 @@ export class HistorySync extends Context.Service<
                   maxOutput: MAX_OUTPUT,
                   home: config.home,
                   snapshot: s.snapshot,
+                  origin: s.origin,
                 }),
               ]
             : [];

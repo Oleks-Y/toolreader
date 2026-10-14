@@ -142,6 +142,19 @@ export const snapshotOf = (
 ): SessionSnapshot =>
   Object.fromEntries(Object.entries(fields).filter(([, v]) => !!v?.trim())) as SessionSnapshot;
 
+/**
+ * Where a session's history was read from: the native file (a T3 thread has none: its rows
+ * change as it runs) and the SHA-256 of the bytes read, so a citation can say which version of
+ * the source it rests on. Kept apart from the redacted record's own hash, which is a different
+ * text.
+ */
+export const SessionOrigin = Schema.Struct({
+  reader: Schema.Literals(["t3", "codex-rollout", "codex-app-server", "claude-transcript"]),
+  file: Schema.optional(Schema.String),
+  sha256: Schema.optional(Schema.String),
+});
+export type SessionOrigin = typeof SessionOrigin.Type;
+
 export const ThreadView = Schema.Struct({
   thread: Schema.Struct({
     ...ThreadSummary.fields,
@@ -150,6 +163,7 @@ export const ThreadView = Schema.Struct({
   entries: Schema.Array(Entry),
   labels: Labels,
   snapshot: Schema.optional(SessionSnapshot),
+  origin: Schema.optional(SessionOrigin),
 });
 export type ThreadView = typeof ThreadView.Type;
 

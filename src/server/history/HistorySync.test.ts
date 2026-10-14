@@ -312,6 +312,10 @@ describe("history sync", () => {
             const [thread] = yield* store.threads(["codex:coder"]);
             // Sent redacted: the home directory reads `~`, never the temp path.
             assert.notInclude(encodeJson(thread), home);
+            // With where it was read from (home as ~) and the digest of what was read.
+            assert.strictEqual(thread?.origin?.reader, "codex-rollout");
+            assert.match(thread?.origin?.file ?? "", /^sessions\/2026\/01\/01\/rollout-.*\.jsonl$/);
+            assert.match(thread?.origin?.sha256 ?? "", /^[0-9a-f]{64}$/);
             // With how the session started, as its rollout recorded it.
             assert.deepStrictEqual(thread?.snapshot, {
               startCommit: yield* git(repo, ["rev-parse", "main~2"]),

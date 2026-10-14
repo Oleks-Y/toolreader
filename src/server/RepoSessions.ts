@@ -11,7 +11,14 @@ import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import type { ThreadNotFound } from "../core/api.ts";
-import type { Entry, Labels, SessionSnapshot, ThreadSummary, ThreadView } from "../core/domain.ts";
+import type {
+  Entry,
+  Labels,
+  SessionOrigin,
+  SessionSnapshot,
+  ThreadSummary,
+  ThreadView,
+} from "../core/domain.ts";
 import { nativeId, type LedgerThread } from "../core/ledger.ts";
 import { CLAUDE_ID_PREFIX, ClaudeTranscripts } from "./ClaudeTranscripts.ts";
 import { CodexRollouts, ROLLOUT_DIRS } from "./CodexRollouts.ts";
@@ -42,6 +49,8 @@ export type RepoSession = {
   readonly thread: LedgerThread;
   /** How it started, when its source recorded that. */
   readonly snapshot?: SessionSnapshot | undefined;
+  /** Where it was read from, and the digest of what was read. */
+  readonly origin: SessionOrigin;
 };
 
 export type Loaded = {
@@ -107,27 +116,41 @@ export class RepoSessions extends Context.Service<
           load: (labels: Labels) => Effect.Effect<ThreadView, ThreadNotFound>;
           /** A subagent's parent, as its reader names it; others' come from T3. */
           parent?: string | null;
+          reader: SessionOrigin["reader"];
         }> = [];
         const bare = (s: ThreadSummary) => s.id.slice(CODEX_ID_PREFIX.length);
         if (source === "t3" || (source === "auto" && hasT3)) {
           sources.push("t3");
           for (const s of yield* store.list)
-            found.push({ summary: s, load: (l) => store.get(s.id, l) });
+            found.push({ summary: s, load: (l) => store.get(s.id, l), reader: "t3" });
         }
         if (source === "codex-app-server") {
           sources.push("codex-app-server");
           yield* codex.ready;
           for (const s of yield* codex.list)
-            found.push({ summary: s, load: (l) => codex.get(bare(s), l) });
+            found.push({
+              summary: s,
+              load: (l) => codex.get(bare(s), l),
+              reader: "codex-app-server",
+            });
         }
         // T3 runs Codex too; the rollout listing skips the sessions T3 owns.
         if (source === "codex-rollouts" || (source === "auto" && hasRollouts)) {
           sources.push("codex-rollouts");
           for (const s of yield* rollouts.list)
-            found.push({ summary: s, load: (l) => rollouts.get(bare(s), l) });
+            found.push({
+              summary: s,
+              load: (l) => rollouts.get(bare(s), l),
+              reader: "codex-rollout",
+            });
           // Subagents' edits land in commits too; their copy of the parent's history is skipped.
           for (const { summary: s, parent } of yield* rollouts.subagents)
-            found.push({ summary: s, load: (l) => rollouts.get(bare(s), l), parent });
+            found.push({
+              summary: s,
+              load: (l) => rollouts.get(bare(s), l),
+              parent,
+              reader: "codex-rollout",
+            });
         }
         // T3 runs Claude too; the transcript listing skips the sessions T3 owns.
         if (source === "claude-transcripts" || (source === "auto" && hasClaude)) {
@@ -136,12 +159,14 @@ export class RepoSessions extends Context.Service<
             found.push({
               summary: s,
               load: (l) => claude.get(s.id.slice(CLAUDE_ID_PREFIX.length), l),
+              reader: "claude-transcript",
             });
           for (const { summary: s, parent } of yield* claude.subagents)
             found.push({
               summary: s,
               load: (l) => claude.get(s.id.slice(CLAUDE_ID_PREFIX.length), l),
               parent,
+              reader: "claude-transcript",
             });
         }
         // The innermost worktree holding the session's directory (worktrees can nest).
@@ -175,7 +200,7 @@ export class RepoSessions extends Context.Service<
         };
         const sessions: RepoSession[] = [];
         const unread: Array<{ id: string; title: string }> = [];
-        for (const { summary, load, root, parent } of found) {
+        for (const { summary, load, root, parent, reader } of found) {
           const labels = yield* labeler.forThread(summary.id);
           const view = yield* load(labels).pipe(Effect.option);
           if (Option.isNone(view)) {
@@ -189,6 +214,7 @@ export class RepoSessions extends Context.Service<
             entries,
             labels: { ...view.value.labels },
             snapshot: view.value.snapshot ?? (yield* snapshotOf(t)) ?? undefined,
+            origin: view.value.origin ?? { reader },
             thread: {
               id: t.id,
               title: t.title,

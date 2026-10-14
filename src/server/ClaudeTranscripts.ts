@@ -24,6 +24,7 @@ import type {
 } from "../core/domain.ts";
 import { normalize } from "../core/normalize.ts";
 import type { Subagent } from "./CodexRollouts.ts";
+import { sha256 } from "./recordHash.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 import { ThreadStore } from "./ThreadStore.ts";
 
@@ -174,11 +175,12 @@ export class ClaudeTranscripts extends Context.Service<
         const file = yield* fileOf(id);
         // Marker before content, as ThreadStore does: a write mid-read shows as a newer marker.
         const { head: marker } = yield* head(id);
-        const lines = (yield* fs
+        const text = yield* fs
           .readFileString(file)
           .pipe(
             Effect.mapError(() => new ThreadNotFound({ threadId: `${CLAUDE_ID_PREFIX}${id}` })),
-          )).split("\n");
+          );
+        const lines = text.split("\n");
         const meta = claudeTranscriptMeta(lines);
         const { activities, messages } = claudeTranscriptToRows(lines, id.startsWith("agent-"));
         const cwd = meta?.cwd ?? null;
@@ -197,6 +199,12 @@ export class ClaudeTranscripts extends Context.Service<
           entries,
           labels,
           snapshot: claudeSnapshot(lines),
+          origin: {
+            reader: "claude-transcript" as const,
+            // Without its project folder, whose name spells the session's directory (and user).
+            file: path.relative(root, file).split("/").slice(1).join("/"),
+            sha256: sha256(text),
+          },
         };
       });
 

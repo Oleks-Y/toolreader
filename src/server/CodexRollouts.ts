@@ -15,6 +15,7 @@ import type { Labels, SessionSnapshot, ThreadSummary, ThreadView } from "../core
 import { normalize } from "../core/normalize.ts";
 import { readRollout, rolloutMeta } from "../core/rolloutThread.ts";
 import { CODEX_ID_PREFIX } from "./CodexSessions.ts";
+import { sha256 } from "./recordHash.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 import { ThreadStore } from "./ThreadStore.ts";
 
@@ -165,6 +166,12 @@ export class CodexRollouts extends Context.Service<
           entries,
           labels,
           snapshot: session.snapshot,
+          origin: {
+            reader: "codex-rollout" as const,
+            // Relative to $CODEX_HOME: the path above it can name the machine's user.
+            file: path.relative(config.codexHome, known.file),
+            sha256: sha256(Option.getOrElse(text, () => "")),
+          },
         };
       });
 

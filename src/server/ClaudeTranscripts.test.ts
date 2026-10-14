@@ -118,6 +118,9 @@ describe("ClaudeTranscripts", () => {
         );
         const sub = yield* claude.get("agent-1", {});
         assert.strictEqual(sub.thread.actionCount, 1);
+        // Named without the project folder, which spells the session's directory.
+        assert.strictEqual(sub.origin?.file, "free/subagents/agent-1.jsonl");
+        assert.strictEqual(view.origin?.file, "free.jsonl");
 
         const missing = yield* claude.get("owned", {}).pipe(Effect.flip);
         assert.strictEqual(missing._tag, "ThreadNotFound");
