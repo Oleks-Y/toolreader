@@ -28,6 +28,13 @@ import { LIMITS, type Evidence, type SearchHit } from "../../core/historyApi.ts"
 import type { Finding, FindingStatus } from "../../core/insights.ts";
 import type { EvidenceNow, ReviewManifest } from "../../core/review.ts";
 import {
+  detectionsFrom,
+  GROUPING_JSON_SCHEMA,
+  GroupingAnswer,
+  groupingPrompt,
+} from "../../core/semantic.ts";
+import { codexExec } from "../Labeler.ts";
+import {
   buildCommitRecord,
   buildThreadRecord,
   CommitRecordV1,
@@ -55,6 +62,8 @@ const asJson = <A, I>(schema: Schema.Codec<A, I>) => {
 };
 const decodeJson = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
 const threadJson = asJson(ThreadRecordV1);
+const encodeSchema = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeGrouping = Schema.decodeUnknownEffect(Schema.fromJsonString(GroupingAnswer));
 const commitJson = asJson(CommitRecordV1);
 
 /** Bytes kept per action output, head and tail. */
@@ -125,6 +134,26 @@ export class HistorySync extends Context.Service<
       },
       HistoryFailed
     >;
+    /**
+     * Semantic grouping (core/semantic.ts): the backend's session summaries, grouped by a model
+     * (`codex exec`, spends model calls), stored as `repeated-question` findings.
+     */
+    readonly semantic: (
+      repo: string,
+    ) => Effect.Effect<
+      { readonly sessions: number; readonly found: number; readonly added: number },
+      HistoryFailed
+    >;
+    /** Corrects a finding's members, with why. */
+    readonly correct: (
+      repo: string,
+      id: string,
+      change: {
+        readonly add: ReadonlyArray<string>;
+        readonly remove: ReadonlyArray<string>;
+        readonly why: string;
+      },
+    ) => Effect.Effect<Finding, HistoryFailed>;
     /** Moves one of this repo's findings along its lifecycle. */
     readonly decide: (
       repo: string,
@@ -734,7 +763,60 @@ export class HistorySync extends Context.Service<
         return yield* call(api.history.review({ params, payload: { id } }));
       }, Effect.provide(FetchHttpClient.layer));
 
-      return HistorySync.of({ sync, site, search, show, insights, decide, freezeReview, review });
+      const semantic = Effect.fn("HistorySync.semantic")(function* (repoArg: string) {
+        const { api, params } = yield* remote(repoArg);
+        const { summaries } = yield* call(api.history.summaries({ params }));
+        if (summaries.length < 2) return { sessions: summaries.length, found: 0, added: 0 };
+        const text = yield* codexExec(
+          groupingPrompt(summaries),
+          encodeSchema(GROUPING_JSON_SCHEMA),
+        ).pipe(
+          Effect.timeoutOrElse({
+            duration: "5 minutes",
+            orElse: () => Effect.fail(new HistoryFailed({ message: "codex exec timed out" })),
+          }),
+          Effect.provideService(ServerConfig, config),
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.mapError((e) => new HistoryFailed({ message: e.message })),
+        );
+        const answer = yield* decodeGrouping(text).pipe(
+          Effect.mapError(() => new HistoryFailed({ message: "the model's answer wasn't groups" })),
+        );
+        const detections = detectionsFrom(answer, summaries);
+        const stored = yield* call(api.history.putDetections({ params, payload: { detections } }));
+        return { sessions: summaries.length, ...stored };
+      }, Effect.provide(FetchHttpClient.layer));
+
+      const correct = Effect.fn("HistorySync.correct")(function* (
+        repoArg: string,
+        id: string,
+        change: {
+          readonly add: ReadonlyArray<string>;
+          readonly remove: ReadonlyArray<string>;
+          readonly why: string;
+        },
+      ) {
+        const { api, params } = yield* remote(repoArg);
+        const { finding } = yield* call(
+          api.history.correct({ params, payload: { id, ...change } }),
+        );
+        return finding;
+      }, Effect.provide(FetchHttpClient.layer));
+
+      return HistorySync.of({
+        sync,
+        site,
+        search,
+        show,
+        insights,
+        decide,
+        freezeReview,
+        review,
+        semantic,
+        correct,
+      });
     }),
   );
 }

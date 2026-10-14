@@ -10,7 +10,12 @@ import * as Schema from "effect/Schema";
 
 import type { Action, Entry } from "./domain.ts";
 
-export const DETECTORS = ["recurring-failure", "repeated-investigation"] as const;
+/** `repeated-question` comes from semantic.ts, through a model, and only when asked for. */
+export const DETECTORS = [
+  "recurring-failure",
+  "repeated-investigation",
+  "repeated-question",
+] as const;
 
 /** Detected → Proposed → Accepted, Rejected or Modified → Implemented → Monitoring → Evaluated. */
 export const FINDING_STATUSES = [
@@ -208,6 +213,12 @@ export const FindingEvent = Schema.Struct({
 });
 export type FindingEvent = typeof FindingEvent.Type;
 
+export const Corrections = Schema.Struct({
+  add: Schema.Array(Schema.String),
+  remove: Schema.Array(Schema.String),
+});
+export type Corrections = typeof Corrections.Type;
+
 /** A detection as the backend keeps it: with its status and how it got there. */
 export const Finding = Schema.Struct({
   ...Detection.fields,
@@ -217,8 +228,23 @@ export const Finding = Schema.Struct({
   events: Schema.Array(FindingEvent),
   detectedAt: Schema.String,
   updatedAt: Schema.String,
+  /** Sessions people added to or removed from the group; `occurrences` already reflect them. */
+  corrections: Schema.optional(Corrections),
 });
 export type Finding = typeof Finding.Type;
+
+/** A finding's occurrences and session count, with people's corrections to its members applied. */
+export function corrected(d: Detection, c: Corrections | undefined): Detection {
+  if (!c || (c.add.length === 0 && c.remove.length === 0)) return d;
+  const removed = new Set(c.remove);
+  const kept = d.occurrences.filter((o) => !removed.has(o.threadId));
+  const have = new Set(kept.map((o) => o.threadId));
+  const added = c.add
+    .filter((t) => !have.has(t) && !removed.has(t))
+    .map((threadId) => ({ threadId, entryId: "", at: "" }));
+  const occurrences = [...kept, ...added];
+  return { ...d, occurrences, sessions: new Set(occurrences.map((o) => o.threadId)).size };
+}
 
 /** Why a status change isn't allowed, or null when it is. */
 export function transitionError(from: FindingStatus, to: FindingStatus): string | null {

@@ -11,7 +11,8 @@ import * as HttpApiSecurity from "effect/unstable/httpapi/HttpApiSecurity";
 
 import { CommitRecordV1, REJECT_REASONS, REPO_MAX, ThreadRecordV1 } from "./historyRecord.ts";
 import { Entry } from "./domain.ts";
-import { Finding, FINDING_STATUSES } from "./insights.ts";
+import { Detection, Finding, FINDING_STATUSES } from "./insights.ts";
+import { SessionSummary } from "./semantic.ts";
 import { EVIDENCE_NOW, ReviewManifest, VERDICTS } from "./review.ts";
 
 export const API_VERSION = 1;
@@ -280,6 +281,35 @@ export class HistoryApi extends HttpApiGroup.make("history")
       params: { ...ws, repo: Repo },
       success: Schema.Struct({ found: Schema.Number, added: Schema.Number }),
       error: [Forbidden, BackendFailed],
+    }),
+    // Each independent session linked to the repo's commits, summarized for semantic grouping
+    // (core/semantic.ts): its prompts' first lines and the files it read, no bodies.
+    HttpApiEndpoint.post("summaries", "/workspaces/:ws/repos/:repo/insights/summaries", {
+      params: { ...ws, repo: Repo },
+      success: Schema.Struct({ summaries: Schema.Array(SessionSummary) }),
+      error: [Forbidden, BackendFailed],
+    }),
+    // Findings a client derived (semantic grouping): only `repeated-question` ones; the
+    // backend's own detectors aren't overwritten from outside.
+    HttpApiEndpoint.post("putDetections", "/workspaces/:ws/repos/:repo/insights/detections", {
+      params: { ...ws, repo: Repo },
+      payload: Schema.Struct({
+        detections: Schema.Array(Detection).check(Schema.isMaxLength(500)),
+      }),
+      success: Schema.Struct({ found: Schema.Number, added: Schema.Number }),
+      error: [Conflict, Forbidden, BackendFailed],
+    }),
+    // A person's correction to a finding's members, kept with who and why.
+    HttpApiEndpoint.post("correct", "/workspaces/:ws/repos/:repo/insights/members", {
+      params: { ...ws, repo: Repo },
+      payload: Schema.Struct({
+        id: Text.check(Schema.isMaxLength(64)),
+        add: Schema.Array(Text).check(Schema.isMaxLength(100)),
+        remove: Schema.Array(Text).check(Schema.isMaxLength(100)),
+        why: Text.check(Schema.isMinLength(1), Schema.isMaxLength(2000)),
+      }),
+      success: Schema.Struct({ finding: Finding }),
+      error: [NotFound, Forbidden, BackendFailed],
     }),
     HttpApiEndpoint.post("findings", "/workspaces/:ws/repos/:repo/insights/query", {
       params: { ...ws, repo: Repo },

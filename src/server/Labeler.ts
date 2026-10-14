@@ -99,6 +99,61 @@ function modelSelection(settingsJson: string): { model: string; effort: string }
   };
 }
 
+/**
+ * `codex exec` on `input`, read-only and ephemeral, answering in `schemaJson`'s shape: the answer's
+ * text. The model and effort are T3's text-generation setting. What Labeler and Grouper share.
+ */
+export const codexExec = Effect.fn("codexExec")(function* (input: string, schemaJson: string) {
+  const config = yield* ServerConfig;
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const dir = yield* fs.makeTempDirectoryScoped({ prefix: "toolreader-" });
+  const schemaPath = path.join(dir, "schema.json");
+  const outPath = path.join(dir, "out.json");
+  yield* fs.writeFileString(schemaPath, schemaJson);
+  const settings = yield* fs
+    .readFileString(path.join(path.dirname(config.dbPath), "settings.json"))
+    .pipe(Effect.orElseSucceed(() => "{}"));
+  const { model, effort } = modelSelection(settings);
+  const handle = yield* spawner.spawn(
+    ChildProcess.make(
+      config.codexBin,
+      [
+        "exec",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        "-s",
+        "read-only",
+        "--model",
+        model,
+        "--config",
+        `model_reasoning_effort="${effort}"`,
+        "--output-schema",
+        schemaPath,
+        "--output-last-message",
+        outPath,
+        "-",
+      ],
+      {
+        cwd: dir,
+        stdin: { stream: Stream.encodeText(Stream.make(input)) },
+        // The answer comes from --output-last-message; an unread stdout pipe would fill and block codex.
+        stdout: "ignore",
+      },
+    ),
+  );
+  const [stderr, exitCode] = yield* Effect.all(
+    [handle.stderr.pipe(Stream.decodeText(), Stream.mkString), handle.exitCode],
+    { concurrency: "unbounded" },
+  );
+  if (exitCode !== ChildProcessSpawner.ExitCode(0))
+    return yield* new LabelingFailed({
+      message: `codex exec failed (${exitCode}): ${stderr.trim().split("\n").slice(-3).join(" ")}`,
+    });
+  return yield* fs.readFileString(outPath);
+}, Effect.scoped);
+
 export class Labeler extends Context.Service<
   Labeler,
   {
@@ -129,53 +184,14 @@ export class Labeler extends Context.Service<
 
       const forThread = (threadId: string) => Effect.sync(() => store[threadId] ?? {});
 
-      const runCodex = Effect.fn("Labeler.runCodex")(function* (input: string) {
-        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "toolreader-" });
-        const schemaPath = path.join(dir, "schema.json");
-        const outPath = path.join(dir, "out.json");
-        yield* fs.writeFileString(schemaPath, OUTPUT_JSON_SCHEMA);
-        const settings = yield* fs
-          .readFileString(path.join(path.dirname(config.dbPath), "settings.json"))
-          .pipe(Effect.orElseSucceed(() => "{}"));
-        const { model, effort } = modelSelection(settings);
-        const handle = yield* spawner.spawn(
-          ChildProcess.make(
-            config.codexBin,
-            [
-              "exec",
-              "--ephemeral",
-              "--skip-git-repo-check",
-              "-s",
-              "read-only",
-              "--model",
-              model,
-              "--config",
-              `model_reasoning_effort="${effort}"`,
-              "--output-schema",
-              schemaPath,
-              "--output-last-message",
-              outPath,
-              "-",
-            ],
-            {
-              cwd: dir,
-              stdin: { stream: Stream.encodeText(Stream.make(input)) },
-              // The answer comes from --output-last-message; an unread stdout pipe would fill and block codex.
-              stdout: "ignore",
-            },
-          ),
+      const runCodex = (input: string) =>
+        codexExec(input, OUTPUT_JSON_SCHEMA).pipe(
+          Effect.flatMap(decodeCodexOutput),
+          Effect.provideService(ServerConfig, config),
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         );
-        const [stderr, exitCode] = yield* Effect.all(
-          [handle.stderr.pipe(Stream.decodeText(), Stream.mkString), handle.exitCode],
-          { concurrency: "unbounded" },
-        );
-        if (exitCode !== ChildProcessSpawner.ExitCode(0)) {
-          return yield* new LabelingFailed({
-            message: `codex exec failed (${exitCode}): ${stderr.trim().split("\n").slice(-3).join(" ")}`,
-          });
-        }
-        return yield* fs.readFileString(outPath).pipe(Effect.flatMap(decodeCodexOutput));
-      }, Effect.scoped);
 
       const label = Effect.fn("Labeler.label")(function* (
         threadId: string,

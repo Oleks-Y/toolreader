@@ -205,7 +205,12 @@ const withUnreadable = Layer.effect(
 ).pipe(Layer.provide(CodexRollouts.layer));
 
 /** The sync over the real rollout reader (no T3), with `home` as the user's home. */
-const services = (home: string, codexHome: string, rollouts = CodexRollouts.layer) =>
+const services = (
+  home: string,
+  codexHome: string,
+  rollouts = CodexRollouts.layer,
+  codexBin = "codex",
+) =>
   HistorySync.layer.pipe(
     Layer.provide(RepoSessions.layer),
     Layer.provide([rollouts, ClaudeTranscripts.layer]),
@@ -216,7 +221,7 @@ const services = (home: string, codexHome: string, rollouts = CodexRollouts.laye
           port: 0,
           home,
           dbPath: "/nonexistent/state.sqlite",
-          codexBin: "codex",
+          codexBin,
           codexHome,
           claudeHome: "/nonexistent",
           labelsPath: "",
@@ -584,6 +589,100 @@ describe("history sync", () => {
           assert.include(wrong.message, "Conflict");
         }).pipe(Effect.provide(services(home, codexHome)));
       }).pipe(Effect.scoped),
+    );
+
+    it.effect(
+      "groups sessions asking one question, with a model, and keeps people's corrections",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const { repo, home, codexHome } = yield* scenario;
+          // A second session, in its own words, writing the next commit.
+          const content = "export const wireHandler = () => registerHandler();\n";
+          yield* writeRollout(codexHome, "other", repo, [
+            {
+              at: "2026-01-01T11:00:00.000Z",
+              item: {
+                type: "UserMessage",
+                id: "o1",
+                content: [{ type: "text", text: "Where do handlers get registered?" }],
+              },
+            },
+            {
+              at: "2026-01-01T11:00:30.000Z",
+              item: {
+                type: "FileChange",
+                id: "o2",
+                status: "completed",
+                changes: { [path.join(repo, "wire.ts")]: { type: "add", content } },
+              },
+            },
+          ]);
+          yield* fs.writeFileString(path.join(repo, "wire.ts"), content);
+          yield* git(repo, ["add", "wire.ts"]);
+          yield* git(repo, ["commit", "-q", "-m", "feat: wire"], "2026-01-01T11:01:00Z");
+          // A fake codex: groups every session it's given, writing the answer where codex would.
+          const codexBin = path.join(home, "codex-fake.cjs");
+          yield* fs.writeFileString(
+            codexBin,
+            [
+              "#!/usr/bin/env node",
+              "let input = '';",
+              "process.stdin.on('data', (d) => (input += d)).on('end', () => {",
+              "  const args = process.argv.slice(2);",
+              "  const out = args[args.indexOf('--output-last-message') + 1];",
+              "  const ids = JSON.parse(input.split('Sessions (JSON):\\n')[1]).map((s) => s.id);",
+              "  require('fs').writeFileSync(out, JSON.stringify({ groups: [{ question: 'Where are handlers wired up?', members: ids }] }));",
+              "});",
+            ].join("\n"),
+          );
+          yield* fs.chmod(codexBin, 0o755);
+          yield* Effect.gen(function* () {
+            const history = yield* HistorySync;
+            const server = yield* HttpServer.HttpServer;
+            const port = server.address._tag === "TcpAddress" ? server.address.port : 0;
+            const token = yield* Effect.flatMap(HistoryStore, (s) => s.createToken("acme-s", "ci"));
+            yield* fs.makeDirectory(`${home}/.toolreader`, { recursive: true });
+            yield* fs.writeFileString(
+              `${home}/.toolreader/config.json`,
+              encodeJson({
+                backend: { url: `http://127.0.0.1:${port}`, token, workspace: "acme-s" },
+              }),
+            );
+            yield* history.sync(repo, "main~3..main", { source: "codex-rollouts", dryRun: false });
+            assert.deepStrictEqual(yield* history.semantic(repo), {
+              sessions: 2,
+              found: 1,
+              added: 1,
+            });
+            const { findings } = yield* history.insights(repo, { detect: false });
+            const q = findings.find((f) => f.detector === "repeated-question")!;
+            assert.deepStrictEqual(
+              [q.subject, q.sessions, q.occurrences.map((o) => o.threadId)],
+              ["Where are handlers wired up?", 2, ["codex:coder", "codex:other"]],
+            );
+            // A person takes one session out of the group; the next run doesn't put it back.
+            const fixed = yield* history.correct(repo, q.id, {
+              add: [],
+              remove: ["codex:coder"],
+              why: "it asked about the store, not handlers",
+            });
+            assert.deepStrictEqual(
+              [fixed.sessions, fixed.corrections?.remove],
+              [1, ["codex:coder"]],
+            );
+            yield* history.semantic(repo);
+            const [after] = (yield* history.insights(repo, { detect: false })).findings.filter(
+              (f) => f.id === q.id,
+            );
+            assert.deepStrictEqual(
+              after!.occurrences.map((o) => o.threadId),
+              ["codex:other"],
+            );
+            assert.include(after!.events.at(-1)!.why, "-codex:coder");
+          }).pipe(Effect.provide(services(home, codexHome, CodexRollouts.layer, codexBin)));
+        }).pipe(Effect.scoped),
     );
 
     it.effect("reports a session it couldn't read instead of dropping it", () =>

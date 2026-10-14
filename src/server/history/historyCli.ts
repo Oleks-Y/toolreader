@@ -423,6 +423,11 @@ const insights = Command.make(
     noDetect: Flag.boolean("no-detect").pipe(
       Flag.withDescription("List what's stored without running the detectors first"),
     ),
+    semantic: Flag.boolean("semantic").pipe(
+      Flag.withDescription(
+        "Also group sessions asking the same question, with a model (codex exec: spends model calls; summaries only, no session bodies)",
+      ),
+    ),
     status: Flag.choice("status", FINDING_STATUSES).pipe(
       Flag.withDescription("Only findings in this status (repeatable); default: the open ones"),
       Flag.atLeast(0),
@@ -435,6 +440,14 @@ const insights = Command.make(
   Effect.fn("toolreader history insights")(function* (flags) {
     const repo = (yield* Path.Path).resolve(flags.repo);
     const statuses = flags.status.length > 0 ? flags.status : OPEN;
+    if (flags.semantic) {
+      const s = yield* Effect.flatMap(HistorySync, (h) => h.semantic(repo)).pipe(
+        Effect.provide(CliApp({ appServer: false, codexHome: null })),
+      );
+      yield* Console.log(
+        `semantic grouping: ${s.sessions} sessions summarized, ${s.found} group${s.found === 1 ? "" : "s"} found, ${s.added} new`,
+      );
+    }
     const { findings, added } = yield* Effect.flatMap(HistorySync, (h) =>
       h.insights(repo, { detect: !flags.noDetect, statuses }),
     ).pipe(Effect.provide(CliApp({ appServer: false, codexHome: null })));
@@ -460,6 +473,37 @@ const DECISIONS = {
   monitor: "monitoring",
   evaluate: "evaluated",
 } as const satisfies Record<string, FindingStatus>;
+
+const members = Command.make(
+  "members",
+  {
+    id: Argument.string("id").pipe(Argument.withDescription("The finding, as insights lists it")),
+    add: Flag.string("add").pipe(
+      Flag.withDescription("A session to add (repeatable)"),
+      Flag.atLeast(0),
+    ),
+    remove: Flag.string("remove").pipe(
+      Flag.withDescription("A session to remove (repeatable)"),
+      Flag.atLeast(0),
+    ),
+    why: Flag.string("why").pipe(Flag.withDescription("Why: kept with the finding")),
+    repo: Flag.string("repo").pipe(
+      Flag.withDescription("Repository (any path inside it)"),
+      Flag.withDefault("."),
+    ),
+  },
+  Effect.fn("toolreader history insight members")(function* (flags) {
+    const repo = (yield* Path.Path).resolve(flags.repo);
+    const finding = yield* Effect.flatMap(HistorySync, (h) =>
+      h.correct(repo, flags.id, { add: flags.add, remove: flags.remove, why: flags.why }),
+    ).pipe(Effect.provide(CliApp({ appServer: false, codexHome: null })));
+    for (const line of findingLines(finding)) yield* Console.log(line);
+  }),
+).pipe(
+  Command.withDescription(
+    "Correct a finding's members: sessions that belong in its group, or don't",
+  ),
+);
 
 const decision = (action: keyof typeof DECISIONS) =>
   Command.make(
@@ -784,6 +828,7 @@ export const historyCommand = Command.make("history").pipe(
         ...(Object.keys(DECISIONS) as Array<keyof typeof DECISIONS>).map(decision),
         sample,
         score,
+        members,
       ]),
     ),
     audit,

@@ -289,6 +289,26 @@ describe("Backend", () => {
             yield* tag(stranger.history.findings({ params: app, payload: {} })),
             "Unauthorized",
           );
+          // A client may add semantic findings, not another detector's.
+          const foreign = yield* Effect.flip(
+            machine.history.putDetections({
+              params: app,
+              payload: {
+                detections: [
+                  {
+                    key: "recurring-failure:x",
+                    detector: "recurring-failure",
+                    subject: "x",
+                    sessions: 2,
+                    occurrences: [],
+                    pattern: "p",
+                    suggestion: "s",
+                  },
+                ],
+              },
+            }),
+          );
+          assert.strictEqual(foreign._tag, "Conflict");
           // How to sign in, without a token.
           const anonymous = yield* clientWith(headers(null, null));
           assert.deepStrictEqual(yield* anonymous.system.signIn(), {
