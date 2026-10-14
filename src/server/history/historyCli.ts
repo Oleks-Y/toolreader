@@ -7,6 +7,7 @@
 //   toolreader history audit [--repo PATH] [--source …]           (core/audit.ts)
 //   toolreader history login                                     (githubLogin.ts)
 //   toolreader history search TEXT [--repo PATH] [--all] [--limit N]
+//   toolreader history show THREAD#ENTRY@VERSION [--repo PATH]
 //   toolreader history insights [--repo PATH] [--no-detect] [--status S]… [--limit N]
 //   toolreader history insight propose|accept|reject|modify|implemented|monitor|evaluate ID --why TEXT
 //   toolreader history insight sample --out FILE [--per-detector N]   (core/insightsEval.ts)
@@ -38,7 +39,7 @@ import { backendUrl, call, HistoryFailed } from "./HistoryClient.ts";
 import { deviceLogin, saveGithubToken } from "./githubLogin.ts";
 import { commitSkill, dirtyPaths, INSTALLED_PATHS, installSkill } from "./historySkill.ts";
 import { appendLog, causeMessage, installHooks, pending } from "./historyHooks.ts";
-import type { SearchHit } from "../../core/historyApi.ts";
+import type { Evidence, SearchHit } from "../../core/historyApi.ts";
 import { FINDING_STATUSES, type Finding, type FindingStatus } from "../../core/insights.ts";
 import { evaluate, LabelRow, sampleRows } from "../../core/insightsEval.ts";
 import { HistorySync, type SyncReport } from "./HistorySync.ts";
@@ -357,6 +358,58 @@ export const findingLines = (f: Finding): string[] => [
     : []),
 ];
 
+/** What a citation reads now, as `history show` prints it. */
+export const evidenceLines = (cite: string, e: Evidence): string[] => {
+  if (e.status !== "ok" || !e.entry)
+    return [
+      `${cite}: ${
+        {
+          ok: "no such entry",
+          "version-unavailable": `replaced since; now ${e.version?.slice(0, 12) ?? "?"} (read it with that version to see what it says now)`,
+          withheld: "withheld: not yours to read from this repo",
+          deleted: "deleted on request",
+          expired: "expired: past the retention period",
+          missing: "not on the backend",
+        }[e.status]
+      }`,
+    ];
+  const x = e.entry;
+  if (x.type === "message")
+    return [`${x.at.slice(0, 16).replace("T", " ")} · ${x.role}`, title(x.text)];
+  return x.type !== "action"
+    ? [`${x.at.slice(0, 16).replace("T", " ")} · ${x.type}`]
+    : [
+        `${x.at.slice(0, 16).replace("T", " ")} · ${x.kind} ${x.status}${x.exitCode === undefined ? "" : ` (exit ${x.exitCode})`} · ${title(x.title)}`,
+        ...(x.command ? [`$ ${title(x.command)}`] : []),
+        ...(x.output ? [title(x.output)] : []),
+        ...(x.files ?? []).map((f) => `  ${f.path} +${f.added} -${f.removed}`),
+      ];
+};
+
+const show = Command.make(
+  "show",
+  {
+    cite: Argument.string("citation").pipe(
+      Argument.withDescription("thread#entry@version, as search and insights print it"),
+    ),
+    repo: Flag.string("repo").pipe(
+      Flag.withDescription("Repository (any path inside it)"),
+      Flag.withDefault("."),
+    ),
+  },
+  Effect.fn("toolreader history show")(function* (flags) {
+    const repo = (yield* Path.Path).resolve(flags.repo);
+    const evidence = yield* Effect.flatMap(HistorySync, (h) => h.show(repo, flags.cite)).pipe(
+      Effect.provide(CliApp({ appServer: false, codexHome: null })),
+    );
+    for (const line of evidenceLines(flags.cite, evidence)) yield* Console.log(line);
+  }),
+).pipe(
+  Command.withDescription(
+    "Read a citation back: the entry as that version holds it, or why it can't be read (replaced, withheld, deleted, expired)",
+  ),
+);
+
 const insights = Command.make(
   "insights",
   {
@@ -629,6 +682,7 @@ export const historyCommand = Command.make("history").pipe(
     site,
     login,
     search,
+    show,
     insights,
     Command.make("insight").pipe(
       Command.withDescription("Decide on a finding: each step is kept with who, when and why"),

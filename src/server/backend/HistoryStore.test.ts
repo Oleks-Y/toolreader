@@ -6,6 +6,8 @@ import * as Option from "effect/Option";
 
 import type { Entry } from "../../core/domain.ts";
 import type { Detection } from "../../core/insights.ts";
+import { PgClient } from "@effect/sql-pg/PgClient";
+
 import { threadSha } from "../recordHash.ts";
 import { HistoryStore } from "./HistoryStore.ts";
 import { PgMigrationsLive } from "./PgMigrations.ts";
@@ -216,6 +218,109 @@ describe("HistoryStore", () => {
         assert.strictEqual(proposed.events.at(-1)!.by, "github:alex");
         // Another repo, another set of findings.
         assert.deepStrictEqual(yield* store.findings("acme/other"), []);
+      }),
+    );
+
+    it.effect("reads a citation back, or says why not; removal reaches search and findings", () =>
+      Effect.gen(function* () {
+        const hs = yield* HistoryStore;
+        const ws = yield* hs.workspace("evidence");
+        const store = hs.at({ workspaceId: ws, tokenId: null, client: "0.1.0" });
+        const v1 = threadRecord("t1", [message("u1", "retries is undefined")]);
+        yield* store.putThread(v1);
+        yield* store.putCommit(commitRecord("abc1234", ["t1"]));
+        const version = threadSha(v1);
+        const cite = { threadId: "t1", entryId: "u1" };
+        assert.strictEqual((yield* store.evidence({ ...cite, version })).status, "ok");
+        assert.strictEqual(
+          (yield* store.evidence({ ...cite, version: version.slice(0, 12) })).entry?.id,
+          "u1",
+        );
+        assert.strictEqual(
+          (yield* store.evidence({ ...cite, repo: "acme/other" })).status,
+          "withheld",
+        );
+        assert.strictEqual(
+          (yield* store.evidence({ threadId: "nope", entryId: "u1" })).status,
+          "missing",
+        );
+        // Replaced since: the old citation doesn't show the new text as if it were the old one.
+        yield* store.putThread(threadRecord("t1", [message("u1", "now something else")]));
+        const replaced = yield* store.evidence({ ...cite, version });
+        assert.deepStrictEqual(
+          [replaced.status, replaced.entry],
+          ["version-unavailable", undefined],
+        );
+
+        yield* store.putDetections("acme/app", [
+          {
+            key: "repeated-investigation:a.ts",
+            detector: "repeated-investigation",
+            subject: "a.ts",
+            sessions: 2,
+            occurrences: [
+              { threadId: "t1", entryId: "u1", at: "2026-01-01T10:00:00Z" },
+              { threadId: "t2", entryId: "u9", at: "2026-01-01T10:00:00Z" },
+            ],
+            pattern: "p",
+            suggestion: "s",
+          },
+        ]);
+        assert.isTrue(yield* hs.deleteThread("evidence", "t1"));
+        assert.strictEqual((yield* store.evidence(cite)).status, "deleted");
+        assert.deepStrictEqual((yield* store.search({ text: "something", limit: 5 })).hits, []);
+        const [finding] = yield* store.findings("acme/app");
+        assert.deepStrictEqual(
+          finding!.occurrences.map((o) => o.threadId),
+          ["t2"],
+        );
+        // The next sync sends it again: not stored.
+        assert.strictEqual(
+          yield* store.putThread(threadRecord("t1", [message("u1", "again")])),
+          "same",
+        );
+        assert.deepStrictEqual(yield* store.threads(["t1"]), []);
+      }),
+    );
+
+    it.effect("expires only threads stored longer ago than the retention period", () =>
+      Effect.gen(function* () {
+        const hs = yield* HistoryStore;
+        const ws = yield* hs.workspace("retention");
+        const store = hs.at({ workspaceId: ws, tokenId: null, client: "0.1.0" });
+        yield* store.putThread(threadRecord("old", [message("u1", "a")]));
+        yield* store.putThread(threadRecord("new", [message("u1", "b")]));
+        const sql = yield* PgClient;
+        yield* sql`UPDATE threads SET uploaded_at = now() - interval '40 days'
+                   WHERE workspace_id = ${ws} AND id = 'old'`;
+        assert.strictEqual(yield* hs.expire(30), 1);
+        assert.strictEqual(
+          (yield* store.evidence({ threadId: "old", entryId: "u1" })).status,
+          "expired",
+        );
+        assert.strictEqual(
+          (yield* store.evidence({ threadId: "new", entryId: "u1" })).status,
+          "ok",
+        );
+        // The same version sent again stays expired; a changed one is stored.
+        assert.strictEqual(
+          yield* store.putThread(threadRecord("old", [message("u1", "a")])),
+          "same",
+        );
+        assert.strictEqual(
+          yield* store.putThread(threadRecord("old", [message("u1", "a2")])),
+          "inserted",
+        );
+      }),
+    );
+
+    it.effect("a revoked token stops working at once", () =>
+      Effect.gen(function* () {
+        const hs = yield* HistoryStore;
+        const token = yield* hs.createToken("revoke", "laptop");
+        assert.isTrue(Option.isSome(yield* hs.authenticate(token)));
+        assert.strictEqual(yield* hs.revokeToken("revoke", "laptop"), 1);
+        assert.isTrue(Option.isNone(yield* hs.authenticate(token)));
       }),
     );
   });
