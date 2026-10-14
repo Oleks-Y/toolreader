@@ -8,11 +8,14 @@
 //   toolreader history search TEXT [--repo PATH] [--all] [--limit N]
 //   toolreader history insights [--repo PATH] [--no-detect] [--status S]… [--limit N]
 //   toolreader history insight propose|accept|reject|modify|implemented|monitor|evaluate ID --why TEXT
+//   toolreader history insight sample --out FILE [--per-detector N]   (core/insightsEval.ts)
+//   toolreader history insight score FILE [--split heldout|dev|all]
 //   toolreader history turns|link|unlink …                       (declareCli.ts)
 //   toolreader history skill install|uninstall [--repo PATH] [--commit]   (historySkill.ts)
 //   toolreader history hook install|uninstall [--repo PATH]    (historyHooks.ts)
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
@@ -32,6 +35,7 @@ import { commitSkill, dirtyPaths, INSTALLED_PATHS, installSkill } from "./histor
 import { appendLog, causeMessage, installHooks, pending } from "./historyHooks.ts";
 import type { SearchHit } from "../../core/historyApi.ts";
 import { FINDING_STATUSES, type Finding, type FindingStatus } from "../../core/insights.ts";
+import { evaluate, LabelRow, sampleRows } from "../../core/insightsEval.ts";
 import { HistorySync, type SyncReport } from "./HistorySync.ts";
 
 const PullRequest = Schema.Struct({ baseRefOid: Schema.String, headRefOid: Schema.String });
@@ -416,6 +420,77 @@ const decision = (action: keyof typeof DECISIONS) =>
     }),
   ).pipe(Command.withDescription(`Mark a finding ${DECISIONS[action]}, with why`));
 
+const encodeRow = Schema.encodeSync(Schema.fromJsonString(LabelRow));
+const decodeRow = Schema.decodeUnknownEffect(Schema.fromJsonString(LabelRow));
+
+const sample = Command.make(
+  "sample",
+  {
+    out: Flag.string("out").pipe(Flag.withDescription("The JSONL file to write, for labelling")),
+    perDetector: Flag.integer("per-detector").pipe(
+      Flag.withDescription("Findings per detector, most sessions first"),
+      Flag.withDefault(30),
+    ),
+    repo: Flag.string("repo").pipe(
+      Flag.withDescription("Repository (any path inside it)"),
+      Flag.withDefault("."),
+    ),
+  },
+  Effect.fn("toolreader history insight sample")(function* (flags) {
+    const path = yield* Path.Path;
+    const fs = yield* FileSystem.FileSystem;
+    const repo = path.resolve(flags.repo);
+    const { findings } = yield* Effect.flatMap(HistorySync, (h) =>
+      h.insights(repo, { detect: false }),
+    ).pipe(Effect.provide(CliApp({ appServer: false, codexHome: null })));
+    const rows = sampleRows(findings, flags.perDetector);
+    yield* fs.writeFileString(
+      path.resolve(flags.out),
+      rows.map((r) => `${encodeRow(r)}\n`).join(""),
+    );
+    const held = rows.filter((r) => r.split === "heldout").length;
+    yield* Console.log(
+      `${rows.length} rows in ${flags.out} (${held} held out). Set each "label" to real, known or noise; add what the detectors missed as rows with "missed": true; a second labeller fills "label2".`,
+    );
+  }),
+).pipe(
+  Command.withDescription("Write findings to a file to label, each on a fixed side of the split"),
+);
+
+const pct = (x: number | null) => (x === null ? "–" : `${Math.round(x * 100)}%`);
+
+const score = Command.make(
+  "score",
+  {
+    file: Argument.string("file").pipe(Argument.withDescription("The labelled JSONL file")),
+    split: Flag.choice("split", ["heldout", "dev", "all"] as const).pipe(
+      Flag.withDescription("Which rows to score: tune on dev, report on heldout"),
+      Flag.withDefault("heldout"),
+    ),
+  },
+  Effect.fn("toolreader history insight score")(function* ({ file, split }) {
+    const fs = yield* FileSystem.FileSystem;
+    const text = yield* fs.readFileString(file);
+    const rows = yield* Effect.forEach(
+      text.split("\n").filter((l) => l.trim()),
+      (line, i) =>
+        decodeRow(line).pipe(
+          Effect.mapError(
+            () => new HistoryFailed({ message: `${file}:${i + 1} isn't a label row` }),
+          ),
+        ),
+    );
+    for (const s of evaluate(rows, split))
+      yield* Console.log(
+        `${s.detector}: ${s.labelled} labelled · precision ${pct(s.precision)} · new to the reader ${pct(s.novel)} · recall ${pct(s.recall)} · agreement ${pct(s.agreement)} of ${s.doubleLabelled}`,
+      );
+  }),
+).pipe(
+  Command.withDescription(
+    "Score labelled findings per detector: precision, novelty, recall, agreement",
+  ),
+);
+
 const audit = Command.make(
   "audit",
   {
@@ -522,9 +597,11 @@ export const historyCommand = Command.make("history").pipe(
     insights,
     Command.make("insight").pipe(
       Command.withDescription("Decide on a finding: each step is kept with who, when and why"),
-      Command.withSubcommands(
-        (Object.keys(DECISIONS) as Array<keyof typeof DECISIONS>).map(decision),
-      ),
+      Command.withSubcommands([
+        ...(Object.keys(DECISIONS) as Array<keyof typeof DECISIONS>).map(decision),
+        sample,
+        score,
+      ]),
     ),
     audit,
     ...declareCommands,
