@@ -13,6 +13,7 @@ import { ThreadNotFound } from "../core/api.ts";
 import { claudeTranscriptMeta, claudeTranscriptToRows } from "../core/claudeTranscript.ts";
 import type { Labels, ThreadHead, ThreadSummary, ThreadView } from "../core/domain.ts";
 import { normalize } from "../core/normalize.ts";
+import type { Subagent } from "./CodexRollouts.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 import { ThreadStore } from "./ThreadStore.ts";
 
@@ -20,12 +21,16 @@ export const CLAUDE_ID_PREFIX = "claude:";
 /** Lines the listing reads per file: enough for the session id, cwd and usually the title. */
 const HEAD_LINES = 50;
 const SESSION_FILE = /^[^/]+\/([^/]+)\.jsonl$/;
+/** `<dir>/<session>/subagents/[workflows/<run>/]agent-<id>.jsonl`: the parent session, the agent. */
+const SUBAGENT_FILE = /^[^/]+\/([^/]+)\/subagents\/(?:[^/]+\/)*(agent-[^/]+)\.jsonl$/;
 
 export class ClaudeTranscripts extends Context.Service<
   ClaudeTranscripts,
   {
     /** Sessions T3 doesn't run, from each file's first lines. Empty without a Claude home. */
     readonly list: Effect.Effect<ReadonlyArray<ThreadSummary>>;
+    /** Subagent transcripts, ids `claude:agent-<id>`, each with the session that spawned it. */
+    readonly subagents: Effect.Effect<ReadonlyArray<Subagent>>;
     /** `id` is the bare session id (without the `claude:` prefix). */
     readonly get: (id: string, labels: Labels) => Effect.Effect<ThreadView, ThreadNotFound>;
     readonly head: (id: string) => Effect.Effect<ThreadHead, ThreadNotFound>;
@@ -105,8 +110,37 @@ export class ClaudeTranscripts extends Context.Service<
         return summaries.flat();
       }).pipe(Effect.withSpan("ClaudeTranscripts.list"));
 
+      // Listed apart from `list`, which the viewer shows: a subagent is read through its parent there.
+      const subagents = Effect.gen(function* () {
+        const names = yield* fs
+          .readDirectory(root, { recursive: true })
+          .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
+        const found = names.flatMap((name) => {
+          const m = SUBAGENT_FILE.exec(name);
+          return m ? [{ parent: m[1]!, id: m[2]!, file: path.join(root, name) }] : [];
+        });
+        const summaries = yield* Effect.forEach(
+          found,
+          ({ parent, id, file }) =>
+            Effect.gen(function* () {
+              const meta = claudeTranscriptMeta(yield* headLines(file));
+              if (!meta) return [];
+              files.set(id, file);
+              const { at } = yield* mtime(file);
+              return [
+                {
+                  summary: summary(id, meta.cwd, meta.title, at || meta.createdAt || ""),
+                  parent: `${CLAUDE_ID_PREFIX}${parent}`,
+                },
+              ];
+            }),
+          { concurrency: 16 },
+        );
+        return summaries.flat();
+      }).pipe(Effect.withSpan("ClaudeTranscripts.subagents"));
+
       const fileOf = Effect.fn("ClaudeTranscripts.fileOf")(function* (id: string) {
-        if (!files.has(id)) yield* list;
+        if (!files.has(id)) yield* id.startsWith("agent-") ? subagents : list;
         const file = files.get(id);
         if (!file) return yield* new ThreadNotFound({ threadId: `${CLAUDE_ID_PREFIX}${id}` });
         return file;
@@ -128,7 +162,7 @@ export class ClaudeTranscripts extends Context.Service<
             Effect.mapError(() => new ThreadNotFound({ threadId: `${CLAUDE_ID_PREFIX}${id}` })),
           )).split("\n");
         const meta = claudeTranscriptMeta(lines);
-        const { activities, messages } = claudeTranscriptToRows(lines);
+        const { activities, messages } = claudeTranscriptToRows(lines, id.startsWith("agent-"));
         const cwd = meta?.cwd ?? null;
         const entries = normalize(activities, messages, { root: cwd, home: config.home });
         return {
@@ -147,7 +181,7 @@ export class ClaudeTranscripts extends Context.Service<
         };
       });
 
-      return ClaudeTranscripts.of({ list, get, head });
+      return ClaudeTranscripts.of({ list, subagents, get, head });
     }),
   );
 }

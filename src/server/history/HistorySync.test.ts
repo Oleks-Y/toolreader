@@ -87,6 +87,7 @@ const writeRollout = (
   id: string,
   cwd: string,
   items: ReadonlyArray<{ at: string; item: object }>,
+  meta: object = {},
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -99,7 +100,13 @@ const writeRollout = (
     yield* fs.writeFileString(
       path.join(dir, `rollout-2026-01-01T00-00-00-${id}.jsonl`),
       [
-        line(first, "session_meta", { id, timestamp: first, cwd, originator: "codex_exec" }),
+        line(first, "session_meta", {
+          id,
+          timestamp: first,
+          cwd,
+          originator: "codex_exec",
+          ...meta,
+        }),
         line(first, "event_msg", { type: "task_started", turn_id: `${id}-t1` }),
         ...items.map(({ at, item }) =>
           line(at, "event_msg", { type: "item_completed", turn_id: `${id}-t1`, item }),
@@ -162,6 +169,7 @@ const withUnreadable = Layer.effect(
   CodexRollouts,
   Effect.map(CodexRollouts, (real) =>
     CodexRollouts.of({
+      ...real,
       list: Effect.map(real.list, (all) => [
         ...all,
         { ...all[0]!, id: "codex:broken", title: "Fix the flaky test" },
@@ -372,6 +380,46 @@ describe("history sync", () => {
           );
           assert.deepStrictEqual(report.ignored, []);
         }).pipe(Effect.scoped),
+    );
+
+    it.effect("links a commit a Codex subagent wrote, under its parent", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { repo, home, codexHome } = yield* scenario;
+        const lines = ["export const retries = 3;"];
+        yield* fs.writeFileString(path.join(repo, "retry.ts"), `${lines.join("\n")}\n`);
+        yield* git(repo, ["add", "retry.ts"]);
+        yield* git(repo, ["commit", "-q", "-m", "feat: retry"], "2026-01-01T11:00:00Z");
+        yield* writeRollout(
+          codexHome,
+          "worker",
+          repo,
+          [
+            {
+              at: "2026-01-01T10:50:00.000Z",
+              item: {
+                type: "FileChange",
+                id: "w1",
+                status: "completed",
+                changes: {
+                  [path.join(repo, "retry.ts")]: { type: "add", content: `${lines.join("\n")}\n` },
+                },
+              },
+            },
+          ],
+          // As Codex writes a spawned agent's first line: its source and the session that spawned it.
+          { source: { subagent: { other: "worker" } }, parent_thread_id: "coder" },
+        );
+
+        const report = yield* Effect.flatMap(HistorySync, (h) =>
+          h.sync(repo, "main~1..main", { source: "codex-rollouts", dryRun: true }),
+        ).pipe(Effect.provide(services(home, codexHome)));
+        assert.deepStrictEqual(
+          report.commits.map(({ record }) => record.links.map((l) => l.threadId)),
+          [["codex:worker"]],
+        );
+      }).pipe(Effect.scoped),
     );
 
     it.effect("reports a session it couldn't read instead of dropping it", () =>

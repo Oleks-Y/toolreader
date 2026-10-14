@@ -25,6 +25,8 @@ const SessionMeta = Schema.Struct({
   cwd: opt(Schema.String),
   originator: opt(Schema.String),
   source: opt(Schema.Unknown),
+  /** A subagent's: the session that spawned it. */
+  parent_thread_id: opt(Schema.String),
   git: opt(Schema.Struct({ branch: opt(Schema.String) })),
   /** Delegated threads start with a copy of their parent's history; thread/read hides it. */
   subagent_history_start_ordinal: opt(Schema.Number),
@@ -196,6 +198,7 @@ export function rolloutMeta(firstLine: string) {
       originator: m.originator ?? null,
       createdAt: seconds(m.timestamp ?? line?.timestamp),
       subagent: isSubagent(m.source),
+      parent: m.parent_thread_id ?? null,
     })),
   );
 }

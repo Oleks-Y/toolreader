@@ -20,6 +20,9 @@ import { ThreadStore } from "./ThreadStore.ts";
 
 /** Where Codex keeps rollout files, under its home. */
 export const ROLLOUT_DIRS = ["sessions", "archived_sessions"];
+
+/** A session another one spawned: `history sync` reads these too, since their edits land in commits. */
+export type Subagent = { readonly summary: ThreadSummary; readonly parent: string | null };
 const ROLLOUT = /(?:^|\/)rollout-[^/]*\.jsonl$/;
 
 export class CodexRollouts extends Context.Service<
@@ -27,6 +30,8 @@ export class CodexRollouts extends Context.Service<
   {
     /** Top-level sessions T3 doesn't own, from each file's first line. Empty without `$CODEX_HOME`. */
     readonly list: Effect.Effect<ReadonlyArray<ThreadSummary>>;
+    /** Subagent sessions T3 doesn't own, each with the session that spawned it (`codex:<id>`). */
+    readonly subagents: Effect.Effect<ReadonlyArray<Subagent>>;
     /** `id` is the bare Codex thread id (without the `codex:` prefix). */
     readonly get: (id: string, labels: Labels) => Effect.Effect<ThreadView, ThreadNotFound>;
   }
@@ -72,7 +77,8 @@ export class CodexRollouts extends Context.Service<
           Effect.orElseSucceed(() => ""),
         );
 
-      const list = Effect.gen(function* () {
+      /** Every rollout T3 doesn't own, subagents included. */
+      const scan = Effect.gen(function* () {
         const owned = yield* store.codexThreadIds;
         const found: Array<{ file: string; archived: boolean }> = [];
         for (const dir of ROLLOUT_DIRS) {
@@ -89,7 +95,7 @@ export class CodexRollouts extends Context.Service<
           ({ file, archived }) =>
             Effect.gen(function* () {
               const meta = rolloutMeta(yield* firstLine(file));
-              if (!meta || meta.subagent || owned.has(meta.id)) return [];
+              if (!meta || owned.has(meta.id)) return [];
               files.set(meta.id, { file, archived });
               const mtime = yield* fs.stat(file).pipe(
                 Effect.map((s) => Option.getOrUndefined(s.mtime)?.getTime() ?? 0),
@@ -97,16 +103,32 @@ export class CodexRollouts extends Context.Service<
               );
               const updatedAt = Math.max(meta.createdAt, Math.floor(mtime / 1000));
               return [
-                summary(meta.id, meta.cwd, meta.originator, "(untitled)", archived, updatedAt),
+                {
+                  summary: summary(
+                    meta.id,
+                    meta.cwd,
+                    meta.originator,
+                    "(untitled)",
+                    archived,
+                    updatedAt,
+                  ),
+                  subagent: meta.subagent,
+                  parent: meta.parent ? `${CODEX_ID_PREFIX}${meta.parent}` : null,
+                },
               ];
             }),
           { concurrency: 16 },
         );
         return summaries.flat();
-      }).pipe(Effect.withSpan("CodexRollouts.list"));
+      }).pipe(Effect.withSpan("CodexRollouts.scan"));
+
+      const list = Effect.map(scan, (all) => all.filter((s) => !s.subagent).map((s) => s.summary));
+      const subagents = Effect.map(scan, (all) =>
+        all.filter((s) => s.subagent).map(({ summary, parent }) => ({ summary, parent })),
+      );
 
       const get = Effect.fn("CodexRollouts.get")(function* (id: string, labels: Labels) {
-        if (!files.has(id)) yield* list;
+        if (!files.has(id)) yield* scan;
         const known = files.get(id);
         const text = known
           ? yield* fs.readFileString(known.file).pipe(Effect.option)
@@ -137,7 +159,7 @@ export class CodexRollouts extends Context.Service<
         };
       });
 
-      return CodexRollouts.of({ list, get });
+      return CodexRollouts.of({ list, subagents, get });
     }),
   );
 }

@@ -103,6 +103,8 @@ export class RepoSessions extends Context.Service<
         const found: Array<{
           summary: ThreadSummary;
           load: (labels: Labels) => Effect.Effect<ThreadView, ThreadNotFound>;
+          /** A subagent's parent, as its reader names it; others' come from T3. */
+          parent?: string | null;
         }> = [];
         const bare = (s: ThreadSummary) => s.id.slice(CODEX_ID_PREFIX.length);
         if (source === "t3" || (source === "auto" && hasT3)) {
@@ -121,6 +123,9 @@ export class RepoSessions extends Context.Service<
           sources.push("codex-rollouts");
           for (const s of yield* rollouts.list)
             found.push({ summary: s, load: (l) => rollouts.get(bare(s), l) });
+          // Subagents' edits land in commits too; their copy of the parent's history is skipped.
+          for (const { summary: s, parent } of yield* rollouts.subagents)
+            found.push({ summary: s, load: (l) => rollouts.get(bare(s), l), parent });
         }
         // T3 runs Claude too; the transcript listing skips the sessions T3 owns.
         if (source === "claude-transcripts" || (source === "auto" && hasClaude)) {
@@ -129,6 +134,12 @@ export class RepoSessions extends Context.Service<
             found.push({
               summary: s,
               load: (l) => claude.get(s.id.slice(CLAUDE_ID_PREFIX.length), l),
+            });
+          for (const { summary: s, parent } of yield* claude.subagents)
+            found.push({
+              summary: s,
+              load: (l) => claude.get(s.id.slice(CLAUDE_ID_PREFIX.length), l),
+              parent,
             });
         }
         // The innermost worktree holding the session's directory (worktrees can nest).
@@ -152,7 +163,7 @@ export class RepoSessions extends Context.Service<
         const { nativeIds, parents } = yield* store.lineage;
         const sessions: RepoSession[] = [];
         const unread: Array<{ id: string; title: string }> = [];
-        for (const { summary, load, root } of found) {
+        for (const { summary, load, root, parent } of found) {
           const labels = yield* labeler.forThread(summary.id);
           const view = yield* load(labels).pipe(Effect.option);
           if (Option.isNone(view)) {
@@ -171,7 +182,11 @@ export class RepoSessions extends Context.Service<
               source: t.source,
               provider: t.provider,
               origin: t.origin,
-              parent: parents.get(t.id) ?? null,
+              // A parent T3 ran is known there by its own thread id.
+              parent:
+                parent === undefined
+                  ? (parents.get(t.id) ?? null)
+                  : parent && (nativeIds.get(nativeId(parent)) ?? parent),
             },
           });
         }

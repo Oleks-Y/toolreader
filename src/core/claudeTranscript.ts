@@ -103,8 +103,14 @@ export function claudeTranscriptMeta(lines: ReadonlyArray<string>): ClaudeTransc
   };
 }
 
-/** Turns a transcript's lines into activity and message rows, in file order. */
-export function claudeTranscriptToRows(lines: ReadonlyArray<string>): {
+/**
+ * Turns a transcript's lines into activity and message rows, in file order. A subagent's own file
+ * (`subagent`) is all sidechain lines, so those are its work.
+ */
+export function claudeTranscriptToRows(
+  lines: ReadonlyArray<string>,
+  subagent = false,
+): {
   activities: ActivityRow[];
   messages: MessageRow[];
 } {
@@ -115,7 +121,7 @@ export function claudeTranscriptToRows(lines: ReadonlyArray<string>): {
   const seen = new Set<string>();
   parse(lines).forEach((l, seq) => {
     // Subagents write their own files; a stray sidechain line isn't this session's work.
-    if (l.isSidechain) return;
+    if (l.isSidechain && !subagent) return;
     // Compaction can re-append earlier records; the first copy keeps its place.
     if (l.uuid) {
       if (seen.has(l.uuid)) return;
