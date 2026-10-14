@@ -12,6 +12,7 @@ import * as HttpApiSecurity from "effect/unstable/httpapi/HttpApiSecurity";
 import { CommitRecordV1, REJECT_REASONS, REPO_MAX, ThreadRecordV1 } from "./historyRecord.ts";
 import { Entry } from "./domain.ts";
 import { Finding, FINDING_STATUSES } from "./insights.ts";
+import { EVIDENCE_NOW, ReviewManifest, VERDICTS } from "./review.ts";
 
 export const API_VERSION = 1;
 /** Every request names the client's version (package.json's) in this header. */
@@ -299,6 +300,30 @@ export class HistoryApi extends HttpApiGroup.make("history")
       }),
       success: Schema.Struct({ finding: Finding }),
       error: [NotFound, Conflict, Forbidden, BackendFailed],
+    }),
+    // Freezes a review of these commits (core/review.ts): what was shown, at the versions shown.
+    HttpApiEndpoint.post("freezeReview", "/workspaces/:ws/repos/:repo/reviews", {
+      params: { ...ws, repo: Repo },
+      payload: Schema.Struct({
+        range: Text.check(Schema.isMaxLength(500)),
+        shas: Schema.Array(Sha).check(Schema.isMaxLength(LIMITS.ids)),
+        verdict: Schema.Literals(VERDICTS),
+        note: Text.check(Schema.isMaxLength(2000)),
+      }),
+      success: Schema.Struct({ manifest: ReviewManifest }),
+      error: [Forbidden, BackendFailed],
+    }),
+    // A frozen review, exactly as it was, with what each cited session is now.
+    HttpApiEndpoint.post("review", "/workspaces/:ws/repos/:repo/reviews/query", {
+      params: { ...ws, repo: Repo },
+      payload: Schema.Struct({ id: Text.check(Schema.isMaxLength(64)) }),
+      success: Schema.Struct({
+        manifest: ReviewManifest,
+        now: Schema.Array(
+          Schema.Struct({ threadId: Schema.String, status: Schema.Literals(EVIDENCE_NOW) }),
+        ),
+      }),
+      error: [NotFound, Forbidden, BackendFailed],
     }),
     HttpApiEndpoint.post("commits", "/workspaces/:ws/repos/:repo/commits/query", {
       params: { ...ws, repo: Repo },

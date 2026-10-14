@@ -26,6 +26,7 @@ import { readsFor } from "../../core/coverage.ts";
 import { addedLines, lineKey, linkByContent, type CommitLines } from "../../core/history.ts";
 import { LIMITS, type Evidence, type SearchHit } from "../../core/historyApi.ts";
 import type { Finding, FindingStatus } from "../../core/insights.ts";
+import type { EvidenceNow, ReviewManifest } from "../../core/review.ts";
 import {
   buildCommitRecord,
   buildThreadRecord,
@@ -107,6 +108,23 @@ export class HistorySync extends Context.Service<
     >;
     /** A citation (`thread#entry@version`) read back from the backend, scoped to this repo. */
     readonly show: (repo: string, cite: string) => Effect.Effect<Evidence, HistoryFailed>;
+    /** Freezes a review of the range's commits on the backend. */
+    readonly freezeReview: (
+      repo: string,
+      range: string,
+      decision: { readonly verdict: ReviewManifest["decision"]["verdict"]; readonly note: string },
+    ) => Effect.Effect<ReviewManifest, HistoryFailed>;
+    /** A frozen review, as it was, with what each cited session is now. */
+    readonly review: (
+      repo: string,
+      id: string,
+    ) => Effect.Effect<
+      {
+        readonly manifest: ReviewManifest;
+        readonly now: ReadonlyArray<{ readonly threadId: string; readonly status: EvidenceNow }>;
+      },
+      HistoryFailed
+    >;
     /** Moves one of this repo's findings along its lifecycle. */
     readonly decide: (
       repo: string,
@@ -688,7 +706,35 @@ export class HistorySync extends Context.Service<
         );
       }, Effect.provide(FetchHttpClient.layer));
 
-      return HistorySync.of({ sync, site, search, show, insights, decide });
+      const freezeReview = Effect.fn("HistorySync.freezeReview")(function* (
+        repoArg: string,
+        range: string,
+        decision: {
+          readonly verdict: ReviewManifest["decision"]["verdict"];
+          readonly note: string;
+        },
+      ) {
+        const { api, params } = yield* remote(repoArg);
+        const top = (yield* git(repoArg, ["rev-parse", "--show-toplevel"])).trim();
+        const shas = (yield* git(top, [
+          "rev-list",
+          "--reverse",
+          ...range.split(/\s+/).filter(Boolean),
+        ]))
+          .split("\n")
+          .filter((s) => HEX.test(s));
+        const { manifest } = yield* call(
+          api.history.freezeReview({ params, payload: { range, shas, ...decision } }),
+        );
+        return manifest;
+      }, Effect.provide(FetchHttpClient.layer));
+
+      const review = Effect.fn("HistorySync.review")(function* (repoArg: string, id: string) {
+        const { api, params } = yield* remote(repoArg);
+        return yield* call(api.history.review({ params, payload: { id } }));
+      }, Effect.provide(FetchHttpClient.layer));
+
+      return HistorySync.of({ sync, site, search, show, insights, decide, freezeReview, review });
     }),
   );
 }

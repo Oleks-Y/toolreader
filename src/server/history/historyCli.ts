@@ -6,6 +6,8 @@
 //   toolreader history site (--range A..B | --pr N) [--repo PATH] [--out DIR]
 //   toolreader history audit [--repo PATH] [--source …]           (core/audit.ts)
 //   toolreader history login                                     (githubLogin.ts)
+//   toolreader history review freeze (--range A..B | --pr N) --verdict V --note TEXT
+//   toolreader history review show ID                            (core/review.ts)
 //   toolreader history search TEXT [--repo PATH] [--all] [--limit N]
 //   toolreader history show THREAD#ENTRY@VERSION [--repo PATH]
 //   toolreader history insights [--repo PATH] [--no-detect] [--status S]… [--limit N]
@@ -42,6 +44,7 @@ import { appendLog, causeMessage, installHooks, pending } from "./historyHooks.t
 import type { Evidence, SearchHit } from "../../core/historyApi.ts";
 import { FINDING_STATUSES, type Finding, type FindingStatus } from "../../core/insights.ts";
 import { evaluate, LabelRow, sampleRows } from "../../core/insightsEval.ts";
+import { VERDICTS, type EvidenceNow } from "../../core/review.ts";
 import { HistorySync, type SyncReport } from "./HistorySync.ts";
 
 const PullRequest = Schema.Struct({ baseRefOid: Schema.String, headRefOid: Schema.String });
@@ -578,6 +581,93 @@ const score = Command.make(
   ),
 );
 
+const freeze = Command.make(
+  "freeze",
+  {
+    repo: Flag.string("repo").pipe(
+      Flag.withDescription("Repository (any path inside it)"),
+      Flag.withDefault("."),
+    ),
+    range: Flag.string("range").pipe(Flag.withDescription("Commits: main..HEAD"), Flag.optional),
+    pr: Flag.integer("pr").pipe(
+      Flag.withDescription("A GitHub pull request's commits"),
+      Flag.optional,
+    ),
+    verdict: Flag.choice("verdict", VERDICTS).pipe(Flag.withDescription("The decision")),
+    note: Flag.string("note").pipe(Flag.withDescription("Why"), Flag.withDefault("")),
+  },
+  Effect.fn("toolreader history review freeze")(function* (flags) {
+    const repo = (yield* Path.Path).resolve(flags.repo);
+    if (Option.isSome(flags.range) === Option.isSome(flags.pr))
+      return yield* new HistoryFailed({ message: "Give exactly one of --range A..B or --pr N" });
+    const range = Option.isSome(flags.range)
+      ? flags.range.value
+      : yield* prRange(repo, Option.getOrThrow(flags.pr));
+    const m = yield* Effect.flatMap(HistorySync, (h) =>
+      h.freezeReview(repo, range, { verdict: flags.verdict, note: flags.note }),
+    ).pipe(Effect.provide(CliApp({ appServer: false, codexHome: null })));
+    yield* Console.log(
+      `review ${m.id}: ${m.decision.verdict} by ${m.by}, ${m.commits.length} of ${m.shas.length} commits with agent history, ${m.evidence.length} sessions cited at their versions, ${m.findings.length} findings as they stood`,
+    );
+  }),
+).pipe(
+  Command.withDescription(
+    "Freeze a review: what it was shown, at the versions shown, and the decision",
+  ),
+);
+
+const NOW_TEXT: Record<EvidenceNow, string> = {
+  same: "as reviewed",
+  replaced: "replaced since",
+  deleted: "deleted on request: its conclusions were taken out",
+  expired: "expired: its conclusions were taken out",
+  missing: "not on the backend",
+};
+
+const reopen = Command.make(
+  "show",
+  {
+    id: Argument.string("id").pipe(Argument.withDescription("The review, as freeze printed it")),
+    repo: Flag.string("repo").pipe(
+      Flag.withDescription("Repository (any path inside it)"),
+      Flag.withDefault("."),
+    ),
+  },
+  Effect.fn("toolreader history review show")(function* (flags) {
+    const repo = (yield* Path.Path).resolve(flags.repo);
+    const { manifest: m, now } = yield* Effect.flatMap(HistorySync, (h) =>
+      h.review(repo, flags.id),
+    ).pipe(Effect.provide(CliApp({ appServer: false, codexHome: null })));
+    yield* Console.log(
+      `review ${m.id} of ${m.repo} ${shortShas(m.range)}: ${m.decision.verdict} by ${m.by} at ${m.createdAt}${m.decision.note ? `, "${title(m.decision.note)}"` : ""}`,
+    );
+    yield* Console.log(
+      `  methods: ${m.methods.checks}, detectors ${m.methods.detectors}, backend ${m.methods.server}`,
+    );
+    for (const line of reportLines(
+      {
+        repo: m.repo,
+        commits: m.commits.map((record) => ({ record, titles: new Map() })),
+        sent: 0,
+        unchanged: 0,
+        ignored: [],
+        unread: [],
+      },
+      true,
+    ).slice(0, -1))
+      yield* Console.log(`  ${line}`);
+    for (const e of now) yield* Console.log(`  cited ${e.threadId}: ${NOW_TEXT[e.status]}`);
+    const open = m.findings.filter(
+      (f) => f.status !== "rejected" && f.status !== "evaluated",
+    ).length;
+    yield* Console.log(`  findings then: ${m.findings.length} (${open} open)`);
+  }),
+).pipe(
+  Command.withDescription(
+    "Reopen a frozen review exactly as it was, and say what each cited session is now",
+  ),
+);
+
 const audit = Command.make(
   "audit",
   {
@@ -683,6 +773,10 @@ export const historyCommand = Command.make("history").pipe(
     login,
     search,
     show,
+    Command.make("review").pipe(
+      Command.withDescription("Frozen reviews: their whole decision context, reopened as it was"),
+      Command.withSubcommands([freeze, reopen]),
+    ),
     insights,
     Command.make("insight").pipe(
       Command.withDescription("Decide on a finding: each step is kept with who, when and why"),
