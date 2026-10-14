@@ -351,6 +351,11 @@ describe("history sync", () => {
               view.commits.map((c) => c.entry?.links.map((l) => [l.thread.id, l.via])),
               [[["codex:coder", "content"]], [["codex:coder", "content"]]],
             );
+            // The page shows each link's checks, read back from the backend.
+            assert.deepStrictEqual(
+              view.commits.map((c) => c.entry?.links[0]?.checks?.map((k) => k.outcome)),
+              [["passed"], ["passed"]],
+            );
             assert.include(yield* fs.readFileString(file), "Add the store and client");
             // The turn's edits are the commits' files: each attributed, not "untracked".
             assert.deepStrictEqual(

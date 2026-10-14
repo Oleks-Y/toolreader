@@ -41,6 +41,29 @@ const range: LedgerRange = {
             reviewedSha: null,
             files: ["src/a.ts"],
             labels: {},
+            checks: [
+              {
+                actionId: "c1",
+                turn: "m0",
+                at: "2026-01-01T09:58:30Z",
+                kind: "test",
+                title: "vitest run",
+                outcome: "passed",
+                basis: "exit code",
+                linesAfter: 4,
+              },
+              {
+                actionId: "c2",
+                turn: "m0",
+                at: "2026-01-01T09:58:40Z",
+                kind: "build",
+                title: "tsc || true",
+                outcome: "unknown",
+                basis: "error flag",
+                masked: true,
+                linesAfter: 0,
+              },
+            ],
             entries: [
               {
                 type: "message",
@@ -106,5 +129,17 @@ describe("static ledger page", () => {
     for (const text of ["Do it", "Review it", "reviewer", "stale: reviewed bbbbbbbb", "untracked"])
       assert.include(html, text);
     assert.include(html, "b.css by hand");
+  });
+
+  it("shows each link's last test and build, what they rest on and what they didn't see", async () => {
+    Object.assign(globalThis, { location: { origin: "http://127.0.0.1", hash: "" } });
+    const { LedgerPage } = await import("./LedgerPage.tsx");
+    const html = renderToStaticMarkup(<LedgerPage data={range} />);
+    for (const text of [
+      "last test: ✓ passed (exit code), 4 of the commit&#x27;s lines written after it",
+      "last build: ? unknown (can&#x27;t fail: || true)",
+      "2 checks in all: 1 passed, 1 unknown",
+    ])
+      assert.include(html, text);
   });
 });

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
+import { CHECK_KINDS, type Check } from "../core/checks.ts";
 import type { ThreadView } from "../core/domain.ts";
 import {
   isStale,
@@ -168,11 +169,39 @@ function LinkRow({
           )}
         </span>
       </summary>
+      {link.checks && link.checks.length > 0 && <Checks checks={link.checks} />}
       {!open ? null : link.entries.length > 0 ? (
         <ActionView view={view} embedded />
       ) : (
         <p className="dim">no history recorded for this thread yet</p>
       )}
     </details>
+  );
+}
+
+const OUTCOME_MARK = { passed: "✓", failed: "✗", interrupted: "?", unknown: "?" } as const;
+
+/** A link's tests and builds: how each ended, what that rests on, and what it didn't see. */
+function Checks({ checks }: { checks: ReadonlyArray<Check> }) {
+  const last = CHECK_KINDS.flatMap((kind) => checks.findLast((k) => k.kind === kind) ?? []);
+  return (
+    <ul className="ledger-checks dim">
+      {last.map((k) => (
+        <li key={k.actionId} title={k.title}>
+          last {k.kind}: {OUTCOME_MARK[k.outcome]} {k.outcome} (
+          {k.masked ? "can't fail: || true" : k.basis})
+          {k.linesAfter > 0 && `, ${k.linesAfter} of the commit's lines written after it`}
+        </li>
+      ))}
+      <li>
+        {checks.length} check{checks.length === 1 ? "" : "s"} in all:{" "}
+        {(["passed", "failed", "interrupted", "unknown"] as const)
+          .flatMap((o) => {
+            const n = checks.filter((k) => k.outcome === o).length;
+            return n > 0 ? [`${n} ${o}`] : [];
+          })
+          .join(", ")}
+      </li>
+    </ul>
   );
 }
