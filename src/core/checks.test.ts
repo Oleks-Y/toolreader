@@ -101,3 +101,131 @@ describe("checksFor", () => {
     );
   });
 });
+
+describe("checksFor: what a check ran on, and whether it holds for the commit", () => {
+  const SHA = "abcdef1234567890abcdef1234567890abcdef12";
+  const BASE = "1111111111111111111111111111111111111111";
+  const gitOut = (id: string, at: string, output: string) =>
+    act(id, at, { kind: "git", command: "git x", output, exitCode: 0 });
+  const test = (id: string, at: string, command = "vitest run") =>
+    act(id, at, { kind: "test", command, exitCode: 0 });
+  const run = (entries: Entry[], extra: { base?: string; others?: number[] } = {}) =>
+    checksFor({
+      entries: [prompt("u1", "2026-01-01T10:00:00Z"), ...entries],
+      turns: ["u1"],
+      novel: [STORE, RETRY],
+      committedAt: "2026-01-01T11:00:00Z",
+      sha: SHA,
+      ...extra,
+    });
+  const axes = (c: ReturnType<typeof run>) =>
+    c.map((k) => [k.actionId, k.testedState, k.applicability]);
+
+  it("ran on the commit itself: the session committed it and changed nothing since", () => {
+    const checks = run([
+      edit("e1", "2026-01-01T10:01:00Z", [STORE, RETRY]),
+      gitOut("g1", "2026-01-01T10:02:00Z", "[main abcdef1] feat: store\n 1 file changed"),
+      test("t1", "2026-01-01T10:03:00Z"),
+    ]);
+    assert.deepStrictEqual(axes(checks), [["t1", "exact reconstructed", "same state"]]);
+    assert.strictEqual(checks[0]!.method, "checks/2");
+  });
+
+  it("a rebase to another commit isn't claimed equivalent: it's unknown", () => {
+    const checks = run([
+      edit("e1", "2026-01-01T10:01:00Z", [STORE, RETRY]),
+      gitOut("g1", "2026-01-01T10:02:00Z", "[main 9999999] feat: store"),
+      test("t1", "2026-01-01T10:03:00Z"),
+    ]);
+    assert.deepStrictEqual(axes(checks), [["t1", "exact reconstructed", "unknown"]]);
+  });
+
+  it("another session writing the commit's lines meanwhile makes it a candidate", () => {
+    const checks = run(
+      [
+        edit("e1", "2026-01-01T10:01:00Z", [STORE, RETRY]),
+        gitOut("g1", "2026-01-01T10:02:00Z", "[main abcdef1] feat: store"),
+        test("t1", "2026-01-01T10:03:00Z"),
+      ],
+      { others: [Date.parse("2026-01-01T10:02:30Z")] },
+    );
+    assert.deepStrictEqual(axes(checks), [["t1", "candidate", "unknown"]]);
+    assert.include(checks[0]!.reasons[0]!, "another session");
+  });
+
+  it("a known start, a tree shown clean and only exact edits is reconstructed", () => {
+    const exact = act("e1", "2026-01-01T10:02:00Z", {
+      kind: "edit",
+      files: [
+        { path: "a.ts", added: 1, removed: 0, isNew: false, isDeleted: false, exactLines: true },
+      ],
+    });
+    const clean = gitOut(
+      "g0",
+      "2026-01-01T10:01:00Z",
+      "On branch main\nnothing to commit, working tree clean",
+    );
+    assert.deepStrictEqual(
+      axes(run([clean, exact, test("t1", "2026-01-01T10:03:00Z")], { base: BASE })),
+      [["t1", "exact reconstructed", "unknown"]],
+    );
+    // A dirty tree (never shown clean): only a candidate.
+    assert.deepStrictEqual(axes(run([exact, test("t1", "2026-01-01T10:03:00Z")], { base: BASE })), [
+      ["t1", "candidate", "unknown"],
+    ]);
+    // A shell command could have changed anything: a candidate too.
+    const shell = act("r1", "2026-01-01T10:02:30Z", { kind: "run", command: "sed -i s/a/b/ a.ts" });
+    assert.deepStrictEqual(
+      axes(run([clean, exact, shell, test("t1", "2026-01-01T10:03:00Z")], { base: BASE })),
+      [["t1", "candidate", "unknown"]],
+    );
+    // No start recorded: unknown.
+    assert.deepStrictEqual(axes(run([test("t1", "2026-01-01T10:03:00Z")])), [
+      ["t1", "unknown", "unknown"],
+    ]);
+  });
+
+  it("stale only on evidence: a later edit to a file it named, or a changed lockfile", () => {
+    const later = (path: string) =>
+      act("e2", "2026-01-01T10:04:00Z", {
+        kind: "edit",
+        files: [
+          {
+            path,
+            added: 1,
+            removed: 0,
+            isNew: false,
+            isDeleted: false,
+            diff: `@@ -0,0 +1 @@\n+${RETRY}`,
+          },
+        ],
+      });
+    const named = run([
+      test("t1", "2026-01-01T10:03:00Z", "vitest run src/retry.ts"),
+      later("/repo/src/retry.ts"),
+    ]);
+    assert.deepStrictEqual(axes(named), [["t1", "unknown", "definitely stale"]]);
+    assert.deepStrictEqual(named[0]!.scope, ["src/retry.ts"]);
+    // The same line into a file it didn't name: written after it, but not proof.
+    const elsewhere = run([
+      test("t1", "2026-01-01T10:03:00Z", "vitest run src/retry.ts"),
+      later("/repo/src/other.ts"),
+    ]);
+    assert.deepStrictEqual(axes(elsewhere), [["t1", "unknown", "unknown"]]);
+    assert.include(elsewhere[0]!.reasons[1]!, "outside what it named");
+    // An unrelated edit (no line of the commit) changes nothing.
+    const unrelated = run([
+      test("t1", "2026-01-01T10:03:00Z"),
+      edit("e3", "2026-01-01T10:04:00Z", [OTHER]),
+    ]);
+    assert.deepStrictEqual([unrelated[0]!.applicability, unrelated[0]!.linesAfter], ["unknown", 0]);
+    // A lockfile changed after it: stale whatever it named.
+    const lock = act("e4", "2026-01-01T10:04:00Z", {
+      kind: "edit",
+      files: [{ path: "pnpm-lock.yaml", added: 1, removed: 1, isNew: false, isDeleted: false }],
+    });
+    assert.deepStrictEqual(axes(run([test("t1", "2026-01-01T10:03:00Z"), lock])), [
+      ["t1", "unknown", "definitely stale"],
+    ]);
+  });
+});

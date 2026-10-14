@@ -335,14 +335,40 @@ export class HistorySync extends Context.Service<
         const byId = new Map(loaded.sessions.map((s) => [s.thread.id, s]));
         // Each link with the tests and builds its session ran for that commit.
         const histories = matched.map((h, i) => {
-          const { novel, committedAt } = commits[i]!;
+          const { novel, committedAt, sha } = commits[i]!;
           const history = applyDeclarations(h, resolved);
+          const keys = new Set(novel);
+          // When each linked session first wrote one of the commit's lines.
+          const wrote = new Map(
+            history.links.map((l) => {
+              const times = (byId.get(l.threadId)?.entries ?? []).flatMap((e) =>
+                e.type === "action" &&
+                (e.files ?? []).some((f) =>
+                  (f.addedKeys ?? (f.diff ? addedLines(f.diff) : [])).some((k) => keys.has(k)),
+                )
+                  ? [Date.parse(e.at)]
+                  : [],
+              );
+              return [l.threadId, times] as const;
+            }),
+          );
           return {
             ...history,
             links: history.links.map((l) => {
               const s = byId.get(l.threadId);
+              const others = history.links
+                .filter((o) => o.threadId !== l.threadId)
+                .flatMap((o) => wrote.get(o.threadId) ?? []);
               const checks = s
-                ? checksFor({ entries: s.entries, turns: l.turns, novel, committedAt })
+                ? checksFor({
+                    entries: s.entries,
+                    turns: l.turns,
+                    novel,
+                    committedAt,
+                    sha,
+                    base: s.snapshot?.startCommit,
+                    others,
+                  })
                 : [];
               return checks.length > 0 ? { ...l, checks } : l;
             }),

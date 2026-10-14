@@ -246,7 +246,14 @@ export function buildEntry(input: {
         clean,
       ),
       ...(found.checks?.length
-        ? { checks: found.checks.map((c) => ({ ...c, title: clean(c.title) })) }
+        ? {
+            checks: found.checks.map((c) => ({
+              ...c,
+              title: clean(c.title),
+              scope: c.scope.map(clean),
+              reasons: c.reasons.map(clean),
+            })),
+          }
         : {}),
     };
   });

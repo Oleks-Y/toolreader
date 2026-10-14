@@ -248,7 +248,16 @@ export function buildCommitRecord(input: {
     links: input.history.links.map((l) => ({
       ...l,
       ...(l.note ? { note: clean(l.note) } : {}),
-      ...(l.checks ? { checks: l.checks.map((c) => ({ ...c, title: clean(c.title) })) } : {}),
+      ...(l.checks
+        ? {
+            checks: l.checks.map((c) => ({
+              ...c,
+              title: clean(c.title),
+              scope: c.scope.map(clean),
+              reasons: c.reasons.map(clean),
+            })),
+          }
+        : {}),
     })),
     linkedAt: input.linkedAt,
     toolreaderVersion: input.toolreaderVersion,

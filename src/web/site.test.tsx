@@ -51,6 +51,15 @@ const range: LedgerRange = {
                 outcome: "passed",
                 basis: "exit code",
                 linesAfter: 4,
+                scope: ["src/a.ts"],
+                testedState: "candidate",
+                base: "c".repeat(40),
+                applicability: "definitely stale",
+                reasons: [
+                  "started on cccccccc; the tree was never shown clean",
+                  "4 of the commit's lines went into src/a.ts, which it named, after it ran",
+                ],
+                method: "checks/2",
               },
               {
                 actionId: "c2",
@@ -62,6 +71,14 @@ const range: LedgerRange = {
                 basis: "error flag",
                 masked: true,
                 linesAfter: 0,
+                scope: [],
+                testedState: "unknown",
+                applicability: "unknown",
+                reasons: [
+                  "the session's starting commit isn't recorded",
+                  "nothing shows it ran on this commit, or that it didn't",
+                ],
+                method: "checks/2",
               },
             ],
             entries: [
@@ -136,8 +153,9 @@ describe("static ledger page", () => {
     const { LedgerPage } = await import("./LedgerPage.tsx");
     const html = renderToStaticMarkup(<LedgerPage data={range} />);
     for (const text of [
-      "last test: ✓ passed (exit code), 4 of the commit&#x27;s lines written after it",
-      "last build: ? unknown (can&#x27;t fail: || true)",
+      "last test: ✓ passed (exit code) · ran on: candidate · for this commit: definitely stale",
+      "4 of the commit&#x27;s lines went into src/a.ts, which it named, after it ran",
+      "last build: ? unknown (can&#x27;t fail: || true) · ran on: unknown · for this commit: unknown",
       "2 checks in all: 1 passed, 1 unknown",
     ])
       assert.include(html, text);

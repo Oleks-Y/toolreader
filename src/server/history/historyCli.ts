@@ -93,10 +93,10 @@ const checkLines = (checks: ReadonlyArray<Check>): string[] => {
   const last = CHECK_KINDS.flatMap((kind) => checks.findLast((k) => k.kind === kind) ?? []);
   return [
     `    checks: ${counts}`,
-    ...last.map(
-      (k) =>
-        `    last ${k.kind}: ${k.outcome} (${k.masked ? "can't fail: || true" : k.basis}), ${short(title(k.title))}${k.linesAfter > 0 ? `; ${k.linesAfter} of the commit's lines were written after it` : ""}`,
-    ),
+    ...last.flatMap((k) => [
+      `    last ${k.kind}: ${k.outcome} (${k.masked ? "can't fail: || true" : k.basis}), ran on: ${k.testedState}, for this commit: ${k.applicability} · ${short(title(k.title))}`,
+      `      ${k.reasons.map(title).join("; ")}`,
+    ]),
   ];
 };
 

@@ -189,8 +189,9 @@ function Checks({ checks }: { checks: ReadonlyArray<Check> }) {
       {last.map((k) => (
         <li key={k.actionId} title={k.title}>
           last {k.kind}: {OUTCOME_MARK[k.outcome]} {k.outcome} (
-          {k.masked ? "can't fail: || true" : k.basis})
-          {k.linesAfter > 0 && `, ${k.linesAfter} of the commit's lines written after it`}
+          {k.masked ? "can't fail: || true" : k.basis}) · ran on: {k.testedState} · for this commit:{" "}
+          {k.applicability}
+          <div className="dim">{k.reasons.join("; ")}</div>
         </li>
       ))}
       <li>
