@@ -205,6 +205,15 @@ describe("HistoryStore", () => {
           .transition("acme/app", "nope", "proposed", "x")
           .pipe(Effect.flip);
         assert.strictEqual(missing._tag, "FindingMissing");
+        // A person signed in with GitHub decides under their login.
+        const person = hs.at({
+          workspaceId: ws,
+          tokenId: null,
+          client: "0.1.0",
+          actor: "github:alex",
+        });
+        const proposed = yield* person.transition("acme/app", f!.id, "proposed", "worth a doc");
+        assert.strictEqual(proposed.events.at(-1)!.by, "github:alex");
         // Another repo, another set of findings.
         assert.deepStrictEqual(yield* store.findings("acme/other"), []);
       }),

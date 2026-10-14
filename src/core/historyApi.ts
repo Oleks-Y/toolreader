@@ -102,11 +102,25 @@ export const PutResult = Schema.Struct({
   result: Schema.Literals(["inserted", "updated", "same"]),
 });
 
-/** The caller, as its token names it: what `Authorization` gives every handler behind it. */
+/**
+ * The caller, as its credential names it: what `Authorization` gives every handler behind it. A
+ * workspace token (`trk_…`, machines that sync) or a person signed in with GitHub (`github`: their
+ * login and token, which every repo they read is checked against).
+ */
 export class Caller extends Context.Service<
   Caller,
-  { readonly workspaceId: string; readonly workspace: string; readonly tokenId: string }
+  {
+    readonly workspaceId: string;
+    readonly workspace: string;
+    readonly tokenId: string | null;
+    readonly github: { readonly login: string; readonly token: string } | null;
+  }
 >()("toolreader/core/historyApi/Caller") {}
+
+/** How to sign in to this backend: GitHub's device flow with this client id, or not at all. */
+export const SignIn = Schema.Struct({
+  github: Schema.NullOr(Schema.Struct({ clientId: Schema.String, webUrl: Schema.String })),
+});
 
 /** Bearer token → its workspace; 401 without a live token, 403 for another workspace's `:ws`. */
 export class Authorization extends HttpApiMiddleware.Service<Authorization, { provides: Caller }>()(
@@ -132,6 +146,7 @@ export class BodyLimit extends HttpApiMiddleware.Service<BodyLimit>()(
 export class SystemApi extends HttpApiGroup.make("system")
   .add(
     HttpApiEndpoint.get("health", "/health", { success: Schema.Struct({ ok: Schema.Boolean }) }),
+    HttpApiEndpoint.get("signIn", "/sign-in", { success: SignIn }),
     HttpApiEndpoint.get("meta", "/meta", { success: Meta }).middleware(Authorization),
   )
   .prefix("/v1") {}
@@ -175,7 +190,7 @@ export class HistoryApi extends HttpApiGroup.make("history")
       params: ws,
       payload: Schema.Struct({ ids: Ids }),
       success: Schema.Struct({ hashes: Schema.Record(Schema.String, Schema.String) }),
-      error: BackendFailed,
+      error: [Forbidden, BackendFailed],
     }),
     // A thread's whole history; replaces the stored one when it changed. Decoded by
     // `admitThread`, so a record it refuses is a 422 that says why.
@@ -183,22 +198,24 @@ export class HistoryApi extends HttpApiGroup.make("history")
       params: ws,
       payload: Schema.Unknown,
       success: PutResult,
-      error: [Rejected, BackendFailed],
+      error: [Rejected, Forbidden, BackendFailed],
     }),
     HttpApiEndpoint.post("threads", "/workspaces/:ws/threads/query", {
       params: ws,
       payload: Schema.Struct({
         ids: Schema.Array(Text).check(Schema.isMaxLength(LIMITS.threads)),
+        /** Only threads linked to this repo's commits; required for a GitHub sign-in. */
+        repo: Schema.optional(Repo),
       }),
       success: Schema.Struct({ threads: Schema.Array(ThreadRecordV1) }),
-      error: BackendFailed,
+      error: [Forbidden, BackendFailed],
     }),
     // A commit's links; replaces what was stored for it.
     HttpApiEndpoint.put("putCommit", "/workspaces/:ws/commits", {
       params: ws,
       payload: Schema.Unknown,
       success: PutResult,
-      error: [Rejected, BackendFailed],
+      error: [Rejected, Forbidden, BackendFailed],
     }),
     // Entries whose title, command, output, text or file paths hold `text` (any case), newest
     // first. With `repo`, only threads linked to that repo's commits.
@@ -219,14 +236,14 @@ export class HistoryApi extends HttpApiGroup.make("history")
         /** More entries matched than `limit`. */
         truncated: Schema.Boolean,
       }),
-      error: BackendFailed,
+      error: [Forbidden, BackendFailed],
     }),
     // Runs the Insights detectors (core/insights.ts) over the threads linked to the repo's commits
     // and keeps what they found: new findings as `detected`, known ones with fresh evidence.
     HttpApiEndpoint.post("detect", "/workspaces/:ws/repos/:repo/insights/detect", {
       params: { ...ws, repo: Repo },
       success: Schema.Struct({ found: Schema.Number, added: Schema.Number }),
-      error: BackendFailed,
+      error: [Forbidden, BackendFailed],
     }),
     HttpApiEndpoint.post("findings", "/workspaces/:ws/repos/:repo/insights/query", {
       params: { ...ws, repo: Repo },
@@ -234,7 +251,7 @@ export class HistoryApi extends HttpApiGroup.make("history")
         statuses: Schema.optional(Schema.Array(Schema.Literals(FINDING_STATUSES))),
       }),
       success: Schema.Struct({ findings: Schema.Array(Finding) }),
-      error: BackendFailed,
+      error: [Forbidden, BackendFailed],
     }),
     // Moves a finding along its lifecycle, recording who, when and why; 409 for a move the
     // lifecycle doesn't allow.
@@ -246,13 +263,13 @@ export class HistoryApi extends HttpApiGroup.make("history")
         why: Text.check(Schema.isMinLength(1), Schema.isMaxLength(2000)),
       }),
       success: Schema.Struct({ finding: Finding }),
-      error: [NotFound, Conflict, BackendFailed],
+      error: [NotFound, Conflict, Forbidden, BackendFailed],
     }),
     HttpApiEndpoint.post("commits", "/workspaces/:ws/repos/:repo/commits/query", {
       params: { ...ws, repo: Repo },
       payload: Schema.Struct({ shas: Schema.Array(Sha).check(Schema.isMaxLength(LIMITS.ids)) }),
       success: Schema.Struct({ commits: Schema.Array(CommitRecordV1) }),
-      error: BackendFailed,
+      error: [Forbidden, BackendFailed],
     }),
   )
   .middleware(BodyLimit)

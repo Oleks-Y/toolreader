@@ -511,7 +511,7 @@ export class HistorySync extends Context.Service<
               return { sha, subject: rest.join(US), committedAt, patchId: null };
             }),
           );
-          const settings = yield* backendSettings().pipe(
+          const settings = yield* backendSettings("reader").pipe(
             Effect.provideService(ServerConfig, config),
             Effect.provideService(FileSystem.FileSystem, fs),
           );
@@ -531,7 +531,10 @@ export class HistorySync extends Context.Service<
           const threads = new Map<string, ThreadRecord>();
           for (let i = 0; i < ids.length; i += LIMITS.threads) {
             const found = yield* call(
-              api.history.threads({ params, payload: { ids: ids.slice(i, i + LIMITS.threads) } }),
+              api.history.threads({
+                params,
+                payload: { ids: ids.slice(i, i + LIMITS.threads), repo: repoName },
+              }),
             );
             for (const t of found.threads) threads.set(t.thread.id, t);
           }
@@ -598,7 +601,7 @@ export class HistorySync extends Context.Service<
           return yield* new HistoryFailed({
             message: `${repo} has no origin on a git host: pass --all to search the workspace`,
           });
-        const settings = yield* backendSettings().pipe(
+        const settings = yield* backendSettings("reader").pipe(
           Effect.provideService(ServerConfig, config),
           Effect.provideService(FileSystem.FileSystem, fs),
         );
@@ -624,7 +627,7 @@ export class HistorySync extends Context.Service<
           return yield* new HistoryFailed({
             message: `${repo} has no origin on a git host: the backend names repos owner/name`,
           });
-        const settings = yield* backendSettings().pipe(
+        const settings = yield* backendSettings("reader").pipe(
           Effect.provideService(ServerConfig, config),
           Effect.provideService(FileSystem.FileSystem, fs),
         );

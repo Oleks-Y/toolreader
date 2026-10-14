@@ -5,6 +5,7 @@
 //                           [--dry-run] [--hook]
 //   toolreader history site (--range A..B | --pr N) [--repo PATH] [--out DIR]
 //   toolreader history audit [--repo PATH] [--source …]           (core/audit.ts)
+//   toolreader history login                                     (githubLogin.ts)
 //   toolreader history search TEXT [--repo PATH] [--all] [--limit N]
 //   toolreader history insights [--repo PATH] [--no-detect] [--status S]… [--limit N]
 //   toolreader history insight propose|accept|reject|modify|implemented|monitor|evaluate ID --why TEXT
@@ -21,6 +22,8 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { Argument, Command, Flag } from "effect/unstable/cli";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as HttpApiClient from "effect/unstable/httpapi/HttpApiClient";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { auditLines, auditSessions } from "../../core/audit.ts";
@@ -30,7 +33,9 @@ import { CliApp } from "../app.ts";
 import { RepoSessions, SESSION_SOURCES } from "../RepoSessions.ts";
 import { ServerConfig } from "../ServerConfig.ts";
 import { declareCommands } from "./declareCli.ts";
-import { HistoryFailed } from "./HistoryClient.ts";
+import { BackendApi } from "../../core/historyApi.ts";
+import { backendUrl, call, HistoryFailed } from "./HistoryClient.ts";
+import { deviceLogin, saveGithubToken } from "./githubLogin.ts";
 import { commitSkill, dirtyPaths, INSTALLED_PATHS, installSkill } from "./historySkill.ts";
 import { appendLog, causeMessage, installHooks, pending } from "./historyHooks.ts";
 import type { SearchHit } from "../../core/historyApi.ts";
@@ -420,6 +425,35 @@ const decision = (action: keyof typeof DECISIONS) =>
     }),
   ).pipe(Command.withDescription(`Mark a finding ${DECISIONS[action]}, with why`));
 
+const login = Command.make(
+  "login",
+  {},
+  Effect.fn("toolreader history login")(
+    function* () {
+      const url = yield* backendUrl();
+      const api = yield* HttpApiClient.make(BackendApi, { baseUrl: url });
+      const { github } = yield* call(api.system.signIn());
+      if (!github)
+        return yield* new HistoryFailed({
+          message: `${url} has no GitHub sign-in: ask whoever runs it for a workspace token`,
+        });
+      const token = yield* deviceLogin(github.webUrl, github.clientId, (uri, code) =>
+        Console.log(`Open ${uri} and enter ${code}`),
+      );
+      const { userConfigPath } = yield* ServerConfig;
+      yield* saveGithubToken(userConfigPath, token);
+      yield* Console.log(
+        `Signed in. Searches, pages and decisions now go as your GitHub account (${userConfigPath}).`,
+      );
+    },
+    Effect.provide([FetchHttpClient.layer, ServerConfig.layer]),
+  ),
+).pipe(
+  Command.withDescription(
+    "Sign in with GitHub: read this repo's history and decide on findings as yourself",
+  ),
+);
+
 const encodeRow = Schema.encodeSync(Schema.fromJsonString(LabelRow));
 const decodeRow = Schema.decodeUnknownEffect(Schema.fromJsonString(LabelRow));
 
@@ -593,6 +627,7 @@ export const historyCommand = Command.make("history").pipe(
   Command.withSubcommands([
     sync,
     site,
+    login,
     search,
     insights,
     Command.make("insight").pipe(
