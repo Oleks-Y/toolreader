@@ -1,4 +1,4 @@
-// `history sync`: the agent history of a range of commits, linked by content (core/history.ts)
+// `history sync`: the agent history of a range of commits, linked by explicit declarations and session trailers
 // and sent to the backend; `history site`: that history read back, as one page. Each linked thread goes whole, once (only when it grew since the
 // backend last had it); each commit's links replace what the backend had for it, so linking a
 // range again after a split or rebase corrects it.
@@ -23,7 +23,7 @@ import {
 } from "../../core/declare.ts";
 import { checksFor } from "../../core/checks.ts";
 import { readsFor } from "../../core/coverage.ts";
-import { addedLines, lineKey, linkByContent, type CommitLines } from "../../core/history.ts";
+import { addedLines, lineKey, type CommitHistory, type CommitLines } from "../../core/history.ts";
 import { LIMITS, type Evidence } from "../../core/historyApi.ts";
 import {
   buildCommitRecord,
@@ -325,12 +325,21 @@ export class HistorySync extends Context.Service<
         const loaded = yield* sessions
           .load(repo, options.source)
           .pipe(Effect.mapError((e) => new HistoryFailed({ message: e.message })));
-        const matched = linkByContent(
-          commits,
-          loaded.sessions.map((s) => ({ id: s.thread.id, entries: s.entries })),
-          (name) => loaded.named(name).map((s) => s.thread.id),
-        );
-        // What agents declared (`history link`), found in their sessions, applied over that.
+        // Shared lines are not evidence of authorship. Only explicit session trailers seed links.
+        const matched: CommitHistory[] = commits.map((c) => ({
+          sha: c.sha,
+          novel: new Set(c.novel).size,
+          explained: 0,
+          links: [
+            ...new Set(c.trailers.flatMap((name) => loaded.named(name).map((s) => s.thread.id))),
+          ].map((threadId) => ({
+            threadId,
+            turns: [],
+            via: "trailer",
+            lines: 0,
+          })),
+        }));
+        // Explicit turn declarations replace trailer links when both name the same session.
         const declared = loaded.sessions.flatMap((s) => declarationsIn(s.thread.id, s.entries));
         const { resolved, ignored } = yield* resolveDeclarations(repo, commits, declared, (name) =>
           loaded.named(name),

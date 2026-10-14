@@ -76,11 +76,15 @@ export function historyRange(input: {
         roots: input.roots,
         home: input.home,
         notes: [
-          {
-            text: `${record.explained} of the ${record.novel} lines it adds that weren't in the repo before match its agents' edits.`,
-            file: null,
-            at: record.linkedAt,
-          },
+          ...(record.explained > 0
+            ? [
+                {
+                  text: `${record.explained} of the ${record.novel} lines it adds that weren't in the repo before match its agents' edits.`,
+                  file: null,
+                  at: record.linkedAt,
+                },
+              ]
+            : []),
           // What the agents said when they declared their links.
           ...record.links.flatMap((l) =>
             l.via === "asserted" && l.note
