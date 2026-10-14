@@ -9,6 +9,7 @@ import * as HttpApiGroup from "effect/unstable/httpapi/HttpApiGroup";
 import * as HttpApiMiddleware from "effect/unstable/httpapi/HttpApiMiddleware";
 import * as HttpApiSecurity from "effect/unstable/httpapi/HttpApiSecurity";
 
+import { StoredBlame } from "./blame.ts";
 import { CommitRecordV1, REJECT_REASONS, REPO_MAX, ThreadRecordV1 } from "./historyRecord.ts";
 import { Entry } from "./domain.ts";
 
@@ -21,6 +22,8 @@ export const LIMITS = {
   requestBytes: 64 * 1024 * 1024,
   /** Ids per `hashes`, SHAs per `commits`. */
   ids: 500,
+  /** Commits per `ledger` page. */
+  ledger: 100,
   /**
    * Whole threads per `threads` read: each can be tens of MB. ponytail: a count, not a byte budget;
    * page by bytes if threads grow past ~50 MB.
@@ -226,7 +229,56 @@ export class HistoryApi extends HttpApiGroup.make("history")
   .middleware(ClientVersion)
   .prefix("/v1") {}
 
-export class BackendApi extends HttpApi.make("toolreader-backend").add(SystemApi).add(HistoryApi) {}
+export const RepoSummary = Schema.Struct({
+  repo: Schema.String,
+  commits: Schema.Number,
+  threads: Schema.Number,
+  latest: Schema.String,
+});
+export type RepoSummary = typeof RepoSummary.Type;
+
+/** What the webapp reads: repos, a repo's ledger, and Jev's stored answers for blamed hunks. */
+export class BrowseApi extends HttpApiGroup.make("browse")
+  .add(
+    HttpApiEndpoint.get("repos", "/workspaces/:ws/repos", {
+      params: ws,
+      success: Schema.Struct({ repos: Schema.Array(RepoSummary) }),
+      error: BackendFailed,
+    }),
+    // Linked commits, newest first; `before` is the oldest `committedAt` of the last page.
+    HttpApiEndpoint.get("ledger", "/workspaces/:ws/repos/:repo/commits", {
+      params: { ...ws, repo: Repo },
+      query: {
+        before: Schema.optional(Text),
+        limit: Schema.optional(
+          Schema.NumberFromString.check(Schema.isBetween({ minimum: 1, maximum: LIMITS.ledger })),
+        ),
+      },
+      success: Schema.Struct({ commits: Schema.Array(CommitRecordV1) }),
+      error: BackendFailed,
+    }),
+    HttpApiEndpoint.post("blame", "/workspaces/:ws/repos/:repo/blames/query", {
+      params: { ...ws, repo: Repo },
+      payload: Schema.Struct({ sha: Sha, path: Text, header: Text, model: Text }),
+      success: Schema.Struct({ blame: Schema.NullOr(StoredBlame) }),
+      error: BackendFailed,
+    }),
+    HttpApiEndpoint.put("putBlame", "/workspaces/:ws/blames", {
+      params: ws,
+      payload: StoredBlame,
+      success: Schema.Struct({ ok: Schema.Boolean }),
+      error: BackendFailed,
+    }),
+  )
+  .middleware(BodyLimit)
+  .middleware(Authorization)
+  .middleware(ClientVersion)
+  .prefix("/v1") {}
+
+export class BackendApi extends HttpApi.make("toolreader-backend")
+  .add(SystemApi)
+  .add(HistoryApi)
+  .add(BrowseApi) {}
 
 const SemVer = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
 

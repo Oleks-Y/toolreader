@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
-import { around, marksOf, type BlameResult, type Mark } from "../core/blame.ts";
+import { around, marksOf, type BlameResult } from "../core/blame.ts";
 import type { ThreadView } from "../core/domain.ts";
 import { ActionView } from "./ActionView.tsx";
 import { call, errorMessage } from "./client.ts";
@@ -60,17 +60,10 @@ export function BlamePage({ url }: { url: string | null }) {
     };
   }, [url, confirmedUrl]);
 
-  const marks = useMemo(() => (result ? marksOf(result) : new Map<string, Mark>()), [result]);
-
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     location.hash = `#/blame?url=${encodeURIComponent(input.trim())}`;
   };
-  const threads = (result?.threads ?? []).filter((t) => t.entries.some((e) => marks.has(e.id)));
-  const views = useMemo(
-    () => new Map(result?.threads.map((t) => [t.id, asView(t, result.commit.committedAt)])),
-    [result],
-  );
 
   return (
     <main className="viewer blame">
@@ -100,50 +93,73 @@ export function BlamePage({ url }: { url: string | null }) {
       {url && !result && !error && (
         <p className="dim">Finding the commit, its threads, and asking Jev… (a few seconds)</p>
       )}
-      {result && (
-        <div className="ledger">
-          <section className="turn ledger-commit">
-            <div className="turn-head">
-              <span className="caret"> </span>
-              <a
-                className="sha"
-                href={`${result.repoUrl}/commit/${result.commit.sha}`}
-                target="_blank"
-                rel="noreferrer"
-              >
-                {result.commit.sha.slice(0, 8)}
-              </a>
-              <span className="prompt">{result.commit.subject}</span>
-              <span className="turn-stats">
-                {fmtDay(result.commit.committedAt)} {fmtTime(result.commit.committedAt)} ·{" "}
-                <code>
-                  {result.path}:{result.line}
-                </code>
-              </span>
-            </div>
-            <div className="ledger-entry">
-              <Snippet path={result.path} hunk={around(result.hunk, result.line)} />
-              {threads.length === 0 && (
-                <p className="dim">
-                  No agent action touched these lines: maybe a person wrote them.
-                </p>
-              )}
-              {threads.map((t) => (
-                <details key={t.id} className="ledger-link" open>
-                  <summary>
-                    <span className="role coder">coder</span>{" "}
-                    <a href={`#/t/${encodeURIComponent(t.id)}`} title="the whole agent history">
-                      {t.title}
-                    </a>
-                  </summary>
-                  <ActionView view={views.get(t.id)!} embedded marks={marks} />
-                </details>
-              ))}
-            </div>
-          </section>
-        </div>
-      )}
+      {result && <BlameView result={result} threadHref={(id) => `#/t/${encodeURIComponent(id)}`} />}
     </main>
+  );
+}
+
+/**
+ * A blamed line's commit card: the lines around it, then each linked thread's history with the
+ * pieces that wrote, staged or checked it labeled and the rest folded away. `threadHref` links a
+ * thread to its whole history, where the page has one.
+ */
+export function BlameView({
+  result,
+  threadHref,
+}: {
+  result: BlameResult;
+  threadHref?: (threadId: string) => string;
+}) {
+  const marks = useMemo(() => marksOf(result), [result]);
+  const threads = result.threads.filter((t) => t.entries.some((e) => marks.has(e.id)));
+  const views = useMemo(
+    () => new Map(result.threads.map((t) => [t.id, asView(t, result.commit.committedAt)])),
+    [result],
+  );
+  return (
+    <div className="ledger">
+      <section className="turn ledger-commit">
+        <div className="turn-head">
+          <span className="caret"> </span>
+          <a
+            className="sha"
+            href={`${result.repoUrl}/commit/${result.commit.sha}`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            {result.commit.sha.slice(0, 8)}
+          </a>
+          <span className="prompt">{result.commit.subject}</span>
+          <span className="turn-stats">
+            {fmtDay(result.commit.committedAt)} {fmtTime(result.commit.committedAt)} ·{" "}
+            <code>
+              {result.path}:{result.line}
+            </code>
+          </span>
+        </div>
+        <div className="ledger-entry">
+          <Snippet path={result.path} hunk={around(result.hunk, result.line)} />
+          {threads.length === 0 && (
+            <p className="dim">No agent action touched these lines: maybe a person wrote them.</p>
+          )}
+          {threads.map((t) => (
+            <details key={t.id} className="ledger-link" open>
+              <summary>
+                <span className="role coder">coder</span>{" "}
+                {threadHref ? (
+                  <a href={threadHref(t.id)} title="the whole agent history">
+                    {t.title}
+                  </a>
+                ) : (
+                  t.title
+                )}
+              </summary>
+              <ActionView view={views.get(t.id)!} embedded marks={marks} />
+            </details>
+          ))}
+        </div>
+      </section>
+    </div>
   );
 }
 
