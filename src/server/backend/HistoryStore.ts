@@ -293,6 +293,11 @@ export class HistoryStore extends Context.Service<
       workspace: string,
       login: string,
     ) => Effect.Effect<void, HistoryStoreFailed>;
+    /** Stops a GitHub login signing in to the workspace; whether it was a member. */
+    readonly removeMember: (
+      workspace: string,
+      login: string,
+    ) => Effect.Effect<boolean, HistoryStoreFailed>;
     /** The workspace, when the GitHub login is one of its members. */
     readonly member: (
       workspace: string,
@@ -737,6 +742,24 @@ export class HistoryStore extends Context.Service<
           ON CONFLICT DO NOTHING`.pipe(Effect.mapError(failed));
       }, bounded);
 
+      const removeMember = Effect.fn("HistoryStore.removeMember")(function* (
+        slug: string,
+        login: string,
+      ) {
+        const rows = yield* sql`
+          WITH gone AS (
+            DELETE FROM members
+            WHERE workspace_id = (SELECT id FROM workspaces WHERE slug = ${slug})
+              AND github_login = ${login.toLowerCase()}
+            RETURNING 1
+          )
+          SELECT count(*)::int AS n FROM gone`.pipe(
+          Effect.flatMap(decodeCountRows),
+          Effect.mapError(failed),
+        );
+        return (rows[0]?.n ?? 0) > 0;
+      }, bounded);
+
       const member = Effect.fn("HistoryStore.member")(function* (slug: string, login: string) {
         const [row] = yield* sql`
           SELECT w.id::text AS id FROM members m JOIN workspaces w ON w.id = m.workspace_id
@@ -791,6 +814,7 @@ export class HistoryStore extends Context.Service<
         workspace,
         createToken,
         addMember,
+        removeMember,
         member,
         deleteThread,
         expire,
