@@ -24,7 +24,7 @@ export const ledgerOptions = (repo: string) =>
     queryKey: ["ledger", repo],
     queryFn: ({ pageParam }) => getLedger({ data: { repo, before: pageParam } }),
     initialPageParam: null as string | null,
-    getNextPageParam: (page) => (page.length < 30 ? null : (page.at(-1)?.committedAt ?? null)),
+    getNextPageParam: (page) => (page.length < 30 ? null : (page.at(-1)?.sha ?? null)),
     staleTime: 60_000,
   });
 
@@ -53,7 +53,7 @@ export const blameOptions = (url: string) =>
   queryOptions({
     queryKey: ["blame", url],
     queryFn: () => blameLine({ data: { url } }),
-    // The answer for a hunk doesn't change.
-    staleTime: Number.POSITIVE_INFINITY,
+    // Revalidate because synced evidence can change.
+    staleTime: 0,
     retry: false,
   });

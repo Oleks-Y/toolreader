@@ -320,3 +320,14 @@ it("decodes Git patch paths with spaces, tabs and quoted UTF-8 bytes", async () 
     "é.txt",
   );
 });
+
+it("maps unchanged duplicate lines back through insertions and deletions", async () => {
+  const { originalLine, patchPath } = await import("./blame.ts");
+  assert.strictEqual(originalLine("@@ -1,3 +1,4 @@\n same\n+inserted\n same\n last", 3), 2);
+  assert.strictEqual(originalLine("@@ -1,3 +1,2 @@\n same\n-removed\n same", 2), 3);
+  assert.strictEqual(originalLine("@@ -1 +1,2 @@\n+new\n same", 1), null);
+  assert.strictEqual(originalLine("@@ -1 +0,0 @@\n-removed", 1), 2);
+  assert.strictEqual(patchPath("b/a b.txt\t"), "a b.txt");
+  assert.strictEqual(patchPath('"b/\\303\\251.txt"'), "é.txt");
+  assert.strictEqual(patchPath('"b/a\\tname.txt"'), "a\tname.txt");
+});
