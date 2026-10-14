@@ -141,7 +141,7 @@ const scenario = Effect.gen(function* () {
   ] as const) {
     yield* fs.writeFileString(path.join(repo, file), `${lines.join("\n")}\n`);
     yield* git(repo, ["add", file]);
-    yield* git(repo, ["commit", "-q", "-m", `feat: ${file}`], at);
+    yield* git(repo, ["commit", "-q", "-m", `feat: ${file}\n\nAgent-Session: codex:coder`], at);
   }
   yield* writeRollout(
     codexHome,
@@ -277,148 +277,166 @@ describe("history sync", () => {
       }).pipe(Effect.scoped),
     );
 
-    it.effect(
-      "links each commit of a split to the turn that wrote it, and sends the thread once",
-      () =>
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const { repo, home, codexHome } = yield* scenario;
-          yield* Effect.gen(function* () {
-            const history = yield* HistorySync;
-            const dry = yield* history.sync(repo, "main~2..main", {
-              source: "codex-rollouts",
-              dryRun: true,
-            });
-            assert.deepStrictEqual(
-              dry.commits.map(({ record }) => [
-                record.subject,
-                record.links.map((l) => [l.threadId, l.turns]),
-                record.explained,
-                record.novel,
-              ]),
-              [
-                ["feat: store.ts", [["codex:coder", ["u1"]]], 2, 2],
-                ["feat: client.ts", [["codex:coder", ["u1"]]], 2, 2],
-              ],
-            );
+    it.effect("keeps session trailers without content attribution, and sends the thread once", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { repo, home, codexHome } = yield* scenario;
+        yield* Effect.gen(function* () {
+          const history = yield* HistorySync;
+          const dry = yield* history.sync(repo, "main~2..main", {
+            source: "codex-rollouts",
+            dryRun: true,
+          });
+          assert.deepStrictEqual(
+            dry.commits.map(({ record }) => [
+              record.subject,
+              record.links.map((l) => [l.threadId, l.turns]),
+              record.explained,
+              record.novel,
+            ]),
+            [
+              ["feat: store.ts", [["codex:coder", []]], 0, 2],
+              ["feat: client.ts", [["codex:coder", []]], 0, 2],
+            ],
+          );
 
-            const server = yield* HttpServer.HttpServer;
-            const port = server.address._tag === "TcpAddress" ? server.address.port : 0;
-            const token = yield* Effect.flatMap(HistoryStore, (s) => s.createToken("acme", "test"));
-            yield* fs.makeDirectory(`${home}/.toolreader`, { recursive: true });
-            yield* fs.writeFileString(
-              `${home}/.toolreader/config.json`,
-              encodeJson({
-                backend: { url: `http://127.0.0.1:${port}`, token, workspace: "acme" },
-              }),
-            );
-            const first = yield* history.sync(repo, "main~2..main", {
-              source: "codex-rollouts",
-              dryRun: false,
-            });
-            assert.deepStrictEqual([first.repo, first.sent, first.unchanged], ["acme/app", 1, 0]);
-            const again = yield* history.sync(repo, "main~2..main", {
-              source: "codex-rollouts",
-              dryRun: false,
-            });
-            assert.deepStrictEqual([again.sent, again.unchanged], [0, 1]);
+          const server = yield* HttpServer.HttpServer;
+          const port = server.address._tag === "TcpAddress" ? server.address.port : 0;
+          const token = yield* Effect.flatMap(HistoryStore, (s) => s.createToken("acme", "test"));
+          yield* fs.makeDirectory(`${home}/.toolreader`, { recursive: true });
+          yield* fs.writeFileString(
+            `${home}/.toolreader/config.json`,
+            encodeJson({
+              backend: { url: `http://127.0.0.1:${port}`, token, workspace: "acme" },
+            }),
+          );
+          const first = yield* history.sync(repo, "main~2..main", {
+            source: "codex-rollouts",
+            dryRun: false,
+          });
+          assert.deepStrictEqual([first.repo, first.sent, first.unchanged], ["acme/app", 1, 0]);
+          const again = yield* history.sync(repo, "main~2..main", {
+            source: "codex-rollouts",
+            dryRun: false,
+          });
+          assert.deepStrictEqual([again.sent, again.unchanged], [0, 1]);
 
-            const store = yield* inWorkspace("acme");
-            const shas = (yield* git(repo, ["rev-list", "main~2..main"])).split("\n");
-            const stored = yield* store.commits("acme/app", shas);
-            assert.deepStrictEqual(stored.map((c) => c.links.length).sort(), [1, 1]);
-            // Each link keeps the test its session ran after writing the commit's lines.
-            assert.deepStrictEqual(
-              stored.map((c) =>
-                c.links[0]?.checks?.map((k) => [k.kind, k.outcome, k.basis, k.linesAfter]),
-              ),
-              [[["test", "passed", "exit code", 0]], [["test", "passed", "exit code", 0]]],
-            );
-            const [thread] = yield* store.threads(["codex:coder"]);
-            // Sent redacted: the home directory reads `~`, never the temp path.
-            assert.notInclude(encodeJson(thread), home);
-            // With where it was read from (home as ~) and the digest of what was read.
-            assert.strictEqual(thread?.origin?.reader, "codex-rollout");
-            assert.match(thread?.origin?.file ?? "", /^sessions\/2026\/01\/01\/rollout-.*\.jsonl$/);
-            assert.match(thread?.origin?.sha256 ?? "", /^[0-9a-f]{64}$/);
-            // With how the session started, as its rollout recorded it.
-            assert.deepStrictEqual(snapshotValues(thread!.snapshot!), {
-              startCommit: yield* git(repo, ["rev-parse", "main~2"]),
-              branch: "main",
-              cwd: repo.replace(home, "~"),
-              clientVersion: "0.130.0",
-            });
-            assert.strictEqual(thread?.snapshot?.provenance?.["startCommit"], "recorded");
+          const store = yield* inWorkspace("acme");
+          const shas = (yield* git(repo, ["rev-list", "main~2..main"])).split("\n");
+          const stored = yield* store.commits("acme/app", shas);
+          assert.deepStrictEqual(stored.map((c) => c.links.length).sort(), [1, 1]);
+          // Each link keeps the test its session ran after writing the commit's lines.
+          assert.deepStrictEqual(
+            stored.map((c) =>
+              c.links[0]?.checks?.map((k) => [k.kind, k.outcome, k.basis, k.linesAfter]),
+            ),
+            [[["test", "passed", "exit code", 0]], [["test", "passed", "exit code", 0]]],
+          );
+          const [thread] = yield* store.threads(["codex:coder"]);
+          // Sent redacted: the home directory reads `~`, never the temp path.
+          assert.notInclude(encodeJson(thread), home);
+          // With where it was read from (home as ~) and the digest of what was read.
+          assert.strictEqual(thread?.origin?.reader, "codex-rollout");
+          assert.match(thread?.origin?.file ?? "", /^sessions\/2026\/01\/01\/rollout-.*\.jsonl$/);
+          assert.match(thread?.origin?.sha256 ?? "", /^[0-9a-f]{64}$/);
+          // With how the session started, as its rollout recorded it.
+          assert.deepStrictEqual(snapshotValues(thread!.snapshot!), {
+            startCommit: yield* git(repo, ["rev-parse", "main~2"]),
+            branch: "main",
+            cwd: repo.replace(home, "~"),
+            clientVersion: "0.130.0",
+          });
+          assert.strictEqual(thread?.snapshot?.provenance?.["startCommit"], "recorded");
 
-            // Read back as the range's page.
-            yield* fs.makeDirectory(`${home}/dist/site`, { recursive: true });
-            yield* fs.writeFileString(
-              `${home}/dist/site/index.html`,
-              `<script>${SITE_DATA_MARKER}</script>`,
-            );
-            const { file, view } = yield* history.site(repo, "main~2..main", `${home}/page`);
-            assert.deepStrictEqual(
-              view.commits.map((c) => c.entry?.links.map((l) => [l.thread.id, l.via])),
-              [[["codex:coder", "content"]], [["codex:coder", "content"]]],
-            );
-            // Searchable by what the session ran, cited to the entry.
-            const found = yield* history.search(repo, "VITEST", { all: false, limit: 5 });
-            assert.deepStrictEqual(
-              found.hits.map((h) => [h.threadId, h.entryId, h.kind, h.status]),
-              [["codex:coder", "t1", "test", "ok"]],
-            );
-            assert.include(hitLines(found.hits[0]!).at(-1)!, "cite codex:coder#t1@");
-            // And read back through the citation search printed.
-            const cite = hitLines(found.hits[0]!).at(-1)!.replace("  cite ", "");
-            const shown = yield* history.show(repo, cite);
-            assert.deepStrictEqual([shown.status, shown.entry?.id], ["ok", "t1"]);
-            assert.match(evidenceLines(cite, shown).join("\n"), /test ok \(exit 0\).*vitest run/s);
-            assert.strictEqual(
-              (yield* history.show(repo, `${cite}0`)).status,
-              "version-unavailable",
-            );
-            // The page shows each link's checks, read back from the backend.
-            assert.deepStrictEqual(
-              view.commits.map((c) => c.entry?.links[0]?.checks?.map((k) => k.outcome)),
-              [["passed"], ["passed"]],
-            );
-            assert.include(yield* fs.readFileString(file), "Add the store and client");
-            // The turn's edits are the commits' files: each attributed, not "untracked".
-            assert.deepStrictEqual(
-              view.commits.map((c) => c.entry?.files.map((f) => [f.path, f.bucket])),
-              [[["store.ts", "attributed"]], [["client.ts", "attributed"]]],
-            );
+          // Read back as the range's page.
+          yield* fs.makeDirectory(`${home}/dist/site`, { recursive: true });
+          yield* fs.writeFileString(
+            `${home}/dist/site/index.html`,
+            `<script>${SITE_DATA_MARKER}</script>`,
+          );
+          const { file, view } = yield* history.site(repo, "main~2..main", `${home}/page`);
+          assert.deepStrictEqual(
+            view.commits.map((c) => c.entry?.links.map((l) => [l.thread.id, l.via])),
+            [[["codex:coder", "trailer"]], [["codex:coder", "trailer"]]],
+          );
+          // Searchable by what the session ran, cited to the entry.
+          const found = yield* history.search(repo, "VITEST", { all: false, limit: 5 });
+          assert.deepStrictEqual(
+            found.hits.map((h) => [h.threadId, h.entryId, h.kind, h.status]),
+            [["codex:coder", "t1", "test", "ok"]],
+          );
+          assert.include(hitLines(found.hits[0]!).at(-1)!, "cite codex:coder#t1@");
+          // And read back through the citation search printed.
+          const cite = hitLines(found.hits[0]!).at(-1)!.replace("  cite ", "");
+          const shown = yield* history.show(repo, cite);
+          assert.deepStrictEqual([shown.status, shown.entry?.id], ["ok", "t1"]);
+          assert.match(evidenceLines(cite, shown).join("\n"), /test ok \(exit 0\).*vitest run/s);
+          // A version the stored one doesn't start with.
+          const wrongVersion = `${cite.slice(0, -1)}${cite.endsWith("0") ? "1" : "0"}`;
+          assert.strictEqual(
+            (yield* history.show(repo, wrongVersion)).status,
+            "version-unavailable",
+          );
+          // The page shows each link's checks, read back from the backend.
+          assert.deepStrictEqual(
+            view.commits.map((c) => c.entry?.links[0]?.checks?.map((k) => k.outcome)),
+            [["passed"], ["passed"]],
+          );
+          assert.include(yield* fs.readFileString(file), "Add the store and client");
+          // The turn's edits are the commits' files: each attributed, not "untracked".
+          assert.deepStrictEqual(
+            view.commits.map((c) => c.entry?.files.map((f) => [f.path, f.bucket])),
+            [[["store.ts", "attributed"]], [["client.ts", "attributed"]]],
+          );
 
-            // A review frozen: its commits' conclusions and the sessions they cite, at their versions.
-            const frozen = yield* history.freezeReview(repo, "main~2..main", {
-              verdict: "approved",
-              note: "both halves of the split are covered",
-            });
-            assert.deepStrictEqual(
-              [
-                frozen.by,
-                frozen.shas.length,
-                frozen.commits.length,
-                frozen.evidence.map((e) => e.threadId),
-              ],
-              ["test", 2, 2, ["codex:coder"]],
-            );
-            assert.strictEqual(frozen.methods.checks, "checks/2");
-            const reopened = yield* history.review(repo, frozen.id);
-            assert.deepStrictEqual(reopened.now, [{ threadId: "codex:coder", status: "same" }]);
-            assert.deepStrictEqual(reopened.manifest.commits, frozen.commits);
-            // The session deleted: the review reopens without what was drawn from it, and says so.
-            yield* Effect.flatMap(HistoryStore, (s) => s.deleteThread("acme", "codex:coder"));
-            const after = yield* history.review(repo, frozen.id);
-            assert.deepStrictEqual(after.now, [{ threadId: "codex:coder", status: "deleted" }]);
-            assert.deepStrictEqual(
-              after.manifest.commits.map((c) => c.links.length),
-              [0, 0],
-            );
-            assert.deepStrictEqual(after.manifest.removed, ["codex:coder"]);
-            assert.deepStrictEqual(after.manifest.decision, frozen.decision);
-          }).pipe(Effect.provide(services(home, codexHome)));
-        }).pipe(Effect.scoped),
+          // A review frozen: its commits' conclusions and the sessions they cite, at their versions.
+          const frozen = yield* history.freezeReview(repo, "main~2..main", {
+            verdict: "approved",
+            note: "both halves of the split are covered",
+          });
+          assert.deepStrictEqual(
+            [
+              frozen.by,
+              frozen.shas.length,
+              frozen.commits.length,
+              frozen.evidence.map((e) => e.threadId),
+            ],
+            ["test", 2, 2, ["codex:coder"]],
+          );
+          assert.strictEqual(frozen.methods.checks, "checks/2");
+          const reopened = yield* history.review(repo, frozen.id);
+          assert.deepStrictEqual(reopened.now, [{ threadId: "codex:coder", status: "same" }]);
+          assert.deepStrictEqual(reopened.manifest.commits, frozen.commits);
+          // The session deleted: the review reopens without what was drawn from it, and says so.
+          yield* Effect.flatMap(HistoryStore, (s) => s.deleteThread("acme", "codex:coder"));
+          const after = yield* history.review(repo, frozen.id);
+          assert.deepStrictEqual(after.now, [{ threadId: "codex:coder", status: "deleted" }]);
+          assert.deepStrictEqual(
+            after.manifest.commits.map((c) => c.links.length),
+            [0, 0],
+          );
+          assert.deepStrictEqual(after.manifest.removed, ["codex:coder"]);
+          assert.deepStrictEqual(after.manifest.decision, frozen.decision);
+        }).pipe(Effect.provide(services(home, codexHome)));
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect("does not link matching edits without an explicit declaration or trailer", () =>
+      Effect.gen(function* () {
+        const { repo, home, codexHome } = yield* scenario;
+        yield* git(
+          repo,
+          ["commit", "--amend", "-q", "-m", "feat: client.ts"],
+          "2026-01-01T10:31:00Z",
+        );
+        const report = yield* Effect.flatMap(HistorySync, (h) =>
+          h.sync(repo, "-1 HEAD", { source: "codex-rollouts", dryRun: true }),
+        ).pipe(Effect.provide(services(home, codexHome)));
+        assert.deepStrictEqual(
+          report.commits.map(({ record }) => [record.links, record.explained, record.novel]),
+          [[[], 0, 2]],
+        );
+      }).pipe(Effect.scoped),
     );
 
     it.effect(
@@ -484,7 +502,11 @@ describe("history sync", () => {
         const lines = ["export const retries = 3;"];
         yield* fs.writeFileString(path.join(repo, "retry.ts"), `${lines.join("\n")}\n`);
         yield* git(repo, ["add", "retry.ts"]);
-        yield* git(repo, ["commit", "-q", "-m", "feat: retry"], "2026-01-01T11:00:00Z");
+        yield* git(
+          repo,
+          ["commit", "-q", "-m", "feat: retry\n\nAgent-Session: codex:worker"],
+          "2026-01-01T11:00:00Z",
+        );
         yield* writeRollout(
           codexHome,
           "worker",
@@ -552,7 +574,11 @@ describe("history sync", () => {
           ]);
           yield* fs.writeFileString(path.join(repo, file), content);
           yield* git(repo, ["add", file]);
-          yield* git(repo, ["commit", "-q", "-m", `feat: ${file}`], `2026-01-01T${at}:59Z`);
+          yield* git(
+            repo,
+            ["commit", "-q", "-m", `feat: ${file}\n\nAgent-Session: codex:${id}`],
+            `2026-01-01T${at}:59Z`,
+          );
         }
         yield* Effect.gen(function* () {
           const history = yield* HistorySync;
@@ -621,7 +647,11 @@ describe("history sync", () => {
           ]);
           yield* fs.writeFileString(path.join(repo, "wire.ts"), content);
           yield* git(repo, ["add", "wire.ts"]);
-          yield* git(repo, ["commit", "-q", "-m", "feat: wire"], "2026-01-01T11:01:00Z");
+          yield* git(
+            repo,
+            ["commit", "-q", "-m", "feat: wire\n\nAgent-Session: codex:other"],
+            "2026-01-01T11:01:00Z",
+          );
           // A fake codex: groups every session it's given, writing the answer where codex would.
           const codexBin = path.join(home, "codex-fake.cjs");
           yield* fs.writeFileString(
