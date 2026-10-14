@@ -37,6 +37,7 @@ function asView(thread: BlameResult["threads"][number], committedAt: string): Th
 /** When agents edited a line of a GitHub diff (`#/blame?url=…`). */
 export function BlamePage({ url }: { url: string | null }) {
   const [input, setInput] = useState(url ?? "");
+  const [confirmedUrl, setConfirmedUrl] = useState<string | null>(null);
   const [result, setResult] = useState<BlameResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -44,11 +45,20 @@ export function BlamePage({ url }: { url: string | null }) {
     document.title = "blame · toolreader";
     setResult(null);
     setError(null);
-    if (!url) return;
-    call((api) => api.blame.line({ query: { url } })).then(setResult, (e: unknown) =>
-      setError(errorMessage(e)),
+    if (!url || confirmedUrl !== url) return;
+    let current = true;
+    call((api) => api.blame.line({ payload: { url, sendsSessionText: true } })).then(
+      (value) => {
+        if (current) setResult(value);
+      },
+      (e: unknown) => {
+        if (current) setError(errorMessage(e));
+      },
     );
-  }, [url]);
+    return () => {
+      current = false;
+    };
+  }, [url, confirmedUrl]);
 
   const marks = useMemo(() => (result ? marksOf(result) : new Map<string, Mark>()), [result]);
 
@@ -69,6 +79,11 @@ export function BlamePage({ url }: { url: string | null }) {
         <h1>blame</h1>
         <ThemePicker />
       </header>
+      {url && confirmedUrl !== url && (
+        <button className="chip" onClick={() => setConfirmedUrl(url)}>
+          Send redacted history to TypeSafe for this line
+        </button>
+      )}
       <form className="blame-form" onSubmit={submit}>
         <input
           autoFocus={!url}

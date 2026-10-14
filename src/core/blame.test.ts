@@ -308,3 +308,15 @@ describe("blame", () => {
     });
   });
 });
+
+it("decodes Git patch paths with spaces, tabs and quoted UTF-8 bytes", async () => {
+  const { hunksOf } = await import("./blame.ts");
+  assert.strictEqual(
+    hunksOf("--- a/a b.txt\t\n+++ b/a b.txt\t\n@@ -0,0 +1 @@\n+x")[0]?.path,
+    "a b.txt",
+  );
+  assert.strictEqual(
+    hunksOf('--- "a/\\303\\251.txt"\n+++ "b/\\303\\251.txt"\n@@ -0,0 +1 @@\n+x')[0]?.path,
+    "é.txt",
+  );
+});
