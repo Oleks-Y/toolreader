@@ -35,6 +35,7 @@ import {
   type FindingStatus,
 } from "../../core/insights.ts";
 import { forJsonb, sha256, threadSha } from "../recordHash.ts";
+import { ENTRY_ROWS } from "./Migrations/005_Entries.ts";
 
 export class HistoryStoreFailed extends Schema.TaggedErrorClass<HistoryStoreFailed>()(
   "HistoryStoreFailed",
@@ -97,19 +98,13 @@ const SearchRow = Schema.Struct({
   threadId: Schema.String,
   threadTitle: opt,
   version: Schema.String,
-  entry: Schema.Struct({
-    id: Schema.String,
-    at: opt,
-    type: Schema.Literals(["action", "message"]),
-    kind: opt,
-    role: opt,
-    status: opt,
-    title: opt,
-    command: opt,
-    output: opt,
-    text: opt,
-    files: Schema.optional(Schema.NullOr(Schema.Array(Schema.Struct({ path: Schema.String })))),
-  }),
+  entryId: Schema.String,
+  at: opt,
+  type: Schema.Literals(["action", "message"]),
+  kind: opt,
+  status: opt,
+  title: opt,
+  search: Schema.String,
 });
 const decodeSearchRows = Schema.decodeUnknownEffect(Schema.Array(SearchRow));
 const RemovedRow = Schema.Struct({
@@ -371,14 +366,29 @@ export class HistoryStore extends Context.Service<
               DELETE FROM removed
               WHERE workspace_id = ${writer.workspaceId} AND thread_id = ${record.thread.id}`;
           const payload = forJsonb(encodeThreadJson(record));
-          return yield* upsert(
+          const result = yield* upsert(
             "threads",
             { id: record.thread.id },
             payload,
             threadSha(record),
             writer,
           );
+          // Search's rows follow the thread, in the same transaction.
+          if (result !== "same") {
+            yield* sql`
+              DELETE FROM entries
+              WHERE workspace_id = ${writer.workspaceId} AND thread_id = ${record.thread.id}`;
+            yield* sql.unsafe(
+              `INSERT INTO entries (workspace_id, thread_id, entry_id, at, type, kind, status, title,
+                                    thread_title, search)
+               ${ENTRY_ROWS} WHERE t.workspace_id = $1 AND t.id = $2
+               ON CONFLICT DO NOTHING`,
+              [writer.workspaceId, record.thread.id],
+            );
+          }
+          return result;
         },
+        (self) => sql.withTransaction(self),
         Effect.mapError(putFailed),
         bounded,
       );
@@ -449,8 +459,7 @@ export class HistoryStore extends Context.Service<
         );
       }, bounded);
 
-      // ponytail: a scan of every entry in the workspace (jsonb, ILIKE); fine for a pilot's
-      // corpus. A full-text index goes in when the benchmark says scans are too slow.
+      // Over `entries` (migration 5): matching rows only, through the trigram index.
       const search = Effect.fn("HistoryStore.search")(function* (
         ws: string,
         query: {
@@ -460,39 +469,28 @@ export class HistoryStore extends Context.Service<
         },
       ) {
         const p = containing(query.text);
-        const inRepo = query.repo
-          ? sql`AND t.id IN (
-              SELECT l->>'threadId' FROM commits c, jsonb_array_elements(c.payload->'links') l
-              WHERE c.workspace_id = ${ws} AND c.repo = ${query.repo})`
-          : sql``;
+        const inRepo = query.repo ? sql`AND n.thread_id IN (${linkedTo(ws, query.repo)})` : sql``;
         const rows = yield* sql`
-          SELECT t.id AS "threadId", t.payload->'thread'->>'title' AS "threadTitle",
-                 t.content_sha AS version, e AS entry
-          FROM threads t, jsonb_array_elements(t.payload->'entries') e
-          WHERE t.workspace_id = ${ws} ${inRepo}
-            AND (e->>'title' ILIKE ${p} OR e->>'command' ILIKE ${p} OR e->>'output' ILIKE ${p}
-              OR e->>'text' ILIKE ${p}
-              OR EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(e->'files', '[]'::jsonb)) f
-                         WHERE f->>'path' ILIKE ${p}))
-          ORDER BY e->>'at' DESC NULLS LAST
+          SELECT n.thread_id AS "threadId", n.thread_title AS "threadTitle",
+                 t.content_sha AS version, n.entry_id AS "entryId", n.at, n.type, n.kind,
+                 n.status, n.title, n.search
+          FROM entries n
+          JOIN threads t ON t.workspace_id = n.workspace_id AND t.id = n.thread_id
+          WHERE n.workspace_id = ${ws} AND n.search ILIKE ${p} ${inRepo}
+          ORDER BY n.at DESC NULLS LAST
           LIMIT ${query.limit + 1}`.pipe(Effect.flatMap(decodeSearchRows), Effect.mapError(failed));
-        const hits = rows
-          .slice(0, query.limit)
-          .map(({ threadId, threadTitle, version, entry: e }) => ({
-            threadId,
-            threadTitle: threadTitle ?? "",
-            version,
-            entryId: e.id,
-            at: e.at ?? "",
-            type: e.type,
-            kind: (e.type === "action" ? e.kind : e.role) ?? "",
-            ...(e.status ? { status: e.status } : {}),
-            title: e.title ?? "",
-            snippet: snippetOf(
-              [e.title, e.command, e.text, e.output, ...(e.files ?? []).map((f) => f.path)],
-              query.text,
-            ),
-          }));
+        const hits = rows.slice(0, query.limit).map((r) => ({
+          threadId: r.threadId,
+          threadTitle: r.threadTitle ?? "",
+          version: r.version,
+          entryId: r.entryId,
+          at: r.at ?? "",
+          type: r.type,
+          kind: r.kind ?? "",
+          ...(r.status ? { status: r.status } : {}),
+          title: r.title ?? "",
+          snippet: snippetOf(r.search.split("\u001f"), query.text),
+        }));
         return { hits, truncated: rows.length > query.limit };
       }, bounded);
 

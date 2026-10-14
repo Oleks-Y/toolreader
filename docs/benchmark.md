@@ -26,7 +26,25 @@ TOOLREADER_BENCH=1 TOOLREADER_BENCH_OUT=search-bench.md vp test run src/server/b
 | + one session of 20,000 actions | 609            | 16671            | 613           | 65                           | 14                 |
 | same, with the trigram index    | 646            | 16725            | 596           | 3                            | 22                 |
 
-## What it says
+## After: entries as their own indexed rows (D8, migration 5)
+
+Search now reads `entries`, one row per stored entry with its searchable text under a `pg_trgm`
+index. It's filled at migration, and rewritten whenever its thread is stored. Same benchmark, same
+machine. The trigram-prefilter column is unchanged, since it still scans the threads table; the
+table-size column counts `threads` only.
+
+| corpus                          | rare text (ms) | common word (ms) | no match (ms) | trigram prefilter, rare (ms) | threads table (MB) |
+| ------------------------------- | -------------- | ---------------- | ------------- | ---------------------------- | ------------------ |
+| 1,000 sessions × 20 actions     | 48             | 62               | 39            | 62                           | 1                  |
+| 10,000 sessions × 20 actions    | 8              | 221              | 5             | 64                           | 14                 |
+| + one session of 20,000 actions | 5              | 245              | 4             | 67                           | 14                 |
+| same, with the trigram index    | 7              | 235              | 5             | 2                            | 22                 |
+
+A rare string at 10,000 sessions went from ~600 ms to under 10 ms. A common word with one
+20,000-action session went from ~17 s to ~250 ms: the cost is now the sort of the matching
+entries, not unpacking the huge session. At 1,000 sessions the planner still scans, around 50 ms.
+
+## What the first run said
 
 - **Pilot scale is fine as is.** At one or two teams' history, a few hundred to a few thousand
   sessions, today's scan answers in well under a second, and it grows linearly: about 0.6 s per
@@ -45,8 +63,7 @@ TOOLREADER_BENCH=1 TOOLREADER_BENCH_OUT=search-bench.md vp test run src/server/b
   `docs/standards.md` names. Running that needs agentsview installed and the same archive given
   to both.
 
-## Recommendation for D8
+## Recommendation for D8 (as written before the change; now built)
 
-Keep the scan for the pilot's first weeks. Before any team with long sessions joins, move entries
-into their own rows with a `pg_trgm` index, and add a full-text column only if queries turn out
-to be words rather than fragments of errors and paths.
+Move entries into their own rows with a `pg_trgm` index (done, migration 5), and add a full-text
+column only if queries turn out to be words rather than fragments of errors and paths.
