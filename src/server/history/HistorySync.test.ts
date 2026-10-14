@@ -131,6 +131,7 @@ const scenario = Effect.gen(function* () {
   yield* fs.writeFileString(path.join(repo, "README.md"), "hi\n");
   yield* git(repo, ["add", "README.md"]);
   yield* git(repo, ["commit", "-q", "-m", "init"], "2026-01-01T09:00:00Z");
+  const init = yield* git(repo, ["rev-parse", "HEAD"]);
   for (const [file, lines, at] of [
     ["store.ts", STORE, "2026-01-01T10:30:00Z"],
     ["client.ts", CLIENT, "2026-01-01T10:31:00Z"],
@@ -139,28 +140,34 @@ const scenario = Effect.gen(function* () {
     yield* git(repo, ["add", file]);
     yield* git(repo, ["commit", "-q", "-m", `feat: ${file}`], at);
   }
-  yield* writeRollout(codexHome, "coder", repo, [
-    {
-      at: "2026-01-01T10:00:00.000Z",
-      item: {
-        type: "UserMessage",
-        id: "u1",
-        content: [{ type: "text", text: "Add the store and client" }],
-      },
-    },
-    {
-      at: "2026-01-01T10:01:00.000Z",
-      item: {
-        type: "FileChange",
-        id: "f1",
-        status: "completed",
-        changes: {
-          [path.join(repo, "store.ts")]: { type: "add", content: `${STORE.join("\n")}\n` },
-          [path.join(repo, "client.ts")]: { type: "add", content: `${CLIENT.join("\n")}\n` },
+  yield* writeRollout(
+    codexHome,
+    "coder",
+    repo,
+    [
+      {
+        at: "2026-01-01T10:00:00.000Z",
+        item: {
+          type: "UserMessage",
+          id: "u1",
+          content: [{ type: "text", text: "Add the store and client" }],
         },
       },
-    },
-  ]);
+      {
+        at: "2026-01-01T10:01:00.000Z",
+        item: {
+          type: "FileChange",
+          id: "f1",
+          status: "completed",
+          changes: {
+            [path.join(repo, "store.ts")]: { type: "add", content: `${STORE.join("\n")}\n` },
+            [path.join(repo, "client.ts")]: { type: "add", content: `${CLIENT.join("\n")}\n` },
+          },
+        },
+      },
+    ],
+    { git: { commit_hash: init, branch: "main" }, cli_version: "0.130.0" },
+  );
   return { repo, home, codexHome };
 });
 
@@ -305,6 +312,12 @@ describe("history sync", () => {
             const [thread] = yield* store.threads(["codex:coder"]);
             // Sent redacted: the home directory reads `~`, never the temp path.
             assert.notInclude(encodeJson(thread), home);
+            // With how the session started, as its rollout recorded it.
+            assert.deepStrictEqual(thread?.snapshot, {
+              startCommit: yield* git(repo, ["rev-parse", "main~2"]),
+              branch: "main",
+              clientVersion: "0.130.0",
+            });
 
             // Read back as the range's page.
             yield* fs.makeDirectory(`${home}/dist/site`, { recursive: true });

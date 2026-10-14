@@ -371,6 +371,7 @@ export class HistorySync extends Context.Service<
                   toolreaderVersion: packageJson.version,
                   maxOutput: MAX_OUTPUT,
                   home: config.home,
+                  snapshot: s.snapshot,
                 }),
               ]
             : [];

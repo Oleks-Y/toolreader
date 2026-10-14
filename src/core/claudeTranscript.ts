@@ -6,6 +6,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
+import { snapshotOf, type SessionSnapshot } from "./domain.ts";
 import type { ActivityRow, MessageRow } from "./normalize.ts";
 
 const opt = <S extends Schema.Top>(schema: S) => Schema.optional(Schema.NullOr(schema));
@@ -37,8 +38,12 @@ const Line = Schema.Struct({
   isCompactSummary: opt(Schema.Boolean),
   aiTitle: opt(Schema.String),
   customTitle: opt(Schema.String),
+  version: opt(Schema.String),
+  gitBranch: opt(Schema.String),
+  permissionMode: opt(Schema.String),
   message: opt(
     Schema.Struct({
+      model: opt(Schema.String),
       content: opt(Schema.Union([Schema.String, Schema.Array(Block)])),
     }),
   ),
@@ -101,6 +106,27 @@ export function claudeTranscriptMeta(lines: ReadonlyArray<string>): ClaudeTransc
     title,
     createdAt: parsed.find((l) => l.timestamp)?.timestamp ?? null,
   };
+}
+
+/** How the session started: the first value each field has. Claude Code records no commit. */
+export function claudeSnapshot(lines: ReadonlyArray<string>): SessionSnapshot {
+  const parsed = parse(lines);
+  const first = (f: (l: Line) => string | null | undefined) =>
+    parsed.map(f).find((v) => !!v?.trim());
+  return snapshotOf({
+    startCommit: undefined,
+    branch: first((l) => l.gitBranch),
+    clientVersion: first((l) => l.version),
+    modelProvider: "anthropic",
+    // Synthetic placeholders (`<synthetic>`) aren't a model.
+    model: first((l) =>
+      l.type === "assistant" && !l.message?.model?.startsWith("<") ? l.message?.model : null,
+    ),
+    effort: undefined,
+    approvalPolicy: undefined,
+    sandbox: undefined,
+    permissionMode: first((l) => l.permissionMode),
+  });
 }
 
 /**

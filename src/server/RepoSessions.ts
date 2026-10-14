@@ -11,7 +11,7 @@ import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import type { ThreadNotFound } from "../core/api.ts";
-import type { Entry, Labels, ThreadSummary, ThreadView } from "../core/domain.ts";
+import type { Entry, Labels, SessionSnapshot, ThreadSummary, ThreadView } from "../core/domain.ts";
 import { nativeId, type LedgerThread } from "../core/ledger.ts";
 import { CLAUDE_ID_PREFIX, ClaudeTranscripts } from "./ClaudeTranscripts.ts";
 import { CodexRollouts, ROLLOUT_DIRS } from "./CodexRollouts.ts";
@@ -40,6 +40,8 @@ export type RepoSession = {
   readonly entries: ReadonlyArray<Entry>;
   readonly labels: Labels;
   readonly thread: LedgerThread;
+  /** How it started, when its source recorded that. */
+  readonly snapshot?: SessionSnapshot | undefined;
 };
 
 export type Loaded = {
@@ -176,6 +178,7 @@ export class RepoSessions extends Context.Service<
             root,
             entries,
             labels: { ...view.value.labels },
+            snapshot: view.value.snapshot,
             thread: {
               id: t.id,
               title: t.title,

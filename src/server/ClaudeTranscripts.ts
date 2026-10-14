@@ -10,7 +10,11 @@ import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 
 import { ThreadNotFound } from "../core/api.ts";
-import { claudeTranscriptMeta, claudeTranscriptToRows } from "../core/claudeTranscript.ts";
+import {
+  claudeSnapshot,
+  claudeTranscriptMeta,
+  claudeTranscriptToRows,
+} from "../core/claudeTranscript.ts";
 import type { Labels, ThreadHead, ThreadSummary, ThreadView } from "../core/domain.ts";
 import { normalize } from "../core/normalize.ts";
 import type { Subagent } from "./CodexRollouts.ts";
@@ -178,6 +182,7 @@ export class ClaudeTranscripts extends Context.Service<
           },
           entries,
           labels,
+          snapshot: claudeSnapshot(lines),
         };
       });
 

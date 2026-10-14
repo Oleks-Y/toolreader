@@ -156,6 +156,7 @@ export class CodexRollouts extends Context.Service<
           },
           entries,
           labels,
+          snapshot: session.snapshot,
         };
       });
 
