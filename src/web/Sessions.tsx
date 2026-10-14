@@ -73,6 +73,7 @@ export function Sessions() {
         <h1>toolreader</h1>
         <ThemePicker />
         <a href="#/file">open proof file</a>
+        <a href="#/blame">blame a line</a>
         <input
           ref={filterInput}
           autoFocus

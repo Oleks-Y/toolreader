@@ -3,7 +3,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 
+import { Blame } from "./Blame.ts";
 import { ClaudeTranscripts } from "./ClaudeTranscripts.ts";
 import { CodexRollouts } from "./CodexRollouts.ts";
 import { CodexSessions } from "./CodexSessions.ts";
@@ -62,7 +64,10 @@ const appLayer = <R>(
   );
 
 /** Every app service, plus the Node platform services they run on. */
-export const AppLive = appLayer(CodexSessions.layer);
+export const AppLive = Blame.layer.pipe(
+  Layer.provide(FetchHttpClient.layer),
+  Layer.provideMerge(appLayer(CodexSessions.layer)),
+);
 
 /** For the history CLI: starts `codex app-server` only when asked to read from it. */
 export const CliApp = (options: { appServer: boolean; codexHome: string | null }) =>

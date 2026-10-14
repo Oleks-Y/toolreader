@@ -5,6 +5,7 @@ import * as HttpApiEndpoint from "effect/unstable/httpapi/HttpApiEndpoint";
 import * as HttpApiGroup from "effect/unstable/httpapi/HttpApiGroup";
 import * as HttpApiSchema from "effect/unstable/httpapi/HttpApiSchema";
 
+import { BlameResult } from "./blame.ts";
 import { LabelItem, Labels, ThreadHead, ThreadSummary, ThreadView } from "./domain.ts";
 
 export class ThreadNotFound extends Schema.TaggedErrorClass<ThreadNotFound>()("ThreadNotFound", {
@@ -22,6 +23,10 @@ export class ProofWriteFailed extends Schema.TaggedErrorClass<ProofWriteFailed>(
 ) {}
 
 export class LabelingFailed extends Schema.TaggedErrorClass<LabelingFailed>()("LabelingFailed", {
+  message: Schema.String,
+}) {}
+
+export class BlameFailed extends Schema.TaggedErrorClass<BlameFailed>()("BlameFailed", {
   message: Schema.String,
 }) {}
 
@@ -70,4 +75,18 @@ export class LabelsApi extends HttpApiGroup.make("labels")
   )
   .prefix("/api") {}
 
-export class ToolreaderApi extends HttpApi.make("toolreader").add(ThreadsApi).add(LabelsApi) {}
+// Which pieces of an agent's history wrote a line of a GitHub diff (core/blame.ts). Asks TypeSafe.
+export class BlameApi extends HttpApiGroup.make("blame")
+  .add(
+    HttpApiEndpoint.post("line", "/blame", {
+      payload: Schema.Struct({ url: Schema.String, sendsSessionText: Schema.Literal(true) }),
+      success: BlameResult,
+      error: BlameFailed.pipe(HttpApiSchema.status(422)),
+    }),
+  )
+  .prefix("/api") {}
+
+export class ToolreaderApi extends HttpApi.make("toolreader")
+  .add(ThreadsApi)
+  .add(LabelsApi)
+  .add(BlameApi) {}
