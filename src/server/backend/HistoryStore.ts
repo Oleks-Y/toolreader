@@ -22,6 +22,7 @@ import {
   type CommitRecord,
   type ThreadRecord,
 } from "../../core/historyRecord.ts";
+import type { SearchHit } from "../../core/historyApi.ts";
 import { forJsonb, sha256, threadSha } from "../recordHash.ts";
 
 export class HistoryStoreFailed extends Schema.TaggedErrorClass<HistoryStoreFailed>()(
@@ -68,6 +69,43 @@ const CallerRow = Schema.Struct({
   workspace: Schema.String,
 });
 const decodeCallerRows = Schema.decodeUnknownEffect(Schema.Array(CallerRow));
+const opt = Schema.optional(Schema.NullOr(Schema.String));
+const SearchRow = Schema.Struct({
+  threadId: Schema.String,
+  threadTitle: opt,
+  version: Schema.String,
+  entry: Schema.Struct({
+    id: Schema.String,
+    at: opt,
+    type: Schema.Literals(["action", "message"]),
+    kind: opt,
+    role: opt,
+    status: opt,
+    title: opt,
+    command: opt,
+    output: opt,
+    text: opt,
+    files: Schema.optional(Schema.NullOr(Schema.Array(Schema.Struct({ path: Schema.String })))),
+  }),
+});
+const decodeSearchRows = Schema.decodeUnknownEffect(Schema.Array(SearchRow));
+
+/** `text` as an ILIKE pattern that matches it literally anywhere. */
+const containing = (text: string) => `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+
+/** The first field holding `text`, cut to a window around it. */
+const snippetOf = (fields: ReadonlyArray<string | null | undefined>, text: string) => {
+  const needle = text.toLowerCase();
+  for (const f of fields) {
+    const at = f?.toLowerCase().indexOf(needle) ?? -1;
+    if (f && at >= 0) {
+      const from = Math.max(0, at - 60);
+      const to = Math.min(f.length, at + text.length + 60);
+      return `${from > 0 ? "…" : ""}${f.slice(from, to).replace(/\s+/g, " ")}${to < f.length ? "…" : ""}`;
+    }
+  }
+  return "";
+};
 const encodeThreadJson = Schema.encodeSync(Schema.fromJsonString(ThreadRecordV1));
 const encodeCommitJson = Schema.encodeSync(Schema.fromJsonString(CommitRecordV1));
 
@@ -132,6 +170,15 @@ export type WorkspaceStore = {
   readonly putCommit: (
     record: CommitRecord,
   ) => Effect.Effect<PutResult, HistoryStoreFailed | HistoryRefused>;
+  /** Entries holding `text`, newest first; `repo` keeps threads linked to its commits. */
+  readonly search: (query: {
+    readonly text: string;
+    readonly repo?: string | undefined;
+    readonly limit: number;
+  }) => Effect.Effect<
+    { readonly hits: ReadonlyArray<SearchHit>; readonly truncated: boolean },
+    HistoryStoreFailed
+  >;
   /** The commits of `shas` this workspace has links for, in no particular order. */
   readonly commits: (
     repo: string,
@@ -270,6 +317,53 @@ export class HistoryStore extends Context.Service<
         );
       }, bounded);
 
+      // ponytail: a scan of every entry in the workspace (jsonb, ILIKE); fine for a pilot's
+      // corpus. A full-text index goes in when the benchmark says scans are too slow.
+      const search = Effect.fn("HistoryStore.search")(function* (
+        ws: string,
+        query: {
+          readonly text: string;
+          readonly repo?: string | undefined;
+          readonly limit: number;
+        },
+      ) {
+        const p = containing(query.text);
+        const inRepo = query.repo
+          ? sql`AND t.id IN (
+              SELECT l->>'threadId' FROM commits c, jsonb_array_elements(c.payload->'links') l
+              WHERE c.workspace_id = ${ws} AND c.repo = ${query.repo})`
+          : sql``;
+        const rows = yield* sql`
+          SELECT t.id AS "threadId", t.payload->'thread'->>'title' AS "threadTitle",
+                 t.content_sha AS version, e AS entry
+          FROM threads t, jsonb_array_elements(t.payload->'entries') e
+          WHERE t.workspace_id = ${ws} ${inRepo}
+            AND (e->>'title' ILIKE ${p} OR e->>'command' ILIKE ${p} OR e->>'output' ILIKE ${p}
+              OR e->>'text' ILIKE ${p}
+              OR EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(e->'files', '[]'::jsonb)) f
+                         WHERE f->>'path' ILIKE ${p}))
+          ORDER BY e->>'at' DESC NULLS LAST
+          LIMIT ${query.limit + 1}`.pipe(Effect.flatMap(decodeSearchRows), Effect.mapError(failed));
+        const hits = rows
+          .slice(0, query.limit)
+          .map(({ threadId, threadTitle, version, entry: e }) => ({
+            threadId,
+            threadTitle: threadTitle ?? "",
+            version,
+            entryId: e.id,
+            at: e.at ?? "",
+            type: e.type,
+            kind: (e.type === "action" ? e.kind : e.role) ?? "",
+            ...(e.status ? { status: e.status } : {}),
+            title: e.title ?? "",
+            snippet: snippetOf(
+              [e.title, e.command, e.text, e.output, ...(e.files ?? []).map((f) => f.path)],
+              query.text,
+            ),
+          }));
+        return { hits, truncated: rows.length > query.limit };
+      }, bounded);
+
       const workspace = Effect.fn("HistoryStore.workspace")(function* (slug: string) {
         // The no-op update makes RETURNING give the row that was already there.
         const [row] = yield* sql`
@@ -320,6 +414,7 @@ export class HistoryStore extends Context.Service<
           putThread: (record) => putThread(writer, record),
           threads: (ids) => threads(ws, ids),
           putCommit: (record) => putCommit(writer, record),
+          search: (query) => search(ws, query),
           commits: (repo, shas) => commits(ws, repo, shas),
         };
       };

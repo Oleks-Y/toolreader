@@ -5,6 +5,7 @@
 //                           [--dry-run] [--hook]
 //   toolreader history site (--range A..B | --pr N) [--repo PATH] [--out DIR]
 //   toolreader history audit [--repo PATH] [--source …]           (core/audit.ts)
+//   toolreader history search TEXT [--repo PATH] [--all] [--limit N]
 //   toolreader history turns|link|unlink …                       (declareCli.ts)
 //   toolreader history skill install|uninstall [--repo PATH] [--commit]   (historySkill.ts)
 //   toolreader history hook install|uninstall [--repo PATH]    (historyHooks.ts)
@@ -14,7 +15,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { Command, Flag } from "effect/unstable/cli";
+import { Argument, Command, Flag } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { auditLines, auditSessions } from "../../core/audit.ts";
@@ -27,6 +28,7 @@ import { declareCommands } from "./declareCli.ts";
 import { HistoryFailed } from "./HistoryClient.ts";
 import { commitSkill, dirtyPaths, INSTALLED_PATHS, installSkill } from "./historySkill.ts";
 import { appendLog, causeMessage, installHooks, pending } from "./historyHooks.ts";
+import type { SearchHit } from "../../core/historyApi.ts";
 import { HistorySync, type SyncReport } from "./HistorySync.ts";
 
 const PullRequest = Schema.Struct({ baseRefOid: Schema.String, headRefOid: Schema.String });
@@ -278,6 +280,47 @@ const site = Command.make(
   ),
 );
 
+/** A search hit, as `history search` prints it: when and what, its session, the match, a citation. */
+export const hitLines = (hit: SearchHit): string[] => [
+  `${hit.at.slice(0, 16).replace("T", " ")} · ${hit.kind}${hit.status ? ` ${hit.status}` : ""} · ${short(title(hit.title || "(untitled)"))}`,
+  `  in ${short(title(hit.threadTitle || hit.threadId))}`,
+  ...(hit.snippet ? [`  ${title(hit.snippet)}`] : []),
+  `  cite ${hit.threadId}#${hit.entryId}@${hit.version.slice(0, 12)}`,
+];
+
+const search = Command.make(
+  "search",
+  {
+    text: Argument.string("text").pipe(
+      Argument.withDescription("What to find, in any case: an error, a command, a path"),
+    ),
+    repo: Flag.string("repo").pipe(
+      Flag.withDescription("Repository (any path inside it): searches its sessions"),
+      Flag.withDefault("."),
+    ),
+    all: Flag.boolean("all").pipe(
+      Flag.withDescription("Search every session in the workspace, not only this repo's"),
+    ),
+    limit: Flag.integer("limit").pipe(Flag.withDescription("Hits to show"), Flag.withDefault(20)),
+  },
+  Effect.fn("toolreader history search")(function* (flags) {
+    const repo = (yield* Path.Path).resolve(flags.repo);
+    const { hits, truncated } = yield* Effect.flatMap(HistorySync, (h) =>
+      h.search(repo, flags.text, { all: flags.all, limit: flags.limit }),
+    ).pipe(Effect.provide(CliApp({ appServer: false, codexHome: null })));
+    for (const hit of hits) for (const line of hitLines(hit)) yield* Console.log(line);
+    yield* Console.log(
+      hits.length === 0
+        ? "nothing found"
+        : `${hits.length} hit${hits.length === 1 ? "" : "s"}${truncated ? ", more not shown (--limit)" : ""}`,
+    );
+  }),
+).pipe(
+  Command.withDescription(
+    "Find sessions' commands, errors, outputs, messages and paths on the backend, newest first, each with a citation",
+  ),
+);
+
 const audit = Command.make(
   "audit",
   {
@@ -380,6 +423,7 @@ export const historyCommand = Command.make("history").pipe(
   Command.withSubcommands([
     sync,
     site,
+    search,
     audit,
     ...declareCommands,
     Command.make("skill").pipe(

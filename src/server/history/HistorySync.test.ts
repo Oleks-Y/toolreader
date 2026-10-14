@@ -28,7 +28,7 @@ import { RepoSessions } from "../RepoSessions.ts";
 import { ServerConfig } from "../ServerConfig.ts";
 import { ThreadStore } from "../ThreadStore.ts";
 import { HistorySync } from "./HistorySync.ts";
-import { reportLines } from "./historyCli.ts";
+import { hitLines, reportLines } from "./historyCli.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -354,6 +354,13 @@ describe("history sync", () => {
               view.commits.map((c) => c.entry?.links.map((l) => [l.thread.id, l.via])),
               [[["codex:coder", "content"]], [["codex:coder", "content"]]],
             );
+            // Searchable by what the session ran, cited to the entry.
+            const found = yield* history.search(repo, "VITEST", { all: false, limit: 5 });
+            assert.deepStrictEqual(
+              found.hits.map((h) => [h.threadId, h.entryId, h.kind, h.status]),
+              [["codex:coder", "t1", "test", "ok"]],
+            );
+            assert.include(hitLines(found.hits[0]!).at(-1)!, "cite codex:coder#t1@");
             // The page shows each link's checks, read back from the backend.
             assert.deepStrictEqual(
               view.commits.map((c) => c.entry?.links[0]?.checks?.map((k) => k.outcome)),

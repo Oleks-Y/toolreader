@@ -187,6 +187,11 @@ const HistoryHandlers = HttpApiBuilder.group(
           return { result: yield* store.putCommit(record).pipe(Effect.mapError(putFailed)) };
         }),
       )
+      .handle("search", ({ payload }) =>
+        Effect.flatMap(scoped, (s) =>
+          s.search({ text: payload.text, repo: payload.repo, limit: payload.limit ?? 20 }),
+        ).pipe(Effect.mapError(failed)),
+      )
       .handle("commits", ({ params, payload }) =>
         Effect.flatMap(scoped, (s) => s.commits(params.repo, payload.shas)).pipe(
           Effect.map((commits) => ({ commits })),

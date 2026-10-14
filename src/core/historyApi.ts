@@ -25,6 +25,10 @@ export const LIMITS = {
    * page by bytes if threads grow past ~50 MB.
    */
   threads: 10,
+  /** Hits per `search`. */
+  hits: 100,
+  /** Characters of a search's text. */
+  query: 200,
 } as const;
 
 export class Unauthorized extends Schema.TaggedErrorClass<Unauthorized>()(
@@ -129,6 +133,26 @@ const ws = { ws: Text };
 const Sha = Schema.String.check(Schema.isPattern(/^[0-9a-f]{4,64}$/));
 const Ids = Schema.Array(Text).check(Schema.isMaxLength(LIMITS.ids));
 
+/**
+ * One entry a search found, cited by thread, entry and the thread's content hash (the version it
+ * was found in: a thread replaced since may say something else there).
+ */
+export const SearchHit = Schema.Struct({
+  threadId: Schema.String,
+  threadTitle: Schema.String,
+  version: Schema.String,
+  entryId: Schema.String,
+  at: Schema.String,
+  type: Schema.Literals(["action", "message"]),
+  /** An action's kind and status; a message's role. */
+  kind: Schema.String,
+  status: Schema.optional(Schema.String),
+  title: Schema.String,
+  /** The match with some text around it, from whichever field held it. */
+  snippet: Schema.String,
+});
+export type SearchHit = typeof SearchHit.Type;
+
 export class HistoryApi extends HttpApiGroup.make("history")
   .add(
     // Which of these threads the workspace holds, by content hash: the client sends only the ones
@@ -161,6 +185,27 @@ export class HistoryApi extends HttpApiGroup.make("history")
       payload: Schema.Unknown,
       success: PutResult,
       error: [Rejected, BackendFailed],
+    }),
+    // Entries whose title, command, output, text or file paths hold `text` (any case), newest
+    // first. With `repo`, only threads linked to that repo's commits.
+    HttpApiEndpoint.post("search", "/workspaces/:ws/search", {
+      params: ws,
+      payload: Schema.Struct({
+        text: Text.check(Schema.isMinLength(2), Schema.isMaxLength(LIMITS.query)),
+        repo: Schema.optional(Repo),
+        limit: Schema.optional(
+          Schema.Number.check(
+            Schema.isInt(),
+            Schema.isBetween({ minimum: 1, maximum: LIMITS.hits }),
+          ),
+        ),
+      }),
+      success: Schema.Struct({
+        hits: Schema.Array(SearchHit),
+        /** More entries matched than `limit`. */
+        truncated: Schema.Boolean,
+      }),
+      error: BackendFailed,
     }),
     HttpApiEndpoint.post("commits", "/workspaces/:ws/repos/:repo/commits/query", {
       params: { ...ws, repo: Repo },

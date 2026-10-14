@@ -24,7 +24,7 @@ import {
 import { checksFor } from "../../core/checks.ts";
 import { readsFor } from "../../core/coverage.ts";
 import { addedLines, lineKey, linkByContent, type CommitLines } from "../../core/history.ts";
-import { LIMITS } from "../../core/historyApi.ts";
+import { LIMITS, type SearchHit } from "../../core/historyApi.ts";
 import {
   buildCommitRecord,
   buildThreadRecord,
@@ -87,6 +87,15 @@ export class HistorySync extends Context.Service<
       range: string,
       options: SyncOptions,
     ) => Effect.Effect<SyncReport, HistoryFailed>;
+    /** Entries the backend holds with `text`: this repo's threads, or the workspace's (`all`). */
+    readonly search: (
+      repo: string,
+      text: string,
+      options: { readonly all: boolean; readonly limit: number },
+    ) => Effect.Effect<
+      { readonly hits: ReadonlyArray<SearchHit>; readonly truncated: boolean },
+      HistoryFailed
+    >;
     /** The range's page (the ledger viewer, inlined) from what the backend has; writes `out/index.html`. */
     readonly site: (
       repo: string,
@@ -561,7 +570,36 @@ export class HistorySync extends Context.Service<
         Effect.provide(FetchHttpClient.layer),
       );
 
-      return HistorySync.of({ sync, site });
+      const search = Effect.fn("HistorySync.search")(function* (
+        repoArg: string,
+        text: string,
+        options: { readonly all: boolean; readonly limit: number },
+      ) {
+        const repo = (yield* git(repoArg, ["rev-parse", "--show-toplevel"])).trim();
+        const origin = (yield* git(repo, ["remote", "get-url", "origin"], [2])).trim();
+        const web = remoteWebUrl(origin || null);
+        if (!options.all && !web)
+          return yield* new HistoryFailed({
+            message: `${repo} has no origin on a git host: pass --all to search the workspace`,
+          });
+        const settings = yield* backendSettings().pipe(
+          Effect.provideService(ServerConfig, config),
+          Effect.provideService(FileSystem.FileSystem, fs),
+        );
+        const api = yield* connect(settings);
+        return yield* call(
+          api.history.search({
+            params: { ws: settings.workspace },
+            payload: {
+              text,
+              ...(options.all ? {} : { repo: new URL(web!).pathname.slice(1) }),
+              limit: options.limit,
+            },
+          }),
+        );
+      }, Effect.provide(FetchHttpClient.layer));
+
+      return HistorySync.of({ sync, site, search });
     }),
   );
 }
