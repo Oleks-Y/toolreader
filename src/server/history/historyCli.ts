@@ -90,11 +90,7 @@ export const reportLines = (report: SyncReport, dryRun: boolean): string[] => {
             ? `  ✓ ${title(titles.get(l.threadId) ?? l.threadId)} (named by its trailer)`
             : `  ✓ ${title(titles.get(l.threadId) ?? l.threadId)} (${l.turns.length} turn${l.turns.length === 1 ? "" : "s"}, ${l.lines} line${l.lines === 1 ? "" : "s"})`,
       );
-    lines.push(
-      c.links.length === 0
-        ? `  · no agent turn wrote its ${c.novel} new lines`
-        : `  ${c.explained} of its ${c.novel} new lines match these agents' edits`,
-    );
+    if (c.links.length === 0) lines.push("  · no explicit agent history link");
   }
   for (const why of report.ignored) lines.push(`! ignored ${title(why)}`);
   lines.push(
@@ -203,7 +199,7 @@ const sync = Command.make(
   }),
 ).pipe(
   Command.withDescription(
-    "Link a range's commits to the agent turns that wrote them, and send the threads and links to the backend",
+    "Sync a range's explicit agent declarations and session trailers to the backend",
   ),
 );
 
