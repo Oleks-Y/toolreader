@@ -65,6 +65,7 @@ export function historyRange(input: {
               l.turns.length > 0 ? episode(thread.entries, new Set(l.turns)) : thread.entries,
             labels: thread.labels,
             checks: l.checks,
+            reads: l.reads,
           },
         ];
       });

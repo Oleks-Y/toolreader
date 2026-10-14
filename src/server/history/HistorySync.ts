@@ -22,6 +22,7 @@ import {
   type ResolvedDeclaration,
 } from "../../core/declare.ts";
 import { checksFor } from "../../core/checks.ts";
+import { readsFor } from "../../core/coverage.ts";
 import { addedLines, lineKey, linkByContent, type CommitLines } from "../../core/history.ts";
 import { LIMITS } from "../../core/historyApi.ts";
 import {
@@ -370,7 +371,14 @@ export class HistorySync extends Context.Service<
                     others,
                   })
                 : [];
-              return checks.length > 0 ? { ...l, checks } : l;
+              const reads = s
+                ? readsFor({ entries: s.entries, turns: l.turns, committedAt })
+                : null;
+              return {
+                ...l,
+                ...(checks.length > 0 ? { checks } : {}),
+                ...(reads && reads.paths.length > 0 ? { reads } : {}),
+              };
             }),
           };
         });

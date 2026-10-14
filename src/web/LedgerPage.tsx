@@ -170,6 +170,21 @@ function LinkRow({
         </span>
       </summary>
       {link.checks && link.checks.length > 0 && <Checks checks={link.checks} />}
+      {link.reads && link.reads.paths.length > 0 && (
+        <details className="ledger-reads dim">
+          <summary>
+            read {link.reads.paths.length + link.reads.more} file
+            {link.reads.paths.length + link.reads.more === 1 ? "" : "s"} for this commit (as far as
+            its read actions show)
+          </summary>
+          <ul>
+            {link.reads.paths.map((p) => (
+              <li key={p}>{p}</li>
+            ))}
+            {link.reads.more > 0 && <li>…and {link.reads.more} more</li>}
+          </ul>
+        </details>
+      )}
       {!open ? null : link.entries.length > 0 ? (
         <ActionView view={view} embedded />
       ) : (

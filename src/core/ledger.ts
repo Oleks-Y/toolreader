@@ -8,6 +8,7 @@ import { Entry, Labels, ThreadSource } from "./domain.ts";
 import { redactEntries, redactLabels, redactor } from "./proof.ts";
 import { humanizeCommand } from "./shell.ts";
 import { Check } from "./checks.ts";
+import { Reads } from "./coverage.ts";
 
 export const LEDGER_FORMAT_VERSION = 2;
 export const LedgerCommit = Schema.Struct({
@@ -65,6 +66,8 @@ export const LedgerLink = Schema.Struct({
   labels: Labels,
   /** The tests and builds it ran for this commit (checks.ts), when sync recorded them. */
   checks: Schema.optional(Schema.Array(Check)),
+  /** The files it was seen reading for this commit (coverage.ts). */
+  reads: Schema.optional(Reads),
 });
 export type LedgerLink = typeof LedgerLink.Type;
 
@@ -202,6 +205,7 @@ export type FoundLink = {
   readonly segment: ReadonlyArray<Entry>;
   readonly labels: Labels;
   readonly checks?: ReadonlyArray<Check> | undefined;
+  readonly reads?: Reads | undefined;
 };
 
 /**
@@ -254,6 +258,9 @@ export function buildEntry(input: {
               reasons: c.reasons.map(clean),
             })),
           }
+        : {}),
+      ...(found.reads?.paths.length
+        ? { reads: { ...found.reads, paths: found.reads.paths.map(clean) } }
         : {}),
     };
   });

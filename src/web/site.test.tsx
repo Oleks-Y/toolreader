@@ -41,6 +41,7 @@ const range: LedgerRange = {
             reviewedSha: null,
             files: ["src/a.ts"],
             labels: {},
+            reads: { paths: ["src/a.ts", "docs/spec.md"], more: 0 },
             checks: [
               {
                 actionId: "c1",
@@ -157,6 +158,8 @@ describe("static ledger page", () => {
       "4 of the commit&#x27;s lines went into src/a.ts, which it named, after it ran",
       "last build: ? unknown (can&#x27;t fail: || true) · ran on: unknown · for this commit: unknown",
       "2 checks in all: 1 passed, 1 unknown",
+      "read 2 files for this commit (as far as its read actions show)",
+      "docs/spec.md",
     ])
       assert.include(html, text);
   });

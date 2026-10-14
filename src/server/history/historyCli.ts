@@ -114,6 +114,10 @@ export const reportLines = (report: SyncReport, dryRun: boolean): string[] => {
             : `  ✓ ${title(titles.get(l.threadId) ?? l.threadId)} (${l.turns.length} turn${l.turns.length === 1 ? "" : "s"}, ${l.lines} line${l.lines === 1 ? "" : "s"})`,
       );
       lines.push(...checkLines(l.checks ?? []));
+      if (l.reads)
+        lines.push(
+          `    read ${l.reads.paths.length + l.reads.more} files for it (as its read actions show)`,
+        );
     }
     lines.push(
       c.links.length === 0

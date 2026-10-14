@@ -6,6 +6,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 import { Check } from "./checks.ts";
+import { Reads } from "./coverage.ts";
 import { Entry, Labels, SessionOrigin, SessionSnapshot, snapshotValues } from "./domain.ts";
 import type { CommitHistory } from "./history.ts";
 import { clipOutputs, LedgerThread } from "./ledger.ts";
@@ -56,6 +57,8 @@ export const CommitRecordV1 = Schema.Struct({
       declaredBy: Schema.optional(Schema.String),
       /** Tests and builds this thread ran for the commit; absent from older clients. */
       checks: Schema.optional(Schema.Array(Check)),
+      /** Files the thread was seen reading for the commit; absent from older clients. */
+      reads: Schema.optional(Reads),
     }),
   ),
   linkedAt: Schema.String,
@@ -262,6 +265,7 @@ export function buildCommitRecord(input: {
             })),
           }
         : {}),
+      ...(l.reads ? { reads: { ...l.reads, paths: l.reads.paths.map(clean) } } : {}),
     })),
     linkedAt: input.linkedAt,
     toolreaderVersion: input.toolreaderVersion,
