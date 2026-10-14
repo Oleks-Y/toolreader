@@ -10,6 +10,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import type { Action } from "../core/domain.ts";
 import { LEDGER_FORMAT_VERSION, type LedgerEntry } from "../core/ledger.ts";
 import { batches, jsonObjects, Sanitizer } from "./Sanitizer.ts";
+import { sanitizeBlameRequest } from "./Blame.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 
 // Stands in for `codex-acp`: speaks ACP over stdio, asks for a permission once, logs what it was
@@ -353,3 +354,32 @@ describe("Sanitizer", () => {
     assert.deepStrictEqual(batches(["a", "b", "c"], 5), [["a", "b", "c"]]);
   });
 });
+
+it.live("sanitizes the final blame provider body with merged private values and agent spans", () =>
+  withSanitizer(
+    { sanitize: { ...agentConfig.sanitize, private: ["hidden-customer"] } },
+    {},
+    (sanitizer, repo) =>
+      Effect.gen(function* () {
+        const action = run("a1", "cat x.ts hidden-customer zebra-corp", "Clover Casino");
+        const request = yield* sanitizeBlameRequest(
+          repo,
+          {
+            subject: "hidden-customer zebra-corp Clover Casino",
+            hunk: {
+              id: "H1",
+              path: "x.ts",
+              header: "@@ -0,0 +1 @@",
+              text: "+hidden-customer zebra-corp Clover Casino",
+            },
+            pieces: [{ id: "A1", threadId: "t1", action }],
+          },
+          (text) => text,
+        ).pipe(Effect.provideService(Sanitizer, sanitizer));
+        const body = encodeJson(request.body);
+        for (const privateValue of ["hidden-customer", "zebra-corp", "Clover Casino"])
+          assert.notInclude(body, privateValue);
+        assert.include(body, "<private>");
+      }),
+  ),
+);
