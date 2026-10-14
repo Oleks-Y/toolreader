@@ -392,8 +392,11 @@ export class HistorySync extends Context.Service<
         let sent = 0;
         for (const thread of threads) {
           if (stored.get(thread.thread.id) === threadSha(thread)) continue;
-          yield* call(api.history.putThread({ params, payload: threadJson(thread) }));
-          sent++;
+          // `same`: the backend had it, or won't keep it (deleted on request): not sent as new.
+          const { result } = yield* call(
+            api.history.putThread({ params, payload: threadJson(thread) }),
+          );
+          if (result !== "same") sent++;
         }
         // Links last: a commit names only threads the backend has.
         for (const record of records)
