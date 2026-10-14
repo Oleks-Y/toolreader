@@ -61,12 +61,19 @@ export function LedgerPage({ data }: { data: LedgerRange }) {
       <p className="dim">
         {data.range} · {data.commits.length} commits · {withHistory} with agent history
       </p>
-      <div className="ledger">
-        {data.commits.map((c) => (
-          <CommitCard key={c.commit.sha} item={c} remoteUrl={data.remoteUrl} />
-        ))}
-      </div>
+      <LedgerCommits data={data} />
     </main>
+  );
+}
+
+/** A range's commit cards, each with its linked threads' history: for pages that frame it. */
+export function LedgerCommits({ data }: { data: LedgerRange }) {
+  return (
+    <div className="ledger">
+      {data.commits.map((c) => (
+        <CommitCard key={c.commit.sha} item={c} remoteUrl={data.remoteUrl} />
+      ))}
+    </div>
   );
 }
 

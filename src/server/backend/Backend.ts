@@ -42,6 +42,7 @@ import {
   HISTORY_FORMAT_VERSION,
   type Rejection,
 } from "../../core/historyRecord.ts";
+import { hunkKey } from "../../core/blame.ts";
 import { detect } from "../../core/insights.ts";
 import { summarize } from "../../core/semantic.ts";
 import { GitHub } from "./GitHub.ts";
@@ -405,9 +406,50 @@ const HistoryHandlers = HttpApiBuilder.group(
   }),
 );
 
+const BrowseHandlers = HttpApiBuilder.group(
+  BackendApi,
+  "browse",
+  Effect.fn(function* (handlers) {
+    const store = yield* HistoryStore;
+    const scoped = Effect.gen(function* () {
+      const caller = yield* Caller;
+      return store.at({ workspaceId: caller.workspaceId, tokenId: caller.tokenId, client: "" });
+    });
+    return handlers
+      .handle("repos", () =>
+        Effect.flatMap(scoped, (s) => s.repos()).pipe(
+          Effect.map((repos) => ({ repos })),
+          Effect.mapError(failed),
+        ),
+      )
+      .handle("ledger", ({ params, query }) =>
+        Effect.flatMap(scoped, (s) =>
+          s.ledger(params.repo, query.before ?? null, query.limit ?? 50),
+        ).pipe(
+          Effect.map((commits) => ({ commits })),
+          Effect.mapError(failed),
+        ),
+      )
+      .handle("blame", ({ params, payload }) =>
+        Effect.flatMap(scoped, (s) =>
+          s.blame(params.repo, payload.sha, hunkKey(payload.path, payload.header), payload.model),
+        ).pipe(
+          Effect.map((found) => ({ blame: Option.getOrNull(found) })),
+          Effect.mapError(failed),
+        ),
+      )
+      .handle("putBlame", ({ payload }) =>
+        Effect.flatMap(scoped, (s) => s.putBlame(payload)).pipe(
+          Effect.as({ ok: true }),
+          Effect.mapError(failed),
+        ),
+      );
+  }),
+);
+
 /** The API's routes, needing only the store: tests serve them on a test server. */
 export const BackendRoutes = HttpApiBuilder.layer(BackendApi).pipe(
-  Layer.provide([SystemHandlers, HistoryHandlers]),
+  Layer.provide([SystemHandlers, HistoryHandlers, BrowseHandlers]),
   Layer.provide([AuthorizationLive, ClientVersionLive, BodyLimitLive]),
 );
 

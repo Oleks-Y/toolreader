@@ -1,0 +1,27 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    // Start's docs: verbatimModuleSyntax can pull server modules into the client bundle.
+    "verbatimModuleSyntax": false,
+    "types": ["node", "vite-plus/client"],
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        // Deep-merged with tsconfig.base.json: the app's server functions are plain async code.
+        "diagnosticSeverity": {
+          "globalDate": "off",
+          "globalConsole": "off",
+          "globalRandom": "off",
+          "globalTimers": "off",
+          "globalFetch": "off",
+          "nodeBuiltinImport": "off"
+        }
+      }
+    ]
+  },
+  "include": [".", "../core", "../web"]
+}

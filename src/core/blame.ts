@@ -442,6 +442,26 @@ export const BlameResult = Schema.Struct({
 });
 export type BlameResult = typeof BlameResult.Type;
 
+/**
+ * What the history backend keeps for a blamed hunk: Jev's raw answers, without the threads (the
+ * backend holds those already). Keyed by repo, commit, `hunkKey` and model.
+ */
+export const StoredBlame = Schema.Struct({
+  repo: Schema.String,
+  sha: Schema.String,
+  path: Schema.String,
+  hunk: Schema.Struct({ header: Schema.String, text: Schema.String }),
+  threadIds: Schema.Array(Schema.String),
+  pieces: Schema.Array(BlamePiece),
+  main: Schema.Struct({ id: Schema.String, p: Schema.Number }),
+  model: Schema.String,
+  inputTokens: Schema.Number,
+});
+export type StoredBlame = typeof StoredBlame.Type;
+
+/** A hunk's key among its commit's: the path and its `@@` header. */
+export const hunkKey = (path: string, header: string) => `${path}\n${header}`;
+
 /** Each asked piece's role odds and the main pick; null when an answer is missing. */
 export function oddsOf(
   request: Pick<BlameRequest, "asked">,
