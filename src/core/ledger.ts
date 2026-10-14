@@ -353,6 +353,17 @@ export const LedgerRange = Schema.Struct({
 export type LedgerRange = typeof LedgerRange.Type;
 
 /** `git@github.com:o/r.git` / `https://host/o/r.git` → `https://host/o/r`, for linking commits. */
+/**
+ * The backend's name for a repo, from its web URL: `owner/name` on github.com, `host/owner/name`
+ * anywhere else, so two hosts' repos of one name never share history, nor a GitHub sign-in's
+ * access check (which reads only `owner/name`, on the host it was set up for).
+ */
+export function repoKey(web: string): string {
+  const url = new URL(web);
+  const path = url.pathname.slice(1);
+  return url.host === "github.com" ? path : `${url.host}/${path}`;
+}
+
 export function remoteWebUrl(remote: string | null): string | null {
   if (!remote) return null;
   const ssh = /^[\w.-]+@([\w.-]+):(.+?)(?:\.git)?$/.exec(remote);
