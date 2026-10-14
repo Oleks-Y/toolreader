@@ -18,6 +18,7 @@ import { Command, Flag } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { auditLines, auditSessions } from "../../core/audit.ts";
+import { CHECK_KINDS, type Check } from "../../core/checks.ts";
 import { redactText } from "../../core/proof.ts";
 import { CliApp } from "../app.ts";
 import { RepoSessions, SESSION_SOURCES } from "../RepoSessions.ts";
@@ -79,12 +80,32 @@ const shortShas = (range: string) => range.replace(/\b[0-9a-f]{40}\b/g, (sha) =>
 /** Titles are a session's first prompt line: logs (CI's included) get them redacted. */
 const title = (t: string) => redactText(t).text;
 
+/** A command as a report line shows it: chains run long. */
+const short = (t: string) => (t.length > 80 ? `${t.slice(0, 79)}…` : t);
+
+/** A link's checks: how many of each outcome, then its last test and last build, which matter most. */
+const checkLines = (checks: ReadonlyArray<Check>): string[] => {
+  if (checks.length === 0) return [];
+  const count = (o: Check["outcome"]) => checks.filter((k) => k.outcome === o).length;
+  const counts = (["passed", "failed", "interrupted", "unknown"] as const)
+    .flatMap((o) => (count(o) > 0 ? [`${count(o)} ${o}`] : []))
+    .join(", ");
+  const last = CHECK_KINDS.flatMap((kind) => checks.findLast((k) => k.kind === kind) ?? []);
+  return [
+    `    checks: ${counts}`,
+    ...last.map(
+      (k) =>
+        `    last ${k.kind}: ${k.outcome} (${k.masked ? "can't fail: || true" : k.basis}), ${short(title(k.title))}${k.linesAfter > 0 ? `; ${k.linesAfter} of the commit's lines were written after it` : ""}`,
+    ),
+  ];
+};
+
 /** What `sync` did, a line each. */
 export const reportLines = (report: SyncReport, dryRun: boolean): string[] => {
   const lines: string[] = [];
   for (const { record: c, titles } of report.commits) {
     lines.push(`${c.sha.slice(0, 8)} ${c.subject}`);
-    for (const l of c.links)
+    for (const l of c.links) {
       lines.push(
         l.via === "asserted"
           ? `  ✓ ${title(titles.get(l.threadId) ?? l.threadId)} (declared: ${l.turns.length} turn${l.turns.length === 1 ? "" : "s"}${l.note ? `, "${title(l.note)}"` : ""})`
@@ -92,6 +113,8 @@ export const reportLines = (report: SyncReport, dryRun: boolean): string[] => {
             ? `  ✓ ${title(titles.get(l.threadId) ?? l.threadId)} (named by its trailer)`
             : `  ✓ ${title(titles.get(l.threadId) ?? l.threadId)} (${l.turns.length} turn${l.turns.length === 1 ? "" : "s"}, ${l.lines} line${l.lines === 1 ? "" : "s"})`,
       );
+      lines.push(...checkLines(l.checks ?? []));
+    }
     lines.push(
       c.links.length === 0
         ? `  · no agent turn wrote its ${c.novel} new lines`

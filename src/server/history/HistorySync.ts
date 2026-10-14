@@ -21,6 +21,7 @@ import {
   type Declared,
   type ResolvedDeclaration,
 } from "../../core/declare.ts";
+import { checksFor } from "../../core/checks.ts";
 import { addedLines, lineKey, linkByContent, type CommitLines } from "../../core/history.ts";
 import { LIMITS } from "../../core/historyApi.ts";
 import {
@@ -331,7 +332,22 @@ export class HistorySync extends Context.Service<
         const { resolved, ignored } = yield* resolveDeclarations(repo, commits, declared, (name) =>
           loaded.named(name),
         );
-        const histories = matched.map((h) => applyDeclarations(h, resolved));
+        const byId = new Map(loaded.sessions.map((s) => [s.thread.id, s]));
+        // Each link with the tests and builds its session ran for that commit.
+        const histories = matched.map((h, i) => {
+          const { novel, committedAt } = commits[i]!;
+          const history = applyDeclarations(h, resolved);
+          return {
+            ...history,
+            links: history.links.map((l) => {
+              const s = byId.get(l.threadId);
+              const checks = s
+                ? checksFor({ entries: s.entries, turns: l.turns, novel, committedAt })
+                : [];
+              return checks.length > 0 ? { ...l, checks } : l;
+            }),
+          };
+        });
         const now = DateTime.formatIso(yield* DateTime.now);
         const records = histories.map((history, i) =>
           buildCommitRecord({
@@ -344,7 +360,6 @@ export class HistorySync extends Context.Service<
             home: config.home,
           }),
         );
-        const byId = new Map(loaded.sessions.map((s) => [s.thread.id, s]));
         const linked = [...new Set(records.flatMap((r) => r.links.map((l) => l.threadId)))];
         // Titles are first prompt lines: reports go to logs, so redacted, home as `~`.
         const { clean } = redactor(config.home);

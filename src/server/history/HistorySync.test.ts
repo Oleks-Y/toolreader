@@ -165,6 +165,18 @@ const scenario = Effect.gen(function* () {
           },
         },
       },
+      {
+        at: "2026-01-01T10:02:00.000Z",
+        item: {
+          type: "CommandExecution",
+          id: "t1",
+          command: ["/bin/zsh", "-lc", "vitest run"],
+          cwd: repo,
+          status: "completed",
+          aggregated_output: "2 passed",
+          exit_code: 0,
+        },
+      },
     ],
     { git: { commit_hash: init, branch: "main" }, cli_version: "0.130.0" },
   );
@@ -305,9 +317,14 @@ describe("history sync", () => {
 
             const store = yield* inWorkspace("acme");
             const shas = (yield* git(repo, ["rev-list", "main~2..main"])).split("\n");
+            const stored = yield* store.commits("acme/app", shas);
+            assert.deepStrictEqual(stored.map((c) => c.links.length).sort(), [1, 1]);
+            // Each link keeps the test its session ran after writing the commit's lines.
             assert.deepStrictEqual(
-              (yield* store.commits("acme/app", shas)).map((c) => c.links.length).sort(),
-              [1, 1],
+              stored.map((c) =>
+                c.links[0]?.checks?.map((k) => [k.kind, k.outcome, k.basis, k.linesAfter]),
+              ),
+              [[["test", "passed", "exit code", 0]], [["test", "passed", "exit code", 0]]],
             );
             const [thread] = yield* store.threads(["codex:coder"]);
             // Sent redacted: the home directory reads `~`, never the temp path.

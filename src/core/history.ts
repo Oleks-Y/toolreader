@@ -3,6 +3,7 @@
 // matter (another worktree, days before a split or rebase, a file the commit has since moved), so
 // a commit made long after the work, or split out of a bigger change, still finds its history.
 // Pure: the CLI reads commits from git and threads from the session stores.
+import type { Check } from "./checks.ts";
 import type { Entry } from "./domain.ts";
 import { splitTurns } from "./tree.ts";
 
@@ -37,6 +38,8 @@ export type ThreadLink = {
   readonly note?: string;
   /** The session that declared it, when that isn't this thread. */
   readonly declaredBy?: string;
+  /** Its tests and builds for this commit (checks.ts), added by `history sync`. */
+  readonly checks?: ReadonlyArray<Check>;
 };
 
 export type CommitHistory = {
