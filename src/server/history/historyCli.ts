@@ -134,7 +134,7 @@ export const reportLines = (report: SyncReport, dryRun: boolean): string[] => {
       lines.push(...checkLines(l.checks ?? []));
       if (l.reads)
         lines.push(
-          `    read ${l.reads.paths.length + l.reads.more} files for it (as its read actions show)`,
+          `    read ${l.reads.paths.length + l.reads.more} file${l.reads.paths.length + l.reads.more === 1 ? "" : "s"} for it (as its read actions show)`,
         );
     }
     lines.push(
@@ -607,7 +607,7 @@ const freeze = Command.make(
       h.freezeReview(repo, range, { verdict: flags.verdict, note: flags.note }),
     ).pipe(Effect.provide(CliApp({ appServer: false, codexHome: null })));
     yield* Console.log(
-      `review ${m.id}: ${m.decision.verdict} by ${m.by}, ${m.commits.length} of ${m.shas.length} commits with agent history, ${m.evidence.length} sessions cited at their versions, ${m.findings.length} findings as they stood`,
+      `review ${m.id}: ${m.decision.verdict} by ${m.by}, ${m.commits.filter((c) => c.links.length > 0).length} of ${m.shas.length} commits with agent history, ${m.evidence.length} sessions cited at their versions, ${m.findings.length} findings as they stood`,
     );
   }),
 ).pipe(
