@@ -159,8 +159,12 @@ export type ProofOptions = { readonly outputs: boolean; readonly home?: string |
 /** Redacts free text (secrets, and the home directory as `~`), counting what it replaced. */
 export function redactor(home?: string) {
   let count = 0;
+  // Claude Code names a project folder after its directory, every non-alphanumeric as `-`
+  // (`-Users-alex-proj-x`): the home directory spelled that way names the user too.
+  const encoded = home ? home.replace(/[^A-Za-z0-9]/g, "-") : "";
   const clean = (s: string) => {
-    const r = redactText(home ? s.split(home).join("~") : s);
+    const homeless = home ? s.split(home).join("~") : s;
+    const r = redactText(encoded.length >= 6 ? homeless.split(encoded).join("~") : homeless);
     count += r.count;
     return r.text;
   };
