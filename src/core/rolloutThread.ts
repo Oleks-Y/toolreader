@@ -8,6 +8,7 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 import type { CodexThreadRead } from "./codex.ts";
+import { snapshotOf, type SessionSnapshot } from "./domain.ts";
 import { scanRollout, shellJoin, type RolloutScan } from "./rollout.ts";
 
 const opt = <S extends Schema.Top>(schema: S) => Schema.optional(Schema.NullOr(schema));
@@ -25,11 +26,23 @@ const SessionMeta = Schema.Struct({
   cwd: opt(Schema.String),
   originator: opt(Schema.String),
   source: opt(Schema.Unknown),
-  git: opt(Schema.Struct({ branch: opt(Schema.String) })),
+  /** A subagent's: the session that spawned it. */
+  parent_thread_id: opt(Schema.String),
+  git: opt(Schema.Struct({ branch: opt(Schema.String), commit_hash: opt(Schema.String) })),
+  cli_version: opt(Schema.String),
+  model_provider: opt(Schema.String),
   /** Delegated threads start with a copy of their parent's history; thread/read hides it. */
   subagent_history_start_ordinal: opt(Schema.Number),
 });
 const decodeSessionMeta = Schema.decodeUnknownOption(SessionMeta);
+/** A turn's settings; the first one's go in the snapshot. */
+const TurnContext = Schema.Struct({
+  model: opt(Schema.String),
+  effort: opt(Schema.String),
+  approval_policy: opt(Schema.String),
+  sandbox_policy: opt(Schema.Struct({ type: opt(Schema.String) })),
+});
+const decodeTurnContext = Schema.decodeUnknownOption(TurnContext);
 const Event = Schema.Struct({
   type: Schema.String,
   turn_id: opt(Schema.String),
@@ -196,6 +209,7 @@ export function rolloutMeta(firstLine: string) {
       originator: m.originator ?? null,
       createdAt: seconds(m.timestamp ?? line?.timestamp),
       subagent: isSubagent(m.source),
+      parent: m.parent_thread_id ?? null,
     })),
   );
 }
@@ -205,6 +219,7 @@ export type RolloutSession = {
   readonly scan: RolloutScan;
   /** Spawned by another session (subagents, guardian reviews): reached through its parent. */
   readonly subagent: boolean;
+  readonly snapshot: SessionSnapshot;
 };
 
 /**
@@ -214,6 +229,7 @@ export type RolloutSession = {
  */
 export function readRollout(lines: ReadonlyArray<string>, path: string): RolloutSession | null {
   let meta: typeof SessionMeta.Type | undefined;
+  let context: typeof TurnContext.Type | undefined;
   let lastAt: string | undefined;
   let turnId: string | undefined;
   let preview: string | undefined;
@@ -234,6 +250,10 @@ export function readRollout(lines: ReadonlyArray<string>, path: string): Rollout
     lastAt = line.timestamp;
     if (line.type === "session_meta") {
       meta ??= Option.getOrUndefined(decodeSessionMeta(line.payload));
+      continue;
+    }
+    if (line.type === "turn_context") {
+      context ??= Option.getOrUndefined(decodeTurnContext(line.payload));
       continue;
     }
     if (line.type !== "event_msg") continue;
@@ -291,5 +311,16 @@ export function readRollout(lines: ReadonlyArray<string>, path: string): Rollout
     },
     scan: scanRollout(lines),
     subagent: isSubagent(meta.source),
+    snapshot: snapshotOf({
+      startCommit: meta.git?.commit_hash,
+      branch: meta.git?.branch,
+      clientVersion: meta.cli_version,
+      modelProvider: meta.model_provider,
+      model: context?.model,
+      effort: context?.effort,
+      approvalPolicy: context?.approval_policy,
+      sandbox: context?.sandbox_policy?.type,
+      permissionMode: undefined,
+    }),
   };
 }

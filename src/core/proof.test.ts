@@ -2,7 +2,14 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
 import type { Action, Entry, ThreadView } from "./domain.ts";
-import { ProofArtifact, proofFileName, redactEntries, redactText, selectEntries } from "./proof.ts";
+import {
+  ProofArtifact,
+  proofFileName,
+  redactEntries,
+  redactor,
+  redactText,
+  selectEntries,
+} from "./proof.ts";
 
 const decodeArtifact = Schema.decodeUnknownSync(Schema.fromJsonString(ProofArtifact));
 const encodeArtifact = Schema.encodeSync(Schema.fromJsonString(ProofArtifact));
@@ -197,5 +204,13 @@ describe("proof", () => {
     assert.deepStrictEqual(decodeArtifact(encodeArtifact(artifact)), artifact);
     assert.throws(() => decodeArtifact(JSON.stringify({ ...artifact, formatVersion: 2 })));
     assert.strictEqual(proofFileName(view, artifact.scope), "fix-the-sum-bug-01a0f6f7-t1.json");
+  });
+
+  it("hides the home directory as Claude Code spells it in a project folder's name", () => {
+    const { clean } = redactor("/Users/alex");
+    assert.strictEqual(
+      clean("read ~/.claude/projects/-Users-alex-proj-toolreader/s1.jsonl and /Users/alex/x"),
+      "read ~/.claude/projects/~-proj-toolreader/s1.jsonl and ~/x",
+    );
   });
 });

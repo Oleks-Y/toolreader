@@ -13,6 +13,7 @@ import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServer from "effect/unstable/http/HttpServer";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
+import { ThreadNotFound } from "../../core/api.ts";
 import { SITE_DATA_MARKER } from "../../core/ledgerSite.ts";
 import { BackendRoutes } from "../backend/Backend.ts";
 import { HistoryStore } from "../backend/HistoryStore.ts";
@@ -26,6 +27,7 @@ import { RepoSessions } from "../RepoSessions.ts";
 import { ServerConfig } from "../ServerConfig.ts";
 import { ThreadStore } from "../ThreadStore.ts";
 import { HistorySync } from "./HistorySync.ts";
+import { reportLines } from "./historyCli.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -85,6 +87,7 @@ const writeRollout = (
   id: string,
   cwd: string,
   items: ReadonlyArray<{ at: string; item: object }>,
+  meta: object = {},
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -97,7 +100,13 @@ const writeRollout = (
     yield* fs.writeFileString(
       path.join(dir, `rollout-2026-01-01T00-00-00-${id}.jsonl`),
       [
-        line(first, "session_meta", { id, timestamp: first, cwd, originator: "codex_exec" }),
+        line(first, "session_meta", {
+          id,
+          timestamp: first,
+          cwd,
+          originator: "codex_exec",
+          ...meta,
+        }),
         line(first, "event_msg", { type: "task_started", turn_id: `${id}-t1` }),
         ...items.map(({ at, item }) =>
           line(at, "event_msg", { type: "item_completed", turn_id: `${id}-t1`, item }),
@@ -122,6 +131,7 @@ const scenario = Effect.gen(function* () {
   yield* fs.writeFileString(path.join(repo, "README.md"), "hi\n");
   yield* git(repo, ["add", "README.md"]);
   yield* git(repo, ["commit", "-q", "-m", "init"], "2026-01-01T09:00:00Z");
+  const init = yield* git(repo, ["rev-parse", "HEAD"]);
   for (const [file, lines, at] of [
     ["store.ts", STORE, "2026-01-01T10:30:00Z"],
     ["client.ts", CLIENT, "2026-01-01T10:31:00Z"],
@@ -130,36 +140,60 @@ const scenario = Effect.gen(function* () {
     yield* git(repo, ["add", file]);
     yield* git(repo, ["commit", "-q", "-m", `feat: ${file}`], at);
   }
-  yield* writeRollout(codexHome, "coder", repo, [
-    {
-      at: "2026-01-01T10:00:00.000Z",
-      item: {
-        type: "UserMessage",
-        id: "u1",
-        content: [{ type: "text", text: "Add the store and client" }],
-      },
-    },
-    {
-      at: "2026-01-01T10:01:00.000Z",
-      item: {
-        type: "FileChange",
-        id: "f1",
-        status: "completed",
-        changes: {
-          [path.join(repo, "store.ts")]: { type: "add", content: `${STORE.join("\n")}\n` },
-          [path.join(repo, "client.ts")]: { type: "add", content: `${CLIENT.join("\n")}\n` },
+  yield* writeRollout(
+    codexHome,
+    "coder",
+    repo,
+    [
+      {
+        at: "2026-01-01T10:00:00.000Z",
+        item: {
+          type: "UserMessage",
+          id: "u1",
+          content: [{ type: "text", text: "Add the store and client" }],
         },
       },
-    },
-  ]);
+      {
+        at: "2026-01-01T10:01:00.000Z",
+        item: {
+          type: "FileChange",
+          id: "f1",
+          status: "completed",
+          changes: {
+            [path.join(repo, "store.ts")]: { type: "add", content: `${STORE.join("\n")}\n` },
+            [path.join(repo, "client.ts")]: { type: "add", content: `${CLIENT.join("\n")}\n` },
+          },
+        },
+      },
+    ],
+    { git: { commit_hash: init, branch: "main" }, cli_version: "0.130.0" },
+  );
   return { repo, home, codexHome };
 });
 
+/** The real rollout reader, listing one more session in the repo that can't be read. */
+const withUnreadable = Layer.effect(
+  CodexRollouts,
+  Effect.map(CodexRollouts, (real) =>
+    CodexRollouts.of({
+      ...real,
+      list: Effect.map(real.list, (all) => [
+        ...all,
+        { ...all[0]!, id: "codex:broken", title: "Fix the flaky test" },
+      ]),
+      get: (id, labels) =>
+        id === "broken"
+          ? Effect.fail(new ThreadNotFound({ threadId: "codex:broken" }))
+          : real.get(id, labels),
+    }),
+  ),
+).pipe(Layer.provide(CodexRollouts.layer));
+
 /** The sync over the real rollout reader (no T3), with `home` as the user's home. */
-const services = (home: string, codexHome: string) =>
+const services = (home: string, codexHome: string, rollouts = CodexRollouts.layer) =>
   HistorySync.layer.pipe(
     Layer.provide(RepoSessions.layer),
-    Layer.provide([CodexRollouts.layer, ClaudeTranscripts.layer]),
+    Layer.provide([rollouts, ClaudeTranscripts.layer]),
     Layer.provide([
       Layer.succeed(
         ServerConfig,
@@ -278,6 +312,16 @@ describe("history sync", () => {
             const [thread] = yield* store.threads(["codex:coder"]);
             // Sent redacted: the home directory reads `~`, never the temp path.
             assert.notInclude(encodeJson(thread), home);
+            // With where it was read from (home as ~) and the digest of what was read.
+            assert.strictEqual(thread?.origin?.reader, "codex-rollout");
+            assert.match(thread?.origin?.file ?? "", /^sessions\/2026\/01\/01\/rollout-.*\.jsonl$/);
+            assert.match(thread?.origin?.sha256 ?? "", /^[0-9a-f]{64}$/);
+            // With how the session started, as its rollout recorded it.
+            assert.deepStrictEqual(thread?.snapshot, {
+              startCommit: yield* git(repo, ["rev-parse", "main~2"]),
+              branch: "main",
+              clientVersion: "0.130.0",
+            });
 
             // Read back as the range's page.
             yield* fs.makeDirectory(`${home}/dist/site`, { recursive: true });
@@ -353,6 +397,67 @@ describe("history sync", () => {
           );
           assert.deepStrictEqual(report.ignored, []);
         }).pipe(Effect.scoped),
+    );
+
+    it.effect("links a commit a Codex subagent wrote, under its parent", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { repo, home, codexHome } = yield* scenario;
+        const lines = ["export const retries = 3;"];
+        yield* fs.writeFileString(path.join(repo, "retry.ts"), `${lines.join("\n")}\n`);
+        yield* git(repo, ["add", "retry.ts"]);
+        yield* git(repo, ["commit", "-q", "-m", "feat: retry"], "2026-01-01T11:00:00Z");
+        yield* writeRollout(
+          codexHome,
+          "worker",
+          repo,
+          [
+            {
+              at: "2026-01-01T10:50:00.000Z",
+              item: {
+                type: "FileChange",
+                id: "w1",
+                status: "completed",
+                changes: {
+                  [path.join(repo, "retry.ts")]: { type: "add", content: `${lines.join("\n")}\n` },
+                },
+              },
+            },
+          ],
+          // As Codex writes a spawned agent's first line: its source and the session that spawned it.
+          { source: { subagent: { other: "worker" } }, parent_thread_id: "coder" },
+        );
+
+        const report = yield* Effect.flatMap(HistorySync, (h) =>
+          h.sync(repo, "main~1..main", { source: "codex-rollouts", dryRun: true }),
+        ).pipe(Effect.provide(services(home, codexHome)));
+        assert.deepStrictEqual(
+          report.commits.map(({ record }) => record.links.map((l) => l.threadId)),
+          [["codex:worker"]],
+        );
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect("reports a session it couldn't read instead of dropping it", () =>
+      Effect.gen(function* () {
+        const { repo, home, codexHome } = yield* scenario;
+        const report = yield* Effect.flatMap(HistorySync, (h) =>
+          h.sync(repo, "main~2..main", { source: "codex-rollouts", dryRun: true }),
+        ).pipe(Effect.provide(services(home, codexHome, withUnreadable)));
+        assert.deepStrictEqual(report.unread, [
+          { id: "codex:broken", title: "Fix the flaky test" },
+        ]);
+        // The sessions that could be read are still linked.
+        assert.deepStrictEqual(
+          report.commits.map(({ record }) => record.links.map((l) => l.threadId)),
+          [["codex:coder"], ["codex:coder"]],
+        );
+        assert.include(
+          reportLines(report, true),
+          "! couldn't read codex:broken (Fix the flaky test)",
+        );
+      }).pipe(Effect.scoped),
     );
   });
 });

@@ -5,7 +5,7 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
-import { Entry, Labels } from "./domain.ts";
+import { Entry, Labels, SessionOrigin, SessionSnapshot } from "./domain.ts";
 import type { CommitHistory } from "./history.ts";
 import { clipOutputs, LedgerThread } from "./ledger.ts";
 import { redactEntries, redactLabels, redactor, redactText } from "./proof.ts";
@@ -22,6 +22,13 @@ export const ThreadRecordV1 = Schema.Struct({
   entries: Schema.Array(Entry),
   labels: Labels,
   redactions: Schema.Number,
+  /** How the session started, as its files recorded it (redacted); absent from older clients. */
+  snapshot: Schema.optional(SessionSnapshot),
+  /**
+   * Where it was read from (the file, home as `~`) and the SHA-256 of the bytes read: the source
+   * version, apart from this record's own hash. Absent from older clients.
+   */
+  origin: Schema.optional(SessionOrigin),
 });
 export type ThreadRecord = typeof ThreadRecordV1.Type;
 
@@ -174,6 +181,8 @@ export function buildThreadRecord(input: {
   readonly toolreaderVersion: string;
   readonly maxOutput: number;
   readonly home?: string | undefined;
+  readonly snapshot?: SessionSnapshot | undefined;
+  readonly origin?: SessionOrigin | undefined;
 }): ThreadRecord {
   const { clean, count } = redactor(input.home);
   const redacted = redactEntries(input.entries, { outputs: true, home: input.home });
@@ -195,6 +204,21 @@ export function buildThreadRecord(input: {
     toolreaderVersion: input.toolreaderVersion,
     entries,
     labels: redactLabels(input.labels, clean),
+    ...(input.snapshot
+      ? {
+          snapshot: Object.fromEntries(
+            Object.entries(input.snapshot).map(([k, v]) => [k, clean(v ?? "")]),
+          ) as SessionSnapshot,
+        }
+      : {}),
+    ...(input.origin
+      ? {
+          origin: {
+            ...input.origin,
+            ...(input.origin.file ? { file: clean(input.origin.file) } : {}),
+          },
+        }
+      : {}),
     redactions: redacted.redactions + count(),
   };
 }

@@ -117,6 +117,44 @@ export type Labels = typeof Labels.Type;
 export const ThreadHead = Schema.Struct({ head: Schema.String, status: ThreadStatus });
 export type ThreadHead = typeof ThreadHead.Type;
 
+/**
+ * How a session started, as its own files recorded it: what a rerun or a reviewer needs to know.
+ * A field is absent when the source didn't record it; nothing is filled in from the current state.
+ */
+export const SessionSnapshot = Schema.Struct({
+  /** The commit the session started on (Codex records it; Claude Code doesn't). */
+  startCommit: Schema.optional(Schema.String),
+  branch: Schema.optional(Schema.String),
+  clientVersion: Schema.optional(Schema.String),
+  modelProvider: Schema.optional(Schema.String),
+  /** The first turn's: a session can switch later. */
+  model: Schema.optional(Schema.String),
+  effort: Schema.optional(Schema.String),
+  approvalPolicy: Schema.optional(Schema.String),
+  sandbox: Schema.optional(Schema.String),
+  permissionMode: Schema.optional(Schema.String),
+});
+export type SessionSnapshot = typeof SessionSnapshot.Type;
+
+/** `fields` without the ones that are missing or empty, as a snapshot. */
+export const snapshotOf = (
+  fields: Record<keyof SessionSnapshot, string | null | undefined>,
+): SessionSnapshot =>
+  Object.fromEntries(Object.entries(fields).filter(([, v]) => !!v?.trim())) as SessionSnapshot;
+
+/**
+ * Where a session's history was read from: the native file (a T3 thread has none: its rows
+ * change as it runs) and the SHA-256 of the bytes read, so a citation can say which version of
+ * the source it rests on. Kept apart from the redacted record's own hash, which is a different
+ * text.
+ */
+export const SessionOrigin = Schema.Struct({
+  reader: Schema.Literals(["t3", "codex-rollout", "codex-app-server", "claude-transcript"]),
+  file: Schema.optional(Schema.String),
+  sha256: Schema.optional(Schema.String),
+});
+export type SessionOrigin = typeof SessionOrigin.Type;
+
 export const ThreadView = Schema.Struct({
   thread: Schema.Struct({
     ...ThreadSummary.fields,
@@ -124,6 +162,8 @@ export const ThreadView = Schema.Struct({
   }),
   entries: Schema.Array(Entry),
   labels: Labels,
+  snapshot: Schema.optional(SessionSnapshot),
+  origin: Schema.optional(SessionOrigin),
 });
 export type ThreadView = typeof ThreadView.Type;
 

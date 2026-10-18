@@ -151,4 +151,40 @@ describe("rolloutThread", () => {
     assert.isNull(rolloutMeta(started("t1")));
     assert.isNull(readRollout([started("t1")], "/r.jsonl"));
   });
+
+  it("keeps how the session started: its commit, client and the first turn's settings", () => {
+    ordinal = 0;
+    const context = (model: string) =>
+      line("turn_context", {
+        model,
+        effort: "high",
+        approval_policy: "never",
+        sandbox_policy: { type: "workspace-write", network_access: false },
+      });
+    const session = readRollout(
+      [
+        meta({
+          git: { commit_hash: "a".repeat(40), branch: "main", repository_url: "x" },
+          cli_version: "0.130.0",
+          model_provider: "openai",
+        }),
+        context("gpt-6"),
+        started("t1"),
+        context("gpt-6-mini"),
+      ],
+      "/r.jsonl",
+    )!;
+    assert.deepStrictEqual(session.snapshot, {
+      startCommit: "a".repeat(40),
+      branch: "main",
+      clientVersion: "0.130.0",
+      modelProvider: "openai",
+      model: "gpt-6",
+      effort: "high",
+      approvalPolicy: "never",
+      sandbox: "workspace-write",
+    });
+    // Nothing recorded, nothing claimed.
+    assert.deepStrictEqual(readRollout([meta()], "/r.jsonl")!.snapshot, {});
+  });
 });

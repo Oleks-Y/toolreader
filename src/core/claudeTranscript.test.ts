@@ -1,6 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
 
-import { claudeTranscriptMeta, claudeTranscriptToRows } from "./claudeTranscript.ts";
+import {
+  claudeSnapshot,
+  claudeTranscriptMeta,
+  claudeTranscriptToRows,
+} from "./claudeTranscript.ts";
 import type { Action, Entry } from "./domain.ts";
 import { normalize } from "./normalize.ts";
 
@@ -76,6 +80,24 @@ lines.push(lines[3]!, lines[7]!);
 const actions = (entries: Entry[]) => entries.filter((e): e is Action => e.type === "action");
 
 describe("claudeTranscript", () => {
+  it("keeps how the session started, and claims no commit", () => {
+    const line = (o: object) => JSON.stringify({ ...base, ...o });
+    assert.deepStrictEqual(
+      claudeSnapshot([
+        line({ type: "user", version: "2.1.0", gitBranch: "fix/x", permissionMode: "plan" }),
+        line({ type: "assistant", message: { model: "<synthetic>", content: [] } }),
+        line({ type: "assistant", message: { model: "claude-opus-5-5", content: [] } }),
+        line({ type: "user", version: "2.2.0", permissionMode: "acceptEdits" }),
+      ]),
+      {
+        branch: "fix/x",
+        clientVersion: "2.1.0",
+        model: "claude-opus-5-5",
+        permissionMode: "plan",
+      },
+    );
+  });
+
   it("reads the session id, directory and the newest title", () => {
     assert.deepStrictEqual(claudeTranscriptMeta(lines), {
       id: "s1",

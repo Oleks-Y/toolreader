@@ -73,6 +73,8 @@ export type SyncReport = {
   readonly unchanged: number;
   /** Declarations about this range that couldn't be applied, and why. */
   readonly ignored: ReadonlyArray<string>;
+  /** Sessions in this repo that couldn't be read, so weren't linked (titles redacted). */
+  readonly unread: ReadonlyArray<{ readonly id: string; readonly title: string }>;
 };
 
 export class HistorySync extends Context.Service<
@@ -353,6 +355,7 @@ export class HistorySync extends Context.Service<
           sent,
           unchanged,
           ignored,
+          unread: loaded.unread.map((u) => ({ id: u.id, title: clean(u.title) })),
         });
         if (options.dryRun) return report(0, 0);
 
@@ -368,6 +371,8 @@ export class HistorySync extends Context.Service<
                   toolreaderVersion: packageJson.version,
                   maxOutput: MAX_OUTPUT,
                   home: config.home,
+                  snapshot: s.snapshot,
+                  origin: s.origin,
                 }),
               ]
             : [];
@@ -387,8 +392,11 @@ export class HistorySync extends Context.Service<
         let sent = 0;
         for (const thread of threads) {
           if (stored.get(thread.thread.id) === threadSha(thread)) continue;
-          yield* call(api.history.putThread({ params, payload: threadJson(thread) }));
-          sent++;
+          // `same`: the backend had it, or won't keep it (deleted on request): not sent as new.
+          const { result } = yield* call(
+            api.history.putThread({ params, payload: threadJson(thread) }),
+          );
+          if (result !== "same") sent++;
         }
         // Links last: a commit names only threads the backend has.
         for (const record of records)

@@ -9,13 +9,15 @@ import { ClaudeTranscripts } from "./ClaudeTranscripts.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 import { ThreadStore } from "./ThreadStore.ts";
 
-const session = (id: string, cwd: string) =>
+/** A transcript; a subagent's own file has every line on the sidechain. */
+const session = (id: string, cwd: string, isSidechain = false) =>
   [
     { type: "ai-title", aiTitle: `title ${id}`, sessionId: id },
     {
       type: "user",
       sessionId: id,
       cwd,
+      gitBranch: "main",
       uuid: "u1",
       timestamp: "2026-10-07T12:00:00.000Z",
       message: { content: "list files" },
@@ -39,7 +41,7 @@ const session = (id: string, cwd: string) =>
       message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "a.ts" }] },
     },
   ]
-    .map((l) => JSON.stringify(l))
+    .map((l) => JSON.stringify({ ...l, isSidechain }))
     .join("\n") + "\n";
 
 describe("ClaudeTranscripts", () => {
@@ -55,7 +57,7 @@ describe("ClaudeTranscripts", () => {
       yield* fs.writeFileString(path.join(dir, "owned.jsonl"), session("owned", "/repo"));
       yield* fs.writeFileString(
         path.join(dir, "free", "subagents", "agent-1.jsonl"),
-        session("free", "/repo"),
+        session("free", "/repo", true),
       );
 
       const layer = ClaudeTranscripts.layer.pipe(
@@ -109,8 +111,22 @@ describe("ClaudeTranscripts", () => {
         yield* fs.writeFileString(free, session("free", "/repo") + session("free", "/repo"));
         assert.notStrictEqual((yield* claude.head("free")).head, view.thread.head);
 
+        // Subagents are listed apart, with their parent, and read as their own work.
+        assert.deepStrictEqual(
+          (yield* claude.subagents).map((s) => [s.summary.id, s.parent, s.summary.worktree]),
+          [["claude:agent-1", "claude:free", "/repo"]],
+        );
+        const sub = yield* claude.get("agent-1", {});
+        assert.strictEqual(sub.thread.actionCount, 1);
+        // Named without the project folder, which spells the session's directory.
+        assert.strictEqual(sub.origin?.file, "free/subagents/agent-1.jsonl");
+        assert.strictEqual(view.origin?.file, "free.jsonl");
+
         const missing = yield* claude.get("owned", {}).pipe(Effect.flip);
         assert.strictEqual(missing._tag, "ThreadNotFound");
+        // T3 keeps no starting state, so a session it runs is still read for that.
+        assert.deepStrictEqual(yield* claude.snapshot("owned"), { branch: "main" });
+        assert.isNull(yield* claude.snapshot("nowhere"));
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.provide(NodeServices.layer)),
   );
