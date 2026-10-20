@@ -1,5 +1,5 @@
 import { useSuspenseQuery } from "@tanstack/react-query";
-import { ClientOnly, createFileRoute } from "@tanstack/react-router";
+import { ClientOnly, createFileRoute, Link } from "@tanstack/react-router";
 
 import { LedgerCommits } from "../../web/LedgerPage.tsx";
 import { commitHistoryOptions } from "../queries.ts";
@@ -18,8 +18,15 @@ function Commit() {
   if (!data) return <p className="dim">The backend has no agent history for {sha.slice(0, 8)}.</p>;
   // The history view measures the window (FileDiff): it renders in the browser only.
   return (
-    <ClientOnly fallback={<p className="dim">loading…</p>}>
-      <LedgerCommits data={data} />
-    </ClientOnly>
+    <>
+      <p>
+        <Link to="/$owner/$repo/search" params={{ owner, repo }} search={{ commit: sha }}>
+          Search this commit's sessions
+        </Link>
+      </p>
+      <ClientOnly fallback={<p className="dim">loading…</p>}>
+        <LedgerCommits data={data} />
+      </ClientOnly>
+    </>
   );
 }

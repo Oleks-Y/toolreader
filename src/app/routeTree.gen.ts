@@ -19,6 +19,7 @@ import { Route as AuthLogoutRouteImport } from './routes/auth.logout'
 import { Route as OwnerRepoIndexRouteImport } from './routes/$owner.$repo.index'
 import { Route as OwnerRepoBlameRouteImport } from './routes/$owner.$repo.blame'
 import { Route as OwnerRepoPullsRouteImport } from './routes/$owner.$repo.pulls'
+import { Route as OwnerRepoSearchRouteImport } from './routes/$owner.$repo.search'
 import { Route as OwnerRepoCommitShaRouteImport } from './routes/$owner.$repo.commit.$sha'
 import { Route as OwnerRepoPullNumberRouteImport } from './routes/$owner.$repo.pull.$number'
 
@@ -72,6 +73,11 @@ const OwnerRepoPullsRoute = OwnerRepoPullsRouteImport.update({
   path: '/pulls',
   getParentRoute: () => OwnerRepoRoute,
 } as any)
+const OwnerRepoSearchRoute = OwnerRepoSearchRouteImport.update({
+  id: '/search',
+  path: '/search',
+  getParentRoute: () => OwnerRepoRoute,
+} as any)
 const OwnerRepoCommitShaRoute = OwnerRepoCommitShaRouteImport.update({
   id: '/commit/$sha',
   path: '/commit/$sha',
@@ -93,6 +99,7 @@ export interface FileRoutesByFullPath {
   '/auth/logout': typeof AuthLogoutRoute
   '/$owner/$repo/blame': typeof OwnerRepoBlameRoute
   '/$owner/$repo/pulls': typeof OwnerRepoPullsRoute
+  '/$owner/$repo/search': typeof OwnerRepoSearchRoute
   '/$owner/$repo/': typeof OwnerRepoIndexRoute
   '/$owner/$repo/commit/$sha': typeof OwnerRepoCommitShaRoute
   '/$owner/$repo/pull/$number': typeof OwnerRepoPullNumberRoute
@@ -106,6 +113,7 @@ export interface FileRoutesByTo {
   '/auth/logout': typeof AuthLogoutRoute
   '/$owner/$repo/blame': typeof OwnerRepoBlameRoute
   '/$owner/$repo/pulls': typeof OwnerRepoPullsRoute
+  '/$owner/$repo/search': typeof OwnerRepoSearchRoute
   '/$owner/$repo': typeof OwnerRepoIndexRoute
   '/$owner/$repo/commit/$sha': typeof OwnerRepoCommitShaRoute
   '/$owner/$repo/pull/$number': typeof OwnerRepoPullNumberRoute
@@ -121,6 +129,7 @@ export interface FileRoutesById {
   '/auth/logout': typeof AuthLogoutRoute
   '/$owner/$repo/blame': typeof OwnerRepoBlameRoute
   '/$owner/$repo/pulls': typeof OwnerRepoPullsRoute
+  '/$owner/$repo/search': typeof OwnerRepoSearchRoute
   '/$owner/$repo/': typeof OwnerRepoIndexRoute
   '/$owner/$repo/commit/$sha': typeof OwnerRepoCommitShaRoute
   '/$owner/$repo/pull/$number': typeof OwnerRepoPullNumberRoute
@@ -137,6 +146,7 @@ export interface FileRouteTypes {
     | '/auth/logout'
     | '/$owner/$repo/blame'
     | '/$owner/$repo/pulls'
+    | '/$owner/$repo/search'
     | '/$owner/$repo/'
     | '/$owner/$repo/commit/$sha'
     | '/$owner/$repo/pull/$number'
@@ -150,6 +160,7 @@ export interface FileRouteTypes {
     | '/auth/logout'
     | '/$owner/$repo/blame'
     | '/$owner/$repo/pulls'
+    | '/$owner/$repo/search'
     | '/$owner/$repo'
     | '/$owner/$repo/commit/$sha'
     | '/$owner/$repo/pull/$number'
@@ -164,6 +175,7 @@ export interface FileRouteTypes {
     | '/auth/logout'
     | '/$owner/$repo/blame'
     | '/$owner/$repo/pulls'
+    | '/$owner/$repo/search'
     | '/$owner/$repo/'
     | '/$owner/$repo/commit/$sha'
     | '/$owner/$repo/pull/$number'
@@ -251,6 +263,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OwnerRepoPullsRouteImport
       parentRoute: typeof OwnerRepoRoute
     }
+    '/$owner/$repo/search': {
+      id: '/$owner/$repo/search'
+      path: '/search'
+      fullPath: '/$owner/$repo/search'
+      preLoaderRoute: typeof OwnerRepoSearchRouteImport
+      parentRoute: typeof OwnerRepoRoute
+    }
     '/$owner/$repo/commit/$sha': {
       id: '/$owner/$repo/commit/$sha'
       path: '/commit/$sha'
@@ -271,6 +290,7 @@ declare module '@tanstack/react-router' {
 interface OwnerRepoRouteChildren {
   OwnerRepoBlameRoute: typeof OwnerRepoBlameRoute
   OwnerRepoPullsRoute: typeof OwnerRepoPullsRoute
+  OwnerRepoSearchRoute: typeof OwnerRepoSearchRoute
   OwnerRepoIndexRoute: typeof OwnerRepoIndexRoute
   OwnerRepoCommitShaRoute: typeof OwnerRepoCommitShaRoute
   OwnerRepoPullNumberRoute: typeof OwnerRepoPullNumberRoute
@@ -279,6 +299,7 @@ interface OwnerRepoRouteChildren {
 const OwnerRepoRouteChildren: OwnerRepoRouteChildren = {
   OwnerRepoBlameRoute: OwnerRepoBlameRoute,
   OwnerRepoPullsRoute: OwnerRepoPullsRoute,
+  OwnerRepoSearchRoute: OwnerRepoSearchRoute,
   OwnerRepoIndexRoute: OwnerRepoIndexRoute,
   OwnerRepoCommitShaRoute: OwnerRepoCommitShaRoute,
   OwnerRepoPullNumberRoute: OwnerRepoPullNumberRoute,

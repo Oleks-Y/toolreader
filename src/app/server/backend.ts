@@ -1,5 +1,6 @@
 // The history backend (core/historyApi.ts), read with the workspace's token, which only the app
 // server holds.
+import type { ActionKind } from "../../core/domain.ts";
 import * as Effect from "effect/Effect";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
@@ -67,10 +68,13 @@ export async function commits(repo: string, shas: ReadonlyArray<string>): Promis
   return out;
 }
 
-export async function threads(ids: ReadonlyArray<string>): Promise<ThreadRecord[]> {
+/** Threads by id; with `repo`, only those linked to its commits. */
+export async function threads(ids: ReadonlyArray<string>, repo?: string): Promise<ThreadRecord[]> {
   const parts = await Promise.all(
     chunks([...new Set(ids)], LIMITS.threads).map((part) =>
-      run((api, ws) => api.history.threads({ params: { ws }, payload: { ids: part } })),
+      run((api, ws) =>
+        api.history.threads({ params: { ws }, payload: { ids: part, ...(repo ? { repo } : {}) } }),
+      ),
     ),
   );
   return parts.flatMap((p) => p.threads);
@@ -89,3 +93,34 @@ export const storedBlame = (
 
 export const putBlame = (blame: StoredBlame) =>
   run((api, ws) => api.browse.putBlame({ params: { ws }, payload: blame }));
+
+/** Entries of the repo's threads holding `text`, newest first, each cited at its version. */
+export type SearchQuery = {
+  readonly text?: string | undefined;
+  readonly commit?: string | undefined;
+  readonly kinds?: ReadonlyArray<ActionKind> | undefined;
+};
+
+export const search = (repo: string, q: SearchQuery, limit = 50) =>
+  run((api, ws) =>
+    api.history.search({
+      params: { ws },
+      payload: {
+        repo,
+        limit,
+        ...(q.text ? { text: q.text } : {}),
+        ...(q.commit ? { commit: q.commit } : {}),
+        ...(q.kinds?.length ? { kinds: q.kinds } : {}),
+      },
+    }),
+  );
+
+/** A citation read back, limited to threads linked to the repo; else why not. */
+export const evidence = (
+  repo: string,
+  cite: {
+    readonly threadId: string;
+    readonly entryId: string;
+    readonly version?: string | undefined;
+  },
+) => run((api, ws) => api.history.evidence({ params: { ws }, payload: { ...cite, repo } }));

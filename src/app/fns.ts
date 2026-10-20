@@ -4,6 +4,8 @@
 import { createServerFn } from "@tanstack/react-start";
 import * as Schema from "effect/Schema";
 
+import { ACTION_KINDS, ActionKind } from "../core/domain.ts";
+
 const input = <A, I>(schema: Schema.Codec<A, I>) =>
   Schema.toStandardSchemaV1(schema as Schema.Codec<A, I, never, never>);
 
@@ -15,6 +17,18 @@ const CommitInput = input(
   Schema.Struct({ repo: Repo, sha: Schema.String.check(Schema.isPattern(/^[0-9a-f]{7,64}$/)) }),
 );
 const UrlInput = input(Schema.Struct({ url: Schema.String.check(Schema.isMaxLength(2048)) }));
+const SearchInput = input(
+  Schema.Struct({
+    repo: Repo,
+    text: Schema.optional(Schema.String.check(Schema.isLengthBetween(2, 200))),
+    commit: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9a-f]{4,64}$/))),
+    kinds: Schema.optional(Schema.Array(ActionKind).check(Schema.isMaxLength(ACTION_KINDS.length))),
+  }),
+);
+const Id = Schema.String.check(Schema.isLengthBetween(1, 200));
+const CiteInput = input(
+  Schema.Struct({ repo: Repo, threadId: Id, entryId: Id, version: Schema.optional(Id) }),
+);
 
 const server = async () => ({
   session: await import("./server/session.ts"),
@@ -64,6 +78,22 @@ export const getCommitHistory = createServerFn({ method: "GET" })
   .handler(async ({ data }) => {
     const { session, history } = await server();
     return history.commitHistory(await session.requireUser(), data.repo, data.sha);
+  });
+
+export const searchSessions = createServerFn({ method: "GET" })
+  .validator(SearchInput)
+  .handler(async ({ data }) => {
+    const { session, history } = await server();
+    const { repo, ...q } = data;
+    return history.search(await session.requireUser(), repo, q);
+  });
+
+export const readCitation = createServerFn({ method: "GET" })
+  .validator(CiteInput)
+  .handler(async ({ data }) => {
+    const { session, history } = await server();
+    const { repo, ...cite } = data;
+    return history.evidence(await session.requireUser(), repo, cite);
   });
 
 /** Asks TypeSafe the first time a hunk is blamed: a POST, so nothing prefetches it. */
