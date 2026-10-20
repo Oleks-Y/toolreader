@@ -12,6 +12,7 @@ import * as HttpApiSecurity from "effect/unstable/httpapi/HttpApiSecurity";
 import { StoredBlame } from "./blame.ts";
 import { CommitRecordV1, REJECT_REASONS, REPO_MAX, ThreadRecordV1 } from "./historyRecord.ts";
 import { ACTION_KINDS, ActionKind, Entry } from "./domain.ts";
+import { Finding, FINDING_STATUSES } from "./insights.ts";
 
 export const API_VERSION = 1;
 /** Every request names the client's version (package.json's) in this header. */
@@ -70,6 +71,19 @@ export class UpgradeRequired extends Schema.TaggedErrorClass<UpgradeRequired>()(
   "UpgradeRequired",
   { message: Schema.String, minClient: Schema.String },
   { httpApiStatus: 426 },
+) {}
+
+export class NotFound extends Schema.TaggedErrorClass<NotFound>()(
+  "NotFound",
+  { message: Schema.String },
+  { httpApiStatus: 404 },
+) {}
+
+/** The request doesn't fit what's stored (a finding's lifecycle): 409, and says why. */
+export class Conflict extends Schema.TaggedErrorClass<Conflict>()(
+  "Conflict",
+  { message: Schema.String },
+  { httpApiStatus: 409 },
 ) {}
 
 /** The backend failed (its database): retry later. Never quotes record text. */
@@ -268,6 +282,67 @@ export class HistoryApi extends HttpApiGroup.make("history")
       }),
       success: Evidence,
       error: [Forbidden, BackendFailed],
+    }),
+    // Runs the Insights detectors (core/insights.ts) over the threads linked to the repo's commits
+    // and keeps what they found: new findings as `detected`, known ones with fresh evidence.
+    HttpApiEndpoint.post("detect", "/workspaces/:ws/repos/:repo/insights/detect", {
+      params: { ...ws, repo: Repo },
+      success: Schema.Struct({ found: Schema.Number, added: Schema.Number }),
+      error: [Forbidden, BackendFailed],
+    }),
+    // An agent's finding from its own investigation: every citation must read back from a thread
+    // linked to the repo, and its quote must be in that entry (409 naming those that fail), so a
+    // reader sees what each citation is about. It lands as `detected`, kept with who submitted
+    // it; the same subject again updates its evidence.
+    HttpApiEndpoint.post("submit", "/workspaces/:ws/repos/:repo/insights/submit", {
+      params: { ...ws, repo: Repo },
+      payload: Schema.Struct({
+        subject: Text.check(Schema.isMinLength(3), Schema.isMaxLength(200)),
+        pattern: Text.check(Schema.isMinLength(3), Schema.isMaxLength(2000)),
+        suggestion: Text.check(Schema.isMinLength(3), Schema.isMaxLength(2000)),
+        citations: Schema.Array(
+          Schema.Struct({
+            threadId: Text,
+            entryId: Text,
+            version: Schema.optional(Text),
+            quote: Text.check(Schema.isMinLength(3), Schema.isMaxLength(500)),
+          }),
+        ).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
+      }),
+      success: Schema.Struct({ finding: Finding, added: Schema.Boolean }),
+      error: [Conflict, Forbidden, BackendFailed],
+    }),
+    // A person's correction to a finding's members, kept with who and why.
+    HttpApiEndpoint.post("correct", "/workspaces/:ws/repos/:repo/insights/members", {
+      params: { ...ws, repo: Repo },
+      payload: Schema.Struct({
+        id: Text.check(Schema.isMaxLength(64)),
+        add: Schema.Array(Text).check(Schema.isMaxLength(100)),
+        remove: Schema.Array(Text).check(Schema.isMaxLength(100)),
+        why: Text.check(Schema.isMinLength(1), Schema.isMaxLength(2000)),
+      }),
+      success: Schema.Struct({ finding: Finding }),
+      error: [NotFound, Forbidden, BackendFailed],
+    }),
+    HttpApiEndpoint.post("findings", "/workspaces/:ws/repos/:repo/insights/query", {
+      params: { ...ws, repo: Repo },
+      payload: Schema.Struct({
+        statuses: Schema.optional(Schema.Array(Schema.Literals(FINDING_STATUSES))),
+      }),
+      success: Schema.Struct({ findings: Schema.Array(Finding) }),
+      error: [Forbidden, BackendFailed],
+    }),
+    // Moves a finding along its lifecycle, recording who, when and why; 409 for a move the
+    // lifecycle doesn't allow.
+    HttpApiEndpoint.post("transition", "/workspaces/:ws/repos/:repo/insights/transition", {
+      params: { ...ws, repo: Repo },
+      payload: Schema.Struct({
+        id: Text.check(Schema.isMaxLength(64)),
+        to: Schema.Literals(FINDING_STATUSES),
+        why: Text.check(Schema.isMinLength(1), Schema.isMaxLength(2000)),
+      }),
+      success: Schema.Struct({ finding: Finding }),
+      error: [NotFound, Conflict, Forbidden, BackendFailed],
     }),
     HttpApiEndpoint.post("commits", "/workspaces/:ws/repos/:repo/commits/query", {
       params: { ...ws, repo: Repo },

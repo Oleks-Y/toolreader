@@ -8,11 +8,16 @@
 //   toolreader history login                                     (githubLogin.ts)
 //   toolreader history search TEXT [--repo PATH] [--all] [--limit N]
 //   toolreader history show THREAD#ENTRY@VERSION [--repo PATH]
+//   toolreader history insights [--repo PATH] [--no-detect] [--status S]… [--limit N]
+//   toolreader history insight propose|accept|reject|modify|implemented|monitor|evaluate ID --why TEXT
+//   toolreader history insight sample --out FILE [--per-detector N]   (core/insightsEval.ts)
+//   toolreader history insight score FILE [--split heldout|dev|all]
 //   toolreader history turns|link|unlink …                       (declareCli.ts)
 //   toolreader history skill install|uninstall [--repo PATH] [--commit]   (historySkill.ts)
 //   toolreader history hook install|uninstall [--repo PATH]    (historyHooks.ts)
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
@@ -36,6 +41,13 @@ import { deviceLogin, saveGithubToken } from "./githubLogin.ts";
 import { commitSkill, dirtyPaths, INSTALLED_PATHS, installSkill } from "./historySkill.ts";
 import { appendLog, causeMessage, installHooks, pending } from "./historyHooks.ts";
 import type { Evidence, SearchHit } from "../../core/historyApi.ts";
+import {
+  FINDING_STATUSES,
+  type Finding,
+  type FindingStatus,
+  type Submission,
+} from "../../core/insights.ts";
+import { evaluate, LabelRow, sampleRows } from "../../core/insightsEval.ts";
 import { HistorySync, type SyncReport } from "./HistorySync.ts";
 
 const PullRequest = Schema.Struct({ baseRefOid: Schema.String, headRefOid: Schema.String });
@@ -343,6 +355,36 @@ const search = Command.make(
   ),
 );
 
+/** Statuses still open to a decision or follow-up: what `insights` lists by default. */
+const OPEN: ReadonlyArray<FindingStatus> = [
+  "detected",
+  "proposed",
+  "accepted",
+  "modified",
+  "implemented",
+  "monitoring",
+];
+
+/** A finding, as `history insights` prints it. */
+export const findingLines = (f: Finding): string[] => [
+  `${f.id} · ${f.status} · ${f.detector} · ${f.sessions} sessions`,
+  `  ${short(title(f.subject))}`,
+  `  ${title(f.pattern)}`,
+  `  next: ${title(f.suggestion)}`,
+  ...f.occurrences
+    .slice(0, 3)
+    .map(
+      (o) =>
+        `  cite ${o.threadId}#${o.entryId}${o.version ? `@${o.version.slice(0, 12)}` : ""}${o.quote ? ` :: ${short(title(o.quote))}` : ""}`,
+    ),
+  ...(f.occurrences.length > 3 ? [`  … and ${f.occurrences.length - 3} more`] : []),
+  ...(f.events.length > 0
+    ? [
+        `  last: ${f.events.at(-1)!.from} → ${f.events.at(-1)!.to} by ${f.events.at(-1)!.by}: ${title(f.events.at(-1)!.why)}`,
+      ]
+    : []),
+];
+
 /** What a citation reads now, as `history show` prints it. */
 export const evidenceLines = (cite: string, e: Evidence): string[] => {
   if (e.status !== "ok" || !e.entry)
@@ -395,6 +437,170 @@ const show = Command.make(
   ),
 );
 
+const insights = Command.make(
+  "insights",
+  {
+    repo: Flag.string("repo").pipe(
+      Flag.withDescription("Repository (any path inside it)"),
+      Flag.withDefault("."),
+    ),
+    noDetect: Flag.boolean("no-detect").pipe(
+      Flag.withDescription("List what's stored without running the detectors first"),
+    ),
+    status: Flag.choice("status", FINDING_STATUSES).pipe(
+      Flag.withDescription("Only findings in this status (repeatable); default: the open ones"),
+      Flag.atLeast(0),
+    ),
+    limit: Flag.integer("limit").pipe(
+      Flag.withDescription("Findings to show, most sessions first"),
+      Flag.withDefault(10),
+    ),
+  },
+  Effect.fn("toolreader history insights")(function* (flags) {
+    const repo = (yield* Path.Path).resolve(flags.repo);
+    const statuses = flags.status.length > 0 ? flags.status : OPEN;
+    const { findings, added } = yield* Effect.flatMap(HistorySync, (h) =>
+      h.insights(repo, { detect: !flags.noDetect, statuses }),
+    ).pipe(Effect.provide(CliApp({ appServer: false, codexHome: null })));
+    for (const f of findings.slice(0, flags.limit))
+      for (const line of findingLines(f)) yield* Console.log(line);
+    yield* Console.log(
+      `${findings.length} finding${findings.length === 1 ? "" : "s"} (${statuses.join(", ")})${findings.length > flags.limit ? `, ${flags.limit} shown` : ""}${added === null ? "" : `; ${added} new this run`}`,
+    );
+  }),
+).pipe(
+  Command.withDescription(
+    "Run Project Insights over this repo's history on the backend (recurring failures, repeated investigations) and list the findings",
+  ),
+);
+
+/** Each lifecycle step as a command, and the status it moves a finding to. */
+const DECISIONS = {
+  propose: "proposed",
+  accept: "accepted",
+  reject: "rejected",
+  modify: "modified",
+  implemented: "implemented",
+  monitor: "monitoring",
+  evaluate: "evaluated",
+} as const satisfies Record<string, FindingStatus>;
+
+// What an agent runs after its own investigation (history search, history show): the pattern it
+// found, what a person could do about it, and the entries that show it.
+const submit = Command.make(
+  "submit",
+  {
+    subject: Flag.string("subject").pipe(
+      Flag.withDescription(
+        "What it's about, in a few words (a file, an error, a step); the same subject again updates it",
+      ),
+    ),
+    pattern: Flag.string("pattern").pipe(
+      Flag.withDescription("What the sessions show, in a sentence or two"),
+    ),
+    suggestion: Flag.string("suggestion").pipe(
+      Flag.withDescription("A step a person could take: a suggestion, not a diagnosis"),
+    ),
+    cite: Flag.string("cite").pipe(
+      Flag.withDescription(
+        'An entry that shows it and the words in it that do: "THREAD#ENTRY@VERSION :: quoted text" (the citation as search prints it, then the text copied from that entry; repeatable, at least one)',
+      ),
+      Flag.atLeast(1),
+    ),
+    repo: Flag.string("repo").pipe(
+      Flag.withDescription("Repository (any path inside it)"),
+      Flag.withDefault("."),
+    ),
+  },
+  Effect.fn("toolreader history insight submit")(function* (flags) {
+    const repo = (yield* Path.Path).resolve(flags.repo);
+    const citations: Array<Submission["citations"][number]> = [];
+    for (const c of flags.cite) {
+      const at = c.indexOf(" :: ");
+      const quote = at === -1 ? "" : c.slice(at + 4).trim();
+      const m = /^(.+)#([^#@]+)(?:@([0-9a-f]+))?$/.exec((at === -1 ? c : c.slice(0, at)).trim());
+      if (!m || quote.length < 3)
+        return yield* new HistoryFailed({
+          message: `Not a quoted citation: ${c.slice(0, 80)} (want "THREAD#ENTRY@VERSION :: text from that entry", at least 3 characters of it)`,
+        });
+      citations.push({
+        threadId: m[1]!,
+        entryId: m[2]!,
+        ...(m[3] ? { version: m[3] } : {}),
+        quote,
+      });
+    }
+    const { finding, added } = yield* Effect.flatMap(HistorySync, (h) =>
+      h.submit(repo, {
+        subject: flags.subject,
+        pattern: flags.pattern,
+        suggestion: flags.suggestion,
+        citations,
+      }),
+    ).pipe(Effect.provide(CliApp({ appServer: false, codexHome: null })));
+    yield* Console.log(added ? "submitted a new finding" : "updated the finding's evidence");
+    for (const line of findingLines(finding)) yield* Console.log(line);
+    yield* Console.log(
+      `  next: a person proposes or rejects it (history insight propose|reject ${finding.id} --why …)`,
+    );
+  }),
+).pipe(
+  Command.withDescription(
+    "Submit a finding from your own investigation, each claim cited; it waits as detected for a person",
+  ),
+);
+
+const members = Command.make(
+  "members",
+  {
+    id: Argument.string("id").pipe(Argument.withDescription("The finding, as insights lists it")),
+    add: Flag.string("add").pipe(
+      Flag.withDescription("A session to add (repeatable)"),
+      Flag.atLeast(0),
+    ),
+    remove: Flag.string("remove").pipe(
+      Flag.withDescription("A session to remove (repeatable)"),
+      Flag.atLeast(0),
+    ),
+    why: Flag.string("why").pipe(Flag.withDescription("Why: kept with the finding")),
+    repo: Flag.string("repo").pipe(
+      Flag.withDescription("Repository (any path inside it)"),
+      Flag.withDefault("."),
+    ),
+  },
+  Effect.fn("toolreader history insight members")(function* (flags) {
+    const repo = (yield* Path.Path).resolve(flags.repo);
+    const finding = yield* Effect.flatMap(HistorySync, (h) =>
+      h.correct(repo, flags.id, { add: flags.add, remove: flags.remove, why: flags.why }),
+    ).pipe(Effect.provide(CliApp({ appServer: false, codexHome: null })));
+    for (const line of findingLines(finding)) yield* Console.log(line);
+  }),
+).pipe(
+  Command.withDescription(
+    "Correct a finding's members: sessions that belong in its group, or don't",
+  ),
+);
+
+const decision = (action: keyof typeof DECISIONS) =>
+  Command.make(
+    action,
+    {
+      id: Argument.string("id").pipe(Argument.withDescription("The finding, as insights lists it")),
+      why: Flag.string("why").pipe(Flag.withDescription("Why: kept with the finding")),
+      repo: Flag.string("repo").pipe(
+        Flag.withDescription("Repository (any path inside it)"),
+        Flag.withDefault("."),
+      ),
+    },
+    Effect.fn(`toolreader history insight ${action}`)(function* (flags) {
+      const repo = (yield* Path.Path).resolve(flags.repo);
+      const finding = yield* Effect.flatMap(HistorySync, (h) =>
+        h.decide(repo, flags.id, DECISIONS[action], flags.why),
+      ).pipe(Effect.provide(CliApp({ appServer: false, codexHome: null })));
+      for (const line of findingLines(finding)) yield* Console.log(line);
+    }),
+  ).pipe(Command.withDescription(`Mark a finding ${DECISIONS[action]}, with why`));
+
 const login = Command.make(
   "login",
   {},
@@ -421,6 +627,77 @@ const login = Command.make(
 ).pipe(
   Command.withDescription(
     "Sign in with GitHub: read this repo's history and decide on findings as yourself",
+  ),
+);
+
+const encodeRow = Schema.encodeSync(Schema.fromJsonString(LabelRow));
+const decodeRow = Schema.decodeUnknownEffect(Schema.fromJsonString(LabelRow));
+
+const sample = Command.make(
+  "sample",
+  {
+    out: Flag.string("out").pipe(Flag.withDescription("The JSONL file to write, for labelling")),
+    perDetector: Flag.integer("per-detector").pipe(
+      Flag.withDescription("Findings per detector, most sessions first"),
+      Flag.withDefault(30),
+    ),
+    repo: Flag.string("repo").pipe(
+      Flag.withDescription("Repository (any path inside it)"),
+      Flag.withDefault("."),
+    ),
+  },
+  Effect.fn("toolreader history insight sample")(function* (flags) {
+    const path = yield* Path.Path;
+    const fs = yield* FileSystem.FileSystem;
+    const repo = path.resolve(flags.repo);
+    const { findings } = yield* Effect.flatMap(HistorySync, (h) =>
+      h.insights(repo, { detect: false }),
+    ).pipe(Effect.provide(CliApp({ appServer: false, codexHome: null })));
+    const rows = sampleRows(findings, flags.perDetector);
+    yield* fs.writeFileString(
+      path.resolve(flags.out),
+      rows.map((r) => `${encodeRow(r)}\n`).join(""),
+    );
+    const held = rows.filter((r) => r.split === "heldout").length;
+    yield* Console.log(
+      `${rows.length} rows in ${flags.out} (${held} held out). Set each "label" to real, known or noise; add what the detectors missed as rows with "missed": true; a second labeller fills "label2".`,
+    );
+  }),
+).pipe(
+  Command.withDescription("Write findings to a file to label, each on a fixed side of the split"),
+);
+
+const pct = (x: number | null) => (x === null ? "–" : `${Math.round(x * 100)}%`);
+
+const score = Command.make(
+  "score",
+  {
+    file: Argument.string("file").pipe(Argument.withDescription("The labelled JSONL file")),
+    split: Flag.choice("split", ["heldout", "dev", "all"] as const).pipe(
+      Flag.withDescription("Which rows to score: tune on dev, report on heldout"),
+      Flag.withDefault("heldout"),
+    ),
+  },
+  Effect.fn("toolreader history insight score")(function* ({ file, split }) {
+    const fs = yield* FileSystem.FileSystem;
+    const text = yield* fs.readFileString(file);
+    const rows = yield* Effect.forEach(
+      text.split("\n").filter((l) => l.trim()),
+      (line, i) =>
+        decodeRow(line).pipe(
+          Effect.mapError(
+            () => new HistoryFailed({ message: `${file}:${i + 1} isn't a label row` }),
+          ),
+        ),
+    );
+    for (const s of evaluate(rows, split))
+      yield* Console.log(
+        `${s.detector}: ${s.labelled} labelled · precision ${pct(s.precision)} · new to the reader ${pct(s.novel)} · recall ${pct(s.recall)} · agreement ${pct(s.agreement)} of ${s.doubleLabelled}`,
+      );
+  }),
+).pipe(
+  Command.withDescription(
+    "Score labelled findings per detector: precision, novelty, recall, agreement",
   ),
 );
 
@@ -529,6 +806,17 @@ export const historyCommand = Command.make("history").pipe(
     login,
     search,
     show,
+    insights,
+    Command.make("insight").pipe(
+      Command.withDescription("Decide on a finding: each step is kept with who, when and why"),
+      Command.withSubcommands([
+        ...(Object.keys(DECISIONS) as Array<keyof typeof DECISIONS>).map(decision),
+        submit,
+        sample,
+        score,
+        members,
+      ]),
+    ),
     audit,
     ...declareCommands,
     Command.make("skill").pipe(

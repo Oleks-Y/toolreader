@@ -23,12 +23,14 @@ import {
   BackendFailed,
   BodyLimit,
   Caller,
+  Conflict,
   CLIENT_HEADER,
   ClientVersion,
   compareVersions,
   Forbidden,
   LengthRequired,
   LIMITS,
+  NotFound,
   Rejected,
   TooLarge,
   Unauthorized,
@@ -41,6 +43,7 @@ import {
   type Rejection,
 } from "../../core/historyRecord.ts";
 import { hunkKey } from "../../core/blame.ts";
+import { detect } from "../../core/insights.ts";
 import { GitHub } from "./GitHub.ts";
 import { HistoryStore, type HistoryRefused, type HistoryStoreFailed } from "./HistoryStore.ts";
 
@@ -293,6 +296,66 @@ const HistoryHandlers = HttpApiBuilder.group(
           const store = yield* scoped;
           return yield* store.evidence(payload).pipe(Effect.mapError(failed));
         }),
+      )
+      .handle("detect", ({ params }) =>
+        Effect.gen(function* () {
+          yield* readable(params.repo);
+          const store = yield* scoped;
+          const threads = yield* store.repoThreads(params.repo);
+          const found = detect(
+            threads.map((t) => ({ id: t.thread.id, parent: t.thread.parent, entries: t.entries })),
+          );
+          return yield* store.putDetections(params.repo, found);
+        }).pipe(Effect.catchTag("HistoryStoreFailed", () => Effect.fail(failed()))),
+      )
+      .handle("submit", ({ params, payload }) =>
+        readable(params.repo).pipe(
+          Effect.andThen(Effect.flatMap(scoped, (s) => s.submit(params.repo, payload))),
+          Effect.catchTags({
+            FindingRefused: (e) => Effect.fail(new Conflict({ message: e.message })),
+            HistoryStoreFailed: () => Effect.fail(failed()),
+          }),
+        ),
+      )
+      .handle("correct", ({ params, payload }) =>
+        readable(params.repo).pipe(
+          Effect.andThen(
+            Effect.flatMap(scoped, (s) =>
+              s.correct(params.repo, payload.id, {
+                add: payload.add,
+                remove: payload.remove,
+                why: payload.why,
+              }),
+            ),
+          ),
+          Effect.map((finding) => ({ finding })),
+          Effect.catchTags({
+            FindingMissing: (e) => Effect.fail(new NotFound({ message: e.message })),
+            HistoryStoreFailed: () => Effect.fail(failed()),
+          }),
+        ),
+      )
+      .handle("findings", ({ params, payload }) =>
+        readable(params.repo).pipe(
+          Effect.andThen(Effect.flatMap(scoped, (s) => s.findings(params.repo, payload.statuses))),
+          Effect.map((findings) => ({ findings })),
+          Effect.catchTag("HistoryStoreFailed", () => Effect.fail(failed())),
+        ),
+      )
+      .handle("transition", ({ params, payload }) =>
+        readable(params.repo).pipe(
+          Effect.andThen(
+            Effect.flatMap(scoped, (s) =>
+              s.transition(params.repo, payload.id, payload.to, payload.why),
+            ),
+          ),
+          Effect.map((finding) => ({ finding })),
+          Effect.catchTags({
+            FindingMissing: (e) => Effect.fail(new NotFound({ message: e.message })),
+            FindingConflict: (e) => Effect.fail(new Conflict({ message: e.message })),
+            HistoryStoreFailed: () => Effect.fail(failed()),
+          }),
+        ),
       )
       .handle("commits", ({ params, payload }) =>
         readable(params.repo).pipe(

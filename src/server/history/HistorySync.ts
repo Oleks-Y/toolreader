@@ -25,6 +25,7 @@ import { checksFor } from "../../core/checks.ts";
 import { readsFor } from "../../core/coverage.ts";
 import { addedLines, lineKey, type CommitHistory, type CommitLines } from "../../core/history.ts";
 import { LIMITS, type Evidence, type SearchHit } from "../../core/historyApi.ts";
+import type { Finding, FindingStatus, Submission } from "../../core/insights.ts";
 import {
   buildCommitRecord,
   buildThreadRecord,
@@ -108,8 +109,38 @@ export class HistorySync extends Context.Service<
       { readonly hits: ReadonlyArray<SearchHit>; readonly truncated: boolean },
       HistoryFailed
     >;
+    /** Runs the Insights detectors on the backend over this repo's history, then lists findings. */
+    readonly insights: (
+      repo: string,
+      options: { readonly detect: boolean; readonly statuses?: ReadonlyArray<FindingStatus> },
+    ) => Effect.Effect<
+      { readonly findings: ReadonlyArray<Finding>; readonly added: number | null },
+      HistoryFailed
+    >;
     /** A citation (`thread#entry@version`) read back from the backend, scoped to this repo. */
     readonly show: (repo: string, cite: string) => Effect.Effect<Evidence, HistoryFailed>;
+    /** An agent's own finding, every claim cited; the backend refuses citations it can't read. */
+    readonly submit: (
+      repo: string,
+      submission: Submission,
+    ) => Effect.Effect<{ readonly finding: Finding; readonly added: boolean }, HistoryFailed>;
+    /** Corrects a finding's members, with why. */
+    readonly correct: (
+      repo: string,
+      id: string,
+      change: {
+        readonly add: ReadonlyArray<string>;
+        readonly remove: ReadonlyArray<string>;
+        readonly why: string;
+      },
+    ) => Effect.Effect<Finding, HistoryFailed>;
+    /** Moves one of this repo's findings along its lifecycle. */
+    readonly decide: (
+      repo: string,
+      id: string,
+      to: FindingStatus,
+      why: string,
+    ) => Effect.Effect<Finding, HistoryFailed>;
     /** The range's page (the ledger viewer, inlined) from what the backend has; writes `out/index.html`. */
     readonly site: (
       repo: string,
@@ -657,6 +688,34 @@ export class HistorySync extends Context.Service<
         };
       });
 
+      const insights = Effect.fn("HistorySync.insights")(function* (
+        repoArg: string,
+        options: { readonly detect: boolean; readonly statuses?: ReadonlyArray<FindingStatus> },
+      ) {
+        const { api, params } = yield* remote(repoArg);
+        const added = options.detect ? (yield* call(api.history.detect({ params }))).added : null;
+        const { findings } = yield* call(
+          api.history.findings({
+            params,
+            payload: options.statuses ? { statuses: options.statuses } : {},
+          }),
+        );
+        return { findings, added };
+      }, Effect.provide(FetchHttpClient.layer));
+
+      const decide = Effect.fn("HistorySync.decide")(function* (
+        repoArg: string,
+        id: string,
+        to: FindingStatus,
+        why: string,
+      ) {
+        const { api, params } = yield* remote(repoArg);
+        const { finding } = yield* call(
+          api.history.transition({ params, payload: { id, to, why } }),
+        );
+        return finding;
+      }, Effect.provide(FetchHttpClient.layer));
+
       const show = Effect.fn("HistorySync.show")(function* (repoArg: string, cite: string) {
         const m = /^(.+)#([^#@]+)(?:@([0-9a-f]+))?$/.exec(cite);
         if (!m)
@@ -677,7 +736,40 @@ export class HistorySync extends Context.Service<
         );
       }, Effect.provide(FetchHttpClient.layer));
 
-      return HistorySync.of({ sync, site, search, show });
+      const submit = Effect.fn("HistorySync.submit")(function* (
+        repoArg: string,
+        submission: Submission,
+      ) {
+        const { api, params } = yield* remote(repoArg);
+        return yield* call(api.history.submit({ params, payload: submission }));
+      }, Effect.provide(FetchHttpClient.layer));
+
+      const correct = Effect.fn("HistorySync.correct")(function* (
+        repoArg: string,
+        id: string,
+        change: {
+          readonly add: ReadonlyArray<string>;
+          readonly remove: ReadonlyArray<string>;
+          readonly why: string;
+        },
+      ) {
+        const { api, params } = yield* remote(repoArg);
+        const { finding } = yield* call(
+          api.history.correct({ params, payload: { id, ...change } }),
+        );
+        return finding;
+      }, Effect.provide(FetchHttpClient.layer));
+
+      return HistorySync.of({
+        sync,
+        site,
+        search,
+        show,
+        insights,
+        decide,
+        submit,
+        correct,
+      });
     }),
   );
 }

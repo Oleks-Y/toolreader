@@ -5,6 +5,7 @@
 import * as NodeCrypto from "node:crypto";
 
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -25,6 +26,19 @@ import {
 } from "../../core/historyRecord.ts";
 import { Entry } from "../../core/domain.ts";
 import type { Evidence, SearchHit } from "../../core/historyApi.ts";
+import {
+  corrected,
+  Corrections,
+  Detection,
+  Finding,
+  FindingEvent,
+  FINDING_STATUSES,
+  findQuote,
+  submissionKey,
+  transitionError,
+  type FindingStatus,
+  type Submission,
+} from "../../core/insights.ts";
 import { hunkKey, StoredBlame } from "../../core/blame.ts";
 import { forJsonb, sha256, threadSha } from "../recordHash.ts";
 import { ENTRY_ROWS } from "./Migrations/005_Entries.ts";
@@ -39,6 +53,21 @@ export class HistoryStoreFailed extends Schema.TaggedErrorClass<HistoryStoreFail
  * 54, program limit): storing it again can't succeed, unlike a `HistoryStoreFailed`.
  */
 export class HistoryRefused extends Schema.TaggedErrorClass<HistoryRefused>()("HistoryRefused", {
+  message: Schema.String,
+}) {}
+
+/** No finding by that id in the repo. */
+export class FindingMissing extends Schema.TaggedErrorClass<FindingMissing>()("FindingMissing", {
+  message: Schema.String,
+}) {}
+
+/** An agent's finding citing entries that don't read back from this repo's threads. */
+export class FindingRefused extends Schema.TaggedErrorClass<FindingRefused>()("FindingRefused", {
+  message: Schema.String,
+}) {}
+
+/** A status change the lifecycle doesn't allow. */
+export class FindingConflict extends Schema.TaggedErrorClass<FindingConflict>()("FindingConflict", {
   message: Schema.String,
 }) {}
 
@@ -103,6 +132,34 @@ const decodeEvidenceRows = Schema.decodeUnknownEffect(Schema.Array(EvidenceRow))
 const decodeEntry = Schema.decodeUnknownOption(Entry);
 const CountRow = Schema.Struct({ n: Schema.Number });
 const decodeCountRows = Schema.decodeUnknownEffect(Schema.Array(CountRow));
+const FindingRow = Schema.Struct({
+  id: Schema.String,
+  corrections: Corrections,
+  detection: Detection,
+  status: Schema.Literals(FINDING_STATUSES),
+  events: Schema.Array(FindingEvent),
+  detectedAt: Schema.String,
+  updatedAt: Schema.String,
+});
+const decodeFindingRows = Schema.decodeUnknownEffect(Schema.Array(FindingRow));
+const StatusRow = Schema.Struct({ status: Schema.Literals(FINDING_STATUSES) });
+const decodeStatusRows = Schema.decodeUnknownEffect(Schema.Array(StatusRow));
+const encodeDetectionJson = Schema.encodeSync(Schema.fromJsonString(Detection));
+const encodeEventJson = Schema.encodeSync(Schema.fromJsonString(FindingEvent));
+const encodeIdsJson = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
+
+const findingOf = (r: typeof FindingRow.Type): Finding => ({
+  ...corrected(r.detection, r.corrections),
+  corrections: r.corrections,
+  id: r.id,
+  status: r.status,
+  events: r.events,
+  detectedAt: r.detectedAt,
+  updatedAt: r.updatedAt,
+});
+/** A finding's short id: stable, since its key is. */
+const findingId = (key: string) => sha256(key).slice(0, 10);
+
 /** `text` as an ILIKE pattern that matches it literally anywhere. */
 const containing = (text: string) => `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 
@@ -225,6 +282,44 @@ export type WorkspaceStore = {
     readonly version?: string | undefined;
     readonly repo?: string | undefined;
   }) => Effect.Effect<Evidence, HistoryStoreFailed>;
+  /** Every thread linked to the repo's commits: what the Insights detectors read. */
+  readonly repoThreads: (
+    repo: string,
+  ) => Effect.Effect<ReadonlyArray<ThreadRecord>, HistoryStoreFailed>;
+  /** Keeps detections: new ones as `detected`, known ones with their evidence replaced. */
+  readonly putDetections: (
+    repo: string,
+    detections: ReadonlyArray<Detection>,
+  ) => Effect.Effect<{ readonly found: number; readonly added: number }, HistoryStoreFailed>;
+  readonly findings: (
+    repo: string,
+    statuses?: ReadonlyArray<FindingStatus>,
+  ) => Effect.Effect<ReadonlyArray<Finding>, HistoryStoreFailed>;
+  /** An agent's cited finding, kept as this writer's: new as `detected`, else its evidence. */
+  readonly submit: (
+    repo: string,
+    submission: Submission,
+  ) => Effect.Effect<
+    { readonly finding: Finding; readonly added: boolean },
+    HistoryStoreFailed | FindingRefused
+  >;
+  /** Adds sessions to or removes them from a finding's group, kept with who and why. */
+  readonly correct: (
+    repo: string,
+    id: string,
+    change: {
+      readonly add: ReadonlyArray<string>;
+      readonly remove: ReadonlyArray<string>;
+      readonly why: string;
+    },
+  ) => Effect.Effect<Finding, HistoryStoreFailed | FindingMissing>;
+  /** Moves a finding along its lifecycle, as this writer's token, with why. */
+  readonly transition: (
+    repo: string,
+    id: string,
+    to: FindingStatus,
+    why: string,
+  ) => Effect.Effect<Finding, HistoryStoreFailed | FindingMissing | FindingConflict>;
   /** The commits of `shas` this workspace has links for, in no particular order. */
   readonly commits: (
     repo: string,
@@ -487,6 +582,179 @@ export class HistoryStore extends Context.Service<
         SELECT DISTINCT l->>'threadId' FROM commits c, jsonb_array_elements(c.payload->'links') l
         WHERE c.workspace_id = ${ws} AND c.repo = ${repo}`;
 
+      // ponytail: every linked thread, whole, in one query; page it when a repo's history
+      // outgrows the backend's memory.
+      const repoThreads = Effect.fn("HistoryStore.repoThreads")(function* (
+        ws: string,
+        repo: string,
+      ) {
+        const rows = yield* sql`
+          SELECT payload FROM threads
+          WHERE workspace_id = ${ws} AND id IN (${linkedTo(ws, repo)})`.pipe(
+          Effect.flatMap(decodePayloadRows),
+          Effect.mapError(failed),
+        );
+        return yield* read(
+          rows.map((r) => r.payload),
+          readThread,
+        );
+      }, bounded);
+
+      const putDetections = Effect.fn("HistoryStore.putDetections")(function* (
+        ws: string,
+        repo: string,
+        detections: ReadonlyArray<Detection>,
+      ) {
+        let added = 0;
+        for (const d of detections) {
+          const [row] = yield* sql`
+            INSERT INTO findings (workspace_id, repo, key, id, detection)
+            VALUES (${ws}, ${repo}, ${d.key}, ${findingId(d.key)},
+                    ${forJsonb(encodeDetectionJson(d))}::jsonb)
+            ON CONFLICT (workspace_id, repo, key) DO UPDATE
+              SET detection = excluded.detection, updated_at = now()
+            RETURNING (xmax = 0) AS inserted`.pipe(
+            Effect.flatMap(decodePutRows),
+            Effect.mapError(failed),
+          );
+          if (row?.inserted) added++;
+        }
+        return { found: detections.length, added };
+      }, bounded);
+
+      const submit = Effect.fn("HistoryStore.submit")(function* (
+        writer: Writer,
+        repo: string,
+        submission: Submission,
+      ) {
+        const ws = writer.workspaceId;
+        const read = yield* Effect.forEach(submission.citations, (c) =>
+          evidence(ws, { ...c, repo }),
+        );
+        // Each citation's quote as its entry has it; a citation that doesn't read, or whose quote
+        // isn't in its entry, refuses the finding.
+        const quotes = submission.citations.map((c, i) => {
+          const entry = read[i]!.entry;
+          return read[i]!.status === "ok" && entry ? findQuote(entry, c.quote) : null;
+        });
+        const unreadable = submission.citations.flatMap((c, i) => {
+          if (quotes[i] !== null) return [];
+          const r = read[i]!;
+          const status: string = r.status;
+          const why =
+            status !== "ok"
+              ? status
+              : r.entry
+                ? `quote not in the entry: "${c.quote.slice(0, 60)}"`
+                : "no such entry";
+          return [
+            `${c.threadId}#${c.entryId}${c.version ? `@${c.version.slice(0, 12)}` : ""} (${why})`,
+          ];
+        });
+        if (unreadable.length > 0)
+          return yield* new FindingRefused({
+            message: `Citations that don't hold in ${repo}'s threads: ${unreadable.join(", ")}`,
+          });
+        const [by] = writer.actor
+          ? [{ id: writer.actor }]
+          : writer.tokenId
+            ? yield* sql`SELECT name AS id FROM api_tokens WHERE id = ${writer.tokenId}`.pipe(
+                Effect.flatMap(decodeIdRows),
+                Effect.mapError(failed),
+              )
+            : [];
+        const key = submissionKey(submission.subject);
+        // ponytail: sessions counted by thread; a subagent's citation counts apart from its parent's.
+        const detection: Detection = {
+          key,
+          detector: "agent",
+          subject: submission.subject,
+          sessions: new Set(submission.citations.map((c) => c.threadId)).size,
+          occurrences: submission.citations.map((c, i) => ({
+            threadId: c.threadId,
+            entryId: c.entryId,
+            at: read[i]!.entry!.at,
+            ...((read[i]!.version ?? c.version) ? { version: read[i]!.version ?? c.version } : {}),
+            quote: quotes[i]!,
+          })),
+          pattern: submission.pattern,
+          suggestion: submission.suggestion,
+          by: by?.id ?? "unknown",
+        };
+        const { added } = yield* putDetections(ws, repo, [detection]);
+        const finding = (yield* findings(ws, repo)).find((f) => f.key === key);
+        if (!finding)
+          return yield* new HistoryStoreFailed({ message: "submitted finding not stored" });
+        return { finding, added: added === 1 };
+      }, bounded);
+
+      const findingColumns = sql`
+        id, detection, status, events, corrections,
+        to_char(detected_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "detectedAt",
+        to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "updatedAt"`;
+
+      const findings = Effect.fn("HistoryStore.findings")(function* (
+        ws: string,
+        repo: string,
+        statuses?: ReadonlyArray<FindingStatus>,
+      ) {
+        const only = statuses?.length ? sql`AND status IN ${sql.in(statuses)}` : sql``;
+        const rows = yield* sql`
+          SELECT ${findingColumns} FROM findings
+          WHERE workspace_id = ${ws} AND repo = ${repo} ${only}
+          ORDER BY (detection->>'sessions')::int DESC, key`.pipe(
+          Effect.flatMap(decodeFindingRows),
+          Effect.mapError(failed),
+        );
+        return rows.map(findingOf);
+      }, bounded);
+
+      const transition = Effect.fn("HistoryStore.transition")(
+        function* (writer: Writer, repo: string, id: string, to: FindingStatus, why: string) {
+          const ws = writer.workspaceId;
+          const [current] = yield* sql`
+            SELECT status FROM findings
+            WHERE workspace_id = ${ws} AND repo = ${repo} AND id = ${id} FOR UPDATE`.pipe(
+            Effect.flatMap(decodeStatusRows),
+            Effect.mapError(failed),
+          );
+          if (!current)
+            return yield* new FindingMissing({ message: `No finding ${id} in ${repo}` });
+          const problem = transitionError(current.status, to);
+          if (problem) return yield* new FindingConflict({ message: problem });
+          const [by] = writer.actor
+            ? [{ id: writer.actor }]
+            : writer.tokenId
+              ? yield* sql`SELECT name AS id FROM api_tokens WHERE id = ${writer.tokenId}`.pipe(
+                  Effect.flatMap(decodeIdRows),
+                  Effect.mapError(failed),
+                )
+              : [];
+          const event = encodeEventJson({
+            from: current.status,
+            to,
+            by: by?.id ?? "unknown",
+            at: DateTime.formatIso(yield* DateTime.now),
+            why,
+          });
+          const [row] = yield* sql`
+            UPDATE findings
+            SET status = ${to}, events = events || jsonb_build_array(${event}::jsonb),
+                updated_at = now()
+            WHERE workspace_id = ${ws} AND repo = ${repo} AND id = ${id}
+            RETURNING ${findingColumns}`.pipe(
+            Effect.flatMap(decodeFindingRows),
+            Effect.mapError(failed),
+          );
+          return findingOf(row!);
+        },
+        (self) =>
+          sql
+            .withTransaction(self)
+            .pipe(Effect.catchTag("SqlError", (e) => Effect.fail(failed(e)))),
+        bounded,
+      );
+
       const evidence = Effect.fn("HistoryStore.evidence")(function* (
         ws: string,
         cite: {
@@ -524,7 +792,7 @@ export class HistoryStore extends Context.Service<
 
       /**
        * Removes threads (`ids`, or every one stored before `before`) from a workspace, or from all
-       * of them: bodies; a marker per thread stays.
+       * of them: bodies, and the findings' citations of them; a marker per thread stays.
        */
       const remove = (reason: "deleted" | "expired", where: SqlFragment) =>
         sql
@@ -537,6 +805,15 @@ export class HistoryStore extends Context.Service<
                 SELECT workspace_id, id, content_sha, ${reason} FROM gone
                 ON CONFLICT (workspace_id, thread_id) DO UPDATE
                   SET version = excluded.version, reason = excluded.reason, removed_at = now()
+              ),
+              cited AS (
+                UPDATE findings f SET detection = jsonb_set(f.detection, '{occurrences}', coalesce((
+                  SELECT jsonb_agg(o) FROM jsonb_array_elements(f.detection->'occurrences') o
+                  WHERE NOT EXISTS (SELECT 1 FROM gone g
+                                    WHERE g.workspace_id = f.workspace_id AND g.id = o->>'threadId')
+                ), '[]'::jsonb)), updated_at = now()
+                WHERE EXISTS (SELECT 1 FROM gone g, jsonb_array_elements(f.detection->'occurrences') o
+                              WHERE g.workspace_id = f.workspace_id AND g.id = o->>'threadId')
               )
               SELECT count(*)::int AS n FROM gone`.pipe(Effect.flatMap(decodeCountRows));
               return gone[0]?.n ?? 0;
@@ -581,6 +858,67 @@ export class HistoryStore extends Context.Service<
         );
         return rows[0]?.n ?? 0;
       }, bounded);
+
+      const correct = Effect.fn("HistoryStore.correct")(
+        function* (
+          writer: Writer,
+          repo: string,
+          id: string,
+          change: {
+            readonly add: ReadonlyArray<string>;
+            readonly remove: ReadonlyArray<string>;
+            readonly why: string;
+          },
+        ) {
+          const ws = writer.workspaceId;
+          const [current] = yield* sql`
+            SELECT status FROM findings
+            WHERE workspace_id = ${ws} AND repo = ${repo} AND id = ${id} FOR UPDATE`.pipe(
+            Effect.flatMap(decodeStatusRows),
+            Effect.mapError(failed),
+          );
+          if (!current)
+            return yield* new FindingMissing({ message: `No finding ${id} in ${repo}` });
+          const [by] = writer.actor
+            ? [{ id: writer.actor }]
+            : writer.tokenId
+              ? yield* sql`SELECT name AS id FROM api_tokens WHERE id = ${writer.tokenId}`.pipe(
+                  Effect.flatMap(decodeIdRows),
+                  Effect.mapError(failed),
+                )
+              : [];
+          // A status-keeping event, so the change shows in the finding's history with its why.
+          const event = encodeEventJson({
+            from: current.status,
+            to: current.status,
+            by: by?.id ?? "unknown",
+            at: DateTime.formatIso(yield* DateTime.now),
+            why: `members ${[...change.add.map((t) => `+${t}`), ...change.remove.map((t) => `-${t}`)].join(" ")}: ${change.why}`,
+          });
+          const add = forJsonb(encodeIdsJson(change.add));
+          const remove = forJsonb(encodeIdsJson(change.remove));
+          const [row] = yield* sql`
+            UPDATE findings SET
+              corrections = jsonb_build_object(
+                'add', (SELECT coalesce(jsonb_agg(DISTINCT x), '[]'::jsonb) FROM jsonb_array_elements_text(
+                  (corrections->'add') || ${add}::jsonb) x WHERE NOT (${remove}::jsonb ? x)),
+                'remove', (SELECT coalesce(jsonb_agg(DISTINCT x), '[]'::jsonb) FROM jsonb_array_elements_text(
+                  (corrections->'remove') || ${remove}::jsonb) x WHERE NOT (${add}::jsonb ? x))),
+              events = events || jsonb_build_array(${event}::jsonb),
+              updated_at = now()
+            WHERE workspace_id = ${ws} AND repo = ${repo} AND id = ${id}
+            RETURNING ${findingColumns}`.pipe(
+            Effect.flatMap(decodeFindingRows),
+            Effect.mapError(failed),
+          );
+          return findingOf(row!);
+        },
+        (self) =>
+          sql
+            .withTransaction(self)
+            .pipe(Effect.catchTag("SqlError", (e) => Effect.fail(failed(e)))),
+        bounded,
+      );
 
       const repos = Effect.fn("HistoryStore.repos")(function* (ws: string) {
         return yield* sql`
@@ -753,6 +1091,12 @@ export class HistoryStore extends Context.Service<
           putCommit: (record) => putCommit(writer, record),
           search: (query) => search(ws, query),
           evidence: (cite) => evidence(ws, cite),
+          repoThreads: (repo) => repoThreads(ws, repo),
+          putDetections: (repo, detections) => putDetections(ws, repo, detections),
+          findings: (repo, statuses) => findings(ws, repo, statuses),
+          submit: (repo, submission) => submit(writer, repo, submission),
+          transition: (repo, id, to, why) => transition(writer, repo, id, to, why),
+          correct: (repo, id, change) => correct(writer, repo, id, change),
           commits: (repo, shas) => commits(ws, repo, shas),
           repos: () => repos(ws),
           ledger: (repo, before, limit) => ledger(ws, repo, before, limit),
