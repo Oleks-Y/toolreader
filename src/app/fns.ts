@@ -5,6 +5,7 @@ import { createServerFn } from "@tanstack/react-start";
 import * as Schema from "effect/Schema";
 
 import { ACTION_KINDS, ActionKind } from "../core/domain.ts";
+import { FINDING_STATUSES } from "../core/insights.ts";
 
 const input = <A, I>(schema: Schema.Codec<A, I>) =>
   Schema.toStandardSchemaV1(schema as Schema.Codec<A, I, never, never>);
@@ -28,6 +29,17 @@ const SearchInput = input(
 const Id = Schema.String.check(Schema.isLengthBetween(1, 200));
 const CiteInput = input(
   Schema.Struct({ repo: Repo, threadId: Id, entryId: Id, version: Schema.optional(Id) }),
+);
+const TitlesInput = input(
+  Schema.Struct({ repo: Repo, ids: Schema.Array(Id).check(Schema.isMaxLength(50)) }),
+);
+const DecideInput = input(
+  Schema.Struct({
+    repo: Repo,
+    id: Schema.String.check(Schema.isLengthBetween(1, 64)),
+    to: Schema.Literals(FINDING_STATUSES),
+    why: Schema.String.check(Schema.isLengthBetween(1, 2000)),
+  }),
 );
 
 const server = async () => ({
@@ -94,6 +106,37 @@ export const readCitation = createServerFn({ method: "GET" })
     const { session, history } = await server();
     const { repo, ...cite } = data;
     return history.evidence(await session.requireUser(), repo, cite);
+  });
+
+export const getSessionTitles = createServerFn({ method: "GET" })
+  .validator(TitlesInput)
+  .handler(async ({ data }) => {
+    const { session, history } = await server();
+    return history.sessionTitles(await session.requireUser(), data.repo, data.ids);
+  });
+
+export const listFindings = createServerFn({ method: "GET" })
+  .validator(RepoInput)
+  .handler(async ({ data }) => {
+    const { session, history } = await server();
+    return history.findings(await session.requireUser(), data.repo);
+  });
+
+/** Runs the detectors over the repo's history: a POST, it writes findings. */
+export const runDetectors = createServerFn({ method: "POST" })
+  .validator(RepoInput)
+  .handler(async ({ data }) => {
+    const { session, history } = await server();
+    return history.detect(await session.requireUser(), data.repo);
+  });
+
+/** Moves a finding along its lifecycle, as the signed-in person, with why. */
+export const decideFinding = createServerFn({ method: "POST" })
+  .validator(DecideInput)
+  .handler(async ({ data }) => {
+    const { session, history } = await server();
+    const { repo, ...change } = data;
+    return history.decide(await session.requireUser(), repo, change);
   });
 
 /** Asks TypeSafe the first time a hunk is blamed: a POST, so nothing prefetches it. */

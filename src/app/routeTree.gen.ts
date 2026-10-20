@@ -18,6 +18,7 @@ import { Route as AuthLoginRouteImport } from './routes/auth.login'
 import { Route as AuthLogoutRouteImport } from './routes/auth.logout'
 import { Route as OwnerRepoIndexRouteImport } from './routes/$owner.$repo.index'
 import { Route as OwnerRepoBlameRouteImport } from './routes/$owner.$repo.blame'
+import { Route as OwnerRepoInsightsRouteImport } from './routes/$owner.$repo.insights'
 import { Route as OwnerRepoPullsRouteImport } from './routes/$owner.$repo.pulls'
 import { Route as OwnerRepoSearchRouteImport } from './routes/$owner.$repo.search'
 import { Route as OwnerRepoCommitShaRouteImport } from './routes/$owner.$repo.commit.$sha'
@@ -68,6 +69,11 @@ const OwnerRepoBlameRoute = OwnerRepoBlameRouteImport.update({
   path: '/blame',
   getParentRoute: () => OwnerRepoRoute,
 } as any)
+const OwnerRepoInsightsRoute = OwnerRepoInsightsRouteImport.update({
+  id: '/insights',
+  path: '/insights',
+  getParentRoute: () => OwnerRepoRoute,
+} as any)
 const OwnerRepoPullsRoute = OwnerRepoPullsRouteImport.update({
   id: '/pulls',
   path: '/pulls',
@@ -98,6 +104,7 @@ export interface FileRoutesByFullPath {
   '/auth/login': typeof AuthLoginRoute
   '/auth/logout': typeof AuthLogoutRoute
   '/$owner/$repo/blame': typeof OwnerRepoBlameRoute
+  '/$owner/$repo/insights': typeof OwnerRepoInsightsRoute
   '/$owner/$repo/pulls': typeof OwnerRepoPullsRoute
   '/$owner/$repo/search': typeof OwnerRepoSearchRoute
   '/$owner/$repo/': typeof OwnerRepoIndexRoute
@@ -112,6 +119,7 @@ export interface FileRoutesByTo {
   '/auth/login': typeof AuthLoginRoute
   '/auth/logout': typeof AuthLogoutRoute
   '/$owner/$repo/blame': typeof OwnerRepoBlameRoute
+  '/$owner/$repo/insights': typeof OwnerRepoInsightsRoute
   '/$owner/$repo/pulls': typeof OwnerRepoPullsRoute
   '/$owner/$repo/search': typeof OwnerRepoSearchRoute
   '/$owner/$repo': typeof OwnerRepoIndexRoute
@@ -128,6 +136,7 @@ export interface FileRoutesById {
   '/auth/login': typeof AuthLoginRoute
   '/auth/logout': typeof AuthLogoutRoute
   '/$owner/$repo/blame': typeof OwnerRepoBlameRoute
+  '/$owner/$repo/insights': typeof OwnerRepoInsightsRoute
   '/$owner/$repo/pulls': typeof OwnerRepoPullsRoute
   '/$owner/$repo/search': typeof OwnerRepoSearchRoute
   '/$owner/$repo/': typeof OwnerRepoIndexRoute
@@ -145,6 +154,7 @@ export interface FileRouteTypes {
     | '/auth/login'
     | '/auth/logout'
     | '/$owner/$repo/blame'
+    | '/$owner/$repo/insights'
     | '/$owner/$repo/pulls'
     | '/$owner/$repo/search'
     | '/$owner/$repo/'
@@ -159,6 +169,7 @@ export interface FileRouteTypes {
     | '/auth/login'
     | '/auth/logout'
     | '/$owner/$repo/blame'
+    | '/$owner/$repo/insights'
     | '/$owner/$repo/pulls'
     | '/$owner/$repo/search'
     | '/$owner/$repo'
@@ -174,6 +185,7 @@ export interface FileRouteTypes {
     | '/auth/login'
     | '/auth/logout'
     | '/$owner/$repo/blame'
+    | '/$owner/$repo/insights'
     | '/$owner/$repo/pulls'
     | '/$owner/$repo/search'
     | '/$owner/$repo/'
@@ -256,6 +268,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OwnerRepoBlameRouteImport
       parentRoute: typeof OwnerRepoRoute
     }
+    '/$owner/$repo/insights': {
+      id: '/$owner/$repo/insights'
+      path: '/insights'
+      fullPath: '/$owner/$repo/insights'
+      preLoaderRoute: typeof OwnerRepoInsightsRouteImport
+      parentRoute: typeof OwnerRepoRoute
+    }
     '/$owner/$repo/pulls': {
       id: '/$owner/$repo/pulls'
       path: '/pulls'
@@ -289,6 +308,7 @@ declare module '@tanstack/react-router' {
 
 interface OwnerRepoRouteChildren {
   OwnerRepoBlameRoute: typeof OwnerRepoBlameRoute
+  OwnerRepoInsightsRoute: typeof OwnerRepoInsightsRoute
   OwnerRepoPullsRoute: typeof OwnerRepoPullsRoute
   OwnerRepoSearchRoute: typeof OwnerRepoSearchRoute
   OwnerRepoIndexRoute: typeof OwnerRepoIndexRoute
@@ -298,6 +318,7 @@ interface OwnerRepoRouteChildren {
 
 const OwnerRepoRouteChildren: OwnerRepoRouteChildren = {
   OwnerRepoBlameRoute: OwnerRepoBlameRoute,
+  OwnerRepoInsightsRoute: OwnerRepoInsightsRoute,
   OwnerRepoPullsRoute: OwnerRepoPullsRoute,
   OwnerRepoSearchRoute: OwnerRepoSearchRoute,
   OwnerRepoIndexRoute: OwnerRepoIndexRoute,

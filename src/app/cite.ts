@@ -10,7 +10,7 @@ export type Cite = {
 };
 
 export const citeOf = (
-  h: Pick<SearchHit, "threadId" | "entryId"> & { readonly version?: string },
+  h: Pick<SearchHit, "threadId" | "entryId"> & { readonly version?: string | undefined },
 ) => `${h.threadId}#${h.entryId}${h.version ? `@${h.version}` : ""}`;
 
 export const parseCite = (s: string): Cite | null => {

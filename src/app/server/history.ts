@@ -3,6 +3,7 @@
 // as the ledger page shows it (core/historyPage.ts `historyRange`, as `history site` builds it).
 import { historyRange } from "../../core/historyPage.ts";
 import type { CommitRecord, ThreadRecord } from "../../core/historyRecord.ts";
+import type { FindingStatus } from "../../core/insights.ts";
 import type { LedgerCommit, LedgerRange } from "../../core/ledger.ts";
 import { splitTurns } from "../../core/tree.ts";
 import * as backend from "./backend.ts";
@@ -198,4 +199,31 @@ export async function evidence(
         }
       : null,
   };
+}
+
+/** The titles of the repo's sessions among `ids`, for naming a finding's citations. */
+export async function sessionTitles(user: User, repo: string, ids: ReadonlyArray<string>) {
+  await mustRead(user, repo);
+  // ponytail: whole records for their titles; a titles read on the backend if this gets slow.
+  const records = await backend.threads(ids, repo);
+  return Object.fromEntries(records.map((r) => [r.thread.id, r.thread.title]));
+}
+
+export async function findings(user: User, repo: string) {
+  await mustRead(user, repo);
+  return backend.findings(user.token, repo);
+}
+
+export async function detect(user: User, repo: string) {
+  await mustRead(user, repo);
+  return backend.detect(user.token, repo);
+}
+
+export async function decide(
+  user: User,
+  repo: string,
+  change: { readonly id: string; readonly to: FindingStatus; readonly why: string },
+) {
+  await mustRead(user, repo);
+  return backend.transition(user.token, repo, change);
 }

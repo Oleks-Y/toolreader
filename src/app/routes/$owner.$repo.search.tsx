@@ -5,6 +5,7 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { ACTION_KINDS, type ActionKind } from "../../core/domain.ts";
 import type { Evidence } from "../../core/historyApi.ts";
+import { tellingSpan } from "../../core/insights.ts";
 import { fmtTime, since } from "../../web/util.ts";
 import { citeOf, parseCite, type Cite } from "../cite.ts";
 import { citationOptions, searchOptions } from "../queries.ts";
@@ -17,6 +18,11 @@ const Search = Schema.toStandardSchemaV1(
     /** Action kinds, comma-separated: only those actions. */
     kinds: Schema.optional(Schema.String),
     cite: Schema.optional(Schema.String),
+    /**
+     * What the citation is about, marked in it when there's no search text: `failure` for the
+     * line a recurring failure's signature comes from, else the text itself (a finding's file).
+     */
+    mark: Schema.optional(Schema.String),
   }),
 );
 
@@ -59,7 +65,7 @@ function marked(raw: string, q: string): ReactNode {
 
 function SearchPage() {
   const { owner, repo } = Route.useParams();
-  const { q, commit, kinds: kindParam, cite } = Route.useSearch();
+  const { q, commit, kinds: kindParam, cite, mark } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
   const [input, setInput] = useState(q ?? "");
   const [commitInput, setCommitInput] = useState(commit ?? "");
@@ -78,7 +84,12 @@ function SearchPage() {
   const toggle = (k: ActionKind) => {
     const next = kinds.includes(k) ? kinds.filter((x) => x !== k) : [...kinds, k];
     navigate({
-      search: (s) => ({ ...s, kinds: next.length ? next.join(",") : undefined, cite: undefined }),
+      search: (s) => ({
+        ...s,
+        kinds: next.length ? next.join(",") : undefined,
+        cite: undefined,
+        mark: undefined,
+      }),
     });
   };
   return (
@@ -97,6 +108,7 @@ function SearchPage() {
                 q: t || undefined,
                 commit: typedSha || undefined,
                 cite: undefined,
+                mark: undefined,
               }),
             });
           }}
@@ -128,7 +140,9 @@ function SearchPage() {
                 className="link-button dim"
                 onClick={() => {
                   setCommitInput("");
-                  navigate({ search: (s) => ({ ...s, commit: undefined, cite: undefined }) });
+                  navigate({
+                    search: (s) => ({ ...s, commit: undefined, cite: undefined, mark: undefined }),
+                  });
                 }}
               >
                 clear
@@ -167,7 +181,7 @@ function SearchPage() {
             key={citeOf(h)}
             className={`search-hit${cite === citeOf(h) ? " on" : ""}`}
             from={Route.fullPath}
-            search={(s) => ({ ...s, cite: citeOf(h) })}
+            search={(s) => ({ ...s, cite: citeOf(h), mark: undefined })}
           >
             <span className="hit-head">
               <span
@@ -189,7 +203,7 @@ function SearchPage() {
       </aside>
       <section className="search-cited" aria-label="Citation">
         {selected ? (
-          <Cited repo={full} cite={selected} q={text} />
+          <Cited repo={full} cite={selected} q={text} mark={mark} />
         ) : (
           <p className="dim">
             {data
@@ -233,7 +247,17 @@ const UNREADABLE_WHY: Record<Exclude<Evidence["status"], "ok">, string> = {
   missing: "The backend never stored this session.",
 };
 
-function Cited({ repo, cite, q }: { repo: string; cite: Cite; q: string }) {
+function Cited({
+  repo,
+  cite,
+  q,
+  mark,
+}: {
+  repo: string;
+  cite: Cite;
+  q: string;
+  mark?: string | undefined;
+}) {
   const { data, error, isFetching } = useQuery(citationOptions(repo, cite));
   const [copied, setCopied] = useState(false);
   if (isFetching && !data) return <p className="dim">reading…</p>;
@@ -274,6 +298,22 @@ function Cited({ repo, cite, q }: { repo: string; cite: Cite; q: string }) {
     );
   }
   const e = data.entry;
+  // What to mark: the search, else what the link says the citation is about.
+  const needle =
+    q ||
+    (mark === "failure" ? (e.type === "action" ? tellingSpan(e.output ?? "") : null) : mark) ||
+    "";
+  const shown = (
+    e.type === "action"
+      ? [e.command ?? e.title, e.output ?? "", ...(e.files ?? []).map((f) => f.path)].join("\n")
+      : e.text
+  ).replace(ANSI, "");
+  const found = needle !== "" && shown.toLowerCase().includes(needle.toLowerCase());
+  const about = q
+    ? `your search “${q}”`
+    : mark === "failure"
+      ? "the line this recurring failure is about"
+      : `“${needle}”, what the finding cites here`;
   const steps = data.turn?.steps ?? [];
   // A message isn't a step: place it before the first step after it.
   const byId = steps.findIndex((s) => s.id === e.id);
@@ -302,18 +342,29 @@ function Cited({ repo, cite, q }: { repo: string; cite: Cite; q: string }) {
         </button>
       </div>
 
+      {needle && (
+        <p className={`cited-mark${found ? "" : " missing"}`}>
+          {found ? (
+            <>
+              <mark>Marked</mark> {about}
+            </>
+          ) : (
+            <>Not in this entry: {about}</>
+          )}
+        </p>
+      )}
       {e.type === "action" ? (
         <div className="cited-entry" style={{ borderColor: tone(e.kind, e.status) }}>
           <div className="cited-entry-head">
             <span className="kind-chip" style={{ color: tone(e.kind, e.status) }}>
               {e.kind} · {e.exitCode === undefined ? e.status : `exit ${e.exitCode}`}
             </span>
-            <code className="mono">{e.command ?? e.title}</code>
+            <code className="mono">{marked(e.command ?? e.title, needle)}</code>
           </div>
-          {e.output && <Body text={e.output} q={q} />}
+          {e.output && <Body text={e.output} q={needle} />}
           {(e.files ?? []).map((f) => (
             <p key={f.path} className="mono cited-file">
-              {f.path}{" "}
+              {marked(f.path, needle)}{" "}
               <span className="dim">
                 +{f.added} −{f.removed}
               </span>
@@ -325,11 +376,11 @@ function Cited({ repo, cite, q }: { repo: string; cite: Cite; q: string }) {
           <div className="cited-entry-head">
             <span className="kind-chip">message · {e.role}</span>
           </div>
-          <Body text={e.text} q={q} prose />
+          <Body text={e.text} q={needle} prose />
         </div>
       ) : (
         <div className="cited-entry">
-          <Body text={e.text} q={q} />
+          <Body text={e.text} q={needle} />
         </div>
       )}
 

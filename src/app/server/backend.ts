@@ -12,30 +12,32 @@ import packageJson from "../../../package.json" with { type: "json" };
 import type { StoredBlame } from "../../core/blame.ts";
 import { BackendApi, CLIENT_HEADER, LIMITS } from "../../core/historyApi.ts";
 import type { CommitRecord, ThreadRecord } from "../../core/historyRecord.ts";
+import type { FindingStatus } from "../../core/insights.ts";
 import { env } from "./env.ts";
 
 const runtime = ManagedRuntime.make(FetchHttpClient.layer);
 
-const client = () => {
-  const { backendUrl, backendToken } = env();
-  return HttpApiClient.make(BackendApi, {
-    baseUrl: backendUrl,
+/** The workspace token by default; a person's GitHub token to act as them (Insights decisions). */
+const client = (token = env().backendToken) =>
+  HttpApiClient.make(BackendApi, {
+    baseUrl: env().backendUrl,
     transformClient: (c) =>
       c.pipe(
         HttpClient.mapRequest(
           HttpClientRequest.setHeaders({
-            authorization: `Bearer ${backendToken}`,
+            authorization: `Bearer ${token}`,
             [CLIENT_HEADER]: packageJson.version,
           }),
         ),
       ),
   });
-};
 
 type Api = Effect.Success<ReturnType<typeof client>>;
-const run = <A, E>(f: (api: Api, ws: string) => Effect.Effect<A, E>): Promise<A> =>
+const run = <A, E>(f: (api: Api, ws: string) => Effect.Effect<A, E>, token?: string): Promise<A> =>
   runtime.runPromise(
-    Effect.flatMap(client(), (api) => f(api, env().workspace)).pipe(Effect.timeout("60 seconds")),
+    Effect.flatMap(client(token), (api) => f(api, env().workspace)).pipe(
+      Effect.timeout("60 seconds"),
+    ),
   );
 
 const chunks = <A>(items: ReadonlyArray<A>, size: number): A[][] =>
@@ -124,3 +126,25 @@ export const evidence = (
     readonly version?: string | undefined;
   },
 ) => run((api, ws) => api.history.evidence({ params: { ws }, payload: { ...cite, repo } }));
+
+// Insights go as the signed-in person (`github:<login>` on each decision): the backend checks
+// they're a workspace member and that GitHub lets them read the repo.
+
+export const findings = (token: string, repo: string, statuses?: ReadonlyArray<FindingStatus>) =>
+  run(
+    (api, ws) =>
+      api.history.findings({ params: { ws, repo }, payload: statuses ? { statuses } : {} }),
+    token,
+  ).then((r) => r.findings);
+
+export const detect = (token: string, repo: string) =>
+  run((api, ws) => api.history.detect({ params: { ws, repo } }), token);
+
+export const transition = (
+  token: string,
+  repo: string,
+  change: { readonly id: string; readonly to: FindingStatus; readonly why: string },
+) =>
+  run((api, ws) => api.history.transition({ params: { ws, repo }, payload: change }), token).then(
+    (r) => r.finding,
+  );
