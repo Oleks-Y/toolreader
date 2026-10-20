@@ -357,6 +357,30 @@ const HistoryHandlers = HttpApiBuilder.group(
           }),
         ),
       )
+      .handle("freezeReview", ({ params, payload }) =>
+        readable(params.repo).pipe(
+          Effect.andThen(
+            Effect.flatMap(scoped, (s) =>
+              s.freezeReview({ ...payload, repo: params.repo, server: packageJson.version }),
+            ),
+          ),
+          Effect.map((manifest) => ({ manifest })),
+          Effect.catchTag("HistoryStoreFailed", () => Effect.fail(failed())),
+        ),
+      )
+      .handle("review", ({ params, payload }) =>
+        readable(params.repo).pipe(
+          Effect.andThen(Effect.flatMap(scoped, (s) => s.review(params.repo, payload.id))),
+          Effect.catchTag("HistoryStoreFailed", () => Effect.fail(failed())),
+          Effect.flatMap(
+            Option.match({
+              onNone: () =>
+                Effect.fail(new NotFound({ message: `No review ${payload.id} in ${params.repo}` })),
+              onSome: Effect.succeed,
+            }),
+          ),
+        ),
+      )
       .handle("commits", ({ params, payload }) =>
         readable(params.repo).pipe(
           Effect.andThen(Effect.flatMap(scoped, (s) => s.commits(params.repo, payload.shas))),
