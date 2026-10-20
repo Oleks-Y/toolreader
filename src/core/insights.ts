@@ -311,6 +311,19 @@ export function corrected(d: Detection, c: Corrections | undefined): Detection {
   return { ...d, occurrences, sessions: new Set(occurrences.map((o) => o.threadId)).size };
 }
 
+/**
+ * Why a rejected finding comes back: sessions that show it after it was rejected, which whoever
+ * rejected it couldn't have seen. Null when there are none, and the rejection stands.
+ */
+export function reopenReason(d: Detection, events: ReadonlyArray<FindingEvent>): string | null {
+  const rejected = events.findLast((e) => e.to === "rejected");
+  if (!rejected) return null;
+  const after = new Set(d.occurrences.filter((o) => o.at > rejected.at).map((o) => o.threadId));
+  return after.size === 0
+    ? null
+    : `seen in ${after.size} new session${after.size === 1 ? "" : "s"} since it was rejected`;
+}
+
 /** Why a status change isn't allowed, or null when it is. */
 export function transitionError(from: FindingStatus, to: FindingStatus): string | null {
   return TRANSITIONS[from].includes(to)

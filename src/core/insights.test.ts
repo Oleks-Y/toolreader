@@ -5,6 +5,7 @@ import {
   detect,
   failureSignature,
   findQuote,
+  reopenReason,
   tellingLine,
   tellingSpan,
   transitionError,
@@ -121,6 +122,34 @@ describe("insights", () => {
       found.map((d) => [d.subject, d.sessions, d.key]),
       [["src/server/Store.ts", 2, "repeated-investigation:src/server/Store.ts"]],
     );
+  });
+
+  it("brings a rejected finding back only for sessions after the rejection", () => {
+    const at = (t: string) => ({ threadId: t, entryId: "e", at: `2026-01-0${t}T10:00:00Z` });
+    const d = {
+      key: "k",
+      detector: "repeated-investigation" as const,
+      subject: "a.ts",
+      sessions: 3,
+      occurrences: [at("1"), at("2"), at("3")],
+      pattern: "p",
+      suggestion: "s",
+    };
+    const rejectedOn = (day: string) => [
+      {
+        from: "detected" as const,
+        to: "rejected" as const,
+        by: "x",
+        at: `2026-01-0${day}T12:00:00Z`,
+        why: "no",
+      },
+    ];
+    assert.strictEqual(reopenReason(d, rejectedOn("3")), null);
+    assert.strictEqual(
+      reopenReason(d, rejectedOn("1")),
+      "seen in 2 new sessions since it was rejected",
+    );
+    assert.strictEqual(reopenReason(d, []), null);
   });
 
   it("allows only the lifecycle's transitions", () => {

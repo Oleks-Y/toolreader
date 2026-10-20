@@ -34,6 +34,7 @@ import {
   FindingEvent,
   FINDING_STATUSES,
   findQuote,
+  reopenReason,
   submissionKey,
   transitionError,
   type FindingStatus,
@@ -143,6 +144,11 @@ const FindingRow = Schema.Struct({
 });
 const decodeFindingRows = Schema.decodeUnknownEffect(Schema.Array(FindingRow));
 const StatusRow = Schema.Struct({ status: Schema.Literals(FINDING_STATUSES) });
+const DecisionRow = Schema.Struct({
+  status: Schema.Literals(FINDING_STATUSES),
+  events: Schema.Array(FindingEvent),
+});
+const decodeDecisionRows = Schema.decodeUnknownEffect(Schema.Array(DecisionRow));
 const decodeStatusRows = Schema.decodeUnknownEffect(Schema.Array(StatusRow));
 const encodeDetectionJson = Schema.encodeSync(Schema.fromJsonString(Detection));
 const encodeEventJson = Schema.encodeSync(Schema.fromJsonString(FindingEvent));
@@ -617,7 +623,32 @@ export class HistoryStore extends Context.Service<
             Effect.flatMap(decodePutRows),
             Effect.mapError(failed),
           );
-          if (row?.inserted) added++;
+          if (row?.inserted) {
+            added++;
+            continue;
+          }
+          // New evidence reopens a rejected finding, saying what's new.
+          const [current] = yield* sql`
+            SELECT status, events FROM findings
+            WHERE workspace_id = ${ws} AND repo = ${repo} AND key = ${d.key}`.pipe(
+            Effect.flatMap(decodeDecisionRows),
+            Effect.mapError(failed),
+          );
+          const why = current?.status === "rejected" ? reopenReason(d, current.events) : null;
+          if (!why) continue;
+          const event = encodeEventJson({
+            from: "rejected",
+            to: "proposed",
+            by: d.by ?? "detector",
+            at: DateTime.formatIso(yield* DateTime.now),
+            why,
+          });
+          yield* sql`
+            UPDATE findings
+            SET status = 'proposed', events = events || jsonb_build_array(${event}::jsonb),
+                updated_at = now()
+            WHERE workspace_id = ${ws} AND repo = ${repo} AND key = ${d.key}
+              AND status = 'rejected'`.pipe(Effect.mapError(failed));
         }
         return { found: detections.length, added };
       }, bounded);

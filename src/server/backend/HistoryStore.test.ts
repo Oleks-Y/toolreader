@@ -3,6 +3,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as TestClock from "effect/testing/TestClock";
 
 import { hunkKey } from "../../core/blame.ts";
 import type { Entry } from "../../core/domain.ts";
@@ -252,6 +253,8 @@ describe("HistoryStore", () => {
 
     it.effect("keeps findings with their decisions; a new run updates evidence, not status", () =>
       Effect.gen(function* () {
+        // Decided after the sessions it cites: the same sessions again don't reopen it.
+        yield* TestClock.setTime(Date.parse("2026-06-01T00:00:00Z"));
         const hs = yield* HistoryStore;
         const ws = yield* hs.workspace("insights");
         const token = yield* hs.createToken("insights", "alex-laptop");
@@ -306,6 +309,35 @@ describe("HistoryStore", () => {
         assert.strictEqual(proposed.events.at(-1)!.by, "github:alex");
         // Another repo, another set of findings.
         assert.deepStrictEqual(yield* store.findings("acme/other"), []);
+      }),
+    );
+
+    it.effect("brings a rejected finding back when later sessions show it, saying why", () =>
+      Effect.gen(function* () {
+        const store = yield* inWorkspace("reopen");
+        yield* TestClock.setTime(Date.parse("2026-06-01T00:00:00Z"));
+        const seen = (...days: string[]): Detection => ({
+          key: "repeated-investigation:a.ts",
+          detector: "repeated-investigation",
+          subject: "a.ts",
+          sessions: days.length,
+          occurrences: days.map((d) => ({ threadId: `t${d}`, entryId: "e", at: `${d}T10:00:00Z` })),
+          pattern: "p",
+          suggestion: "s",
+        });
+        yield* store.putDetections("acme/app", [seen("2026-01-01", "2026-01-02")]);
+        const [f] = yield* store.findings("acme/app");
+        yield* store.transition("acme/app", f!.id, "rejected", "known");
+        // The same sessions again: still rejected.
+        yield* store.putDetections("acme/app", [seen("2026-01-01", "2026-01-02")]);
+        assert.strictEqual((yield* store.findings("acme/app"))[0]!.status, "rejected");
+        // A session after the rejection: proposed again, by the detector, with what's new.
+        yield* store.putDetections("acme/app", [seen("2026-01-01", "2026-01-02", "2999-01-01")]);
+        const [back] = yield* store.findings("acme/app");
+        assert.deepStrictEqual(
+          [back!.status, back!.events.at(-1)!.by, back!.events.at(-1)!.why],
+          ["proposed", "detector", "seen in 1 new session since it was rejected"],
+        );
       }),
     );
 
