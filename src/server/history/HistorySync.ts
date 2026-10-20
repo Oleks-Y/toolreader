@@ -24,7 +24,7 @@ import {
 import { checksFor } from "../../core/checks.ts";
 import { readsFor } from "../../core/coverage.ts";
 import { addedLines, lineKey, type CommitHistory, type CommitLines } from "../../core/history.ts";
-import { LIMITS, type Evidence } from "../../core/historyApi.ts";
+import { LIMITS, type Evidence, type SearchHit } from "../../core/historyApi.ts";
 import {
   buildCommitRecord,
   buildThreadRecord,
@@ -36,6 +36,7 @@ import {
 import { historyRange } from "../../core/historyPage.ts";
 import { remoteWebUrl, repoKey, SESSION_TRAILER, type LedgerRange } from "../../core/ledger.ts";
 import { ledgerSiteHtml, publicRange } from "../../core/ledgerSite.ts";
+import type { ActionKind } from "../../core/domain.ts";
 import { redactor } from "../../core/proof.ts";
 import { threadSha } from "../recordHash.ts";
 import { RepoSessions, type RepoSession, type SessionSource } from "../RepoSessions.ts";
@@ -79,6 +80,13 @@ export type SyncReport = {
   readonly unread: ReadonlyArray<{ readonly id: string; readonly title: string }>;
 };
 
+export type SearchOptions = {
+  readonly all: boolean;
+  readonly limit: number;
+  readonly commit?: string | undefined;
+  readonly kinds?: ReadonlyArray<ActionKind> | undefined;
+};
+
 export class HistorySync extends Context.Service<
   HistorySync,
   {
@@ -87,6 +95,19 @@ export class HistorySync extends Context.Service<
       range: string,
       options: SyncOptions,
     ) => Effect.Effect<SyncReport, HistoryFailed>;
+    /**
+     * Entries the backend holds with `text` (any, without it): this repo's threads, or the
+     * workspace's (`all`); `commit` (any revision git resolves) keeps threads linked to it,
+     * `kinds` actions of those kinds.
+     */
+    readonly search: (
+      repo: string,
+      text: string | undefined,
+      options: SearchOptions,
+    ) => Effect.Effect<
+      { readonly hits: ReadonlyArray<SearchHit>; readonly truncated: boolean },
+      HistoryFailed
+    >;
     /** A citation (`thread#entry@version`) read back from the backend, scoped to this repo. */
     readonly show: (repo: string, cite: string) => Effect.Effect<Evidence, HistoryFailed>;
     /** The range's page (the ledger viewer, inlined) from what the backend has; writes `out/index.html`. */
@@ -575,6 +596,47 @@ export class HistorySync extends Context.Service<
         Effect.provide(FetchHttpClient.layer),
       );
 
+      const search = Effect.fn("HistorySync.search")(function* (
+        repoArg: string,
+        text: string | undefined,
+        options: SearchOptions,
+      ) {
+        const repo = (yield* git(repoArg, ["rev-parse", "--show-toplevel"])).trim();
+        const origin = (yield* git(repo, ["remote", "get-url", "origin"], [2])).trim();
+        const web = remoteWebUrl(origin || null);
+        if (!options.all && !web)
+          return yield* new HistoryFailed({
+            message: `${repo} has no origin on a git host: pass --all to search the workspace`,
+          });
+        const settings = yield* backendSettings("reader").pipe(
+          Effect.provideService(ServerConfig, config),
+          Effect.provideService(FileSystem.FileSystem, fs),
+        );
+        // A revision this clone knows becomes its SHA; else it's sent as typed (a SHA or prefix).
+        const commit = options.commit
+          ? (yield* git(
+              repo,
+              ["rev-parse", "--verify", "--quiet", `${options.commit}^{commit}`],
+              [1, 128],
+            )).trim() || options.commit.toLowerCase()
+          : undefined;
+        if (commit && !/^[0-9a-f]{4,64}$/.test(commit))
+          return yield* new HistoryFailed({ message: `Not a commit here: ${options.commit}` });
+        const api = yield* connect(settings);
+        return yield* call(
+          api.history.search({
+            params: { ws: settings.workspace },
+            payload: {
+              ...(text ? { text } : {}),
+              ...(options.all ? {} : { repo: repoKey(web!) }),
+              ...(commit ? { commit } : {}),
+              ...(options.kinds?.length ? { kinds: options.kinds } : {}),
+              limit: options.limit,
+            },
+          }),
+        );
+      }, Effect.provide(FetchHttpClient.layer));
+
       /** The repo's backend name (owner/name of its origin) and a client for the backend. */
       const remote = Effect.fn("HistorySync.remote")(function* (repoArg: string) {
         const repo = (yield* git(repoArg, ["rev-parse", "--show-toplevel"])).trim();
@@ -615,7 +677,7 @@ export class HistorySync extends Context.Service<
         );
       }, Effect.provide(FetchHttpClient.layer));
 
-      return HistorySync.of({ sync, site, show });
+      return HistorySync.of({ sync, site, search, show });
     }),
   );
 }

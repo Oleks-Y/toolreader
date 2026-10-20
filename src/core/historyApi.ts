@@ -11,7 +11,7 @@ import * as HttpApiSecurity from "effect/unstable/httpapi/HttpApiSecurity";
 
 import { StoredBlame } from "./blame.ts";
 import { CommitRecordV1, REJECT_REASONS, REPO_MAX, ThreadRecordV1 } from "./historyRecord.ts";
-import { Entry } from "./domain.ts";
+import { ACTION_KINDS, ActionKind, Entry } from "./domain.ts";
 
 export const API_VERSION = 1;
 /** Every request names the client's version (package.json's) in this header. */
@@ -29,6 +29,10 @@ export const LIMITS = {
    * page by bytes if threads grow past ~50 MB.
    */
   threads: 10,
+  /** Hits per `search`. */
+  hits: 100,
+  /** Characters of a search's text. */
+  query: 200,
 } as const;
 
 export class Unauthorized extends Schema.TaggedErrorClass<Unauthorized>()(
@@ -149,6 +153,26 @@ const Sha = Schema.String.check(Schema.isPattern(/^[0-9a-f]{4,64}$/));
 const Ids = Schema.Array(Text).check(Schema.isMaxLength(LIMITS.ids));
 
 /**
+ * One entry a search found, cited by thread, entry and the thread's content hash (the version it
+ * was found in: a thread replaced since may say something else there).
+ */
+export const SearchHit = Schema.Struct({
+  threadId: Schema.String,
+  threadTitle: Schema.String,
+  version: Schema.String,
+  entryId: Schema.String,
+  at: Schema.String,
+  type: Schema.Literals(["action", "message"]),
+  /** An action's kind and status; a message's role. */
+  kind: Schema.String,
+  status: Schema.optional(Schema.String),
+  title: Schema.String,
+  /** The match with some text around it, from whichever field held it. */
+  snippet: Schema.String,
+});
+export type SearchHit = typeof SearchHit.Type;
+
+/**
  * What a citation reads now: its entry, or why not. `version-unavailable`: the thread was
  * replaced since (the entry may say something else now); `withheld`: not this caller's to read;
  * `deleted` / `expired`: removed on request, or past the retention period; `missing`: never here.
@@ -203,6 +227,34 @@ export class HistoryApi extends HttpApiGroup.make("history")
       payload: Schema.Unknown,
       success: PutResult,
       error: [Rejected, Forbidden, BackendFailed],
+    }),
+    // Entries whose title, command, output, text or file paths hold `text` (any case), newest
+    // first. With `repo`, only threads linked to that repo's commits.
+    HttpApiEndpoint.post("search", "/workspaces/:ws/search", {
+      params: ws,
+      payload: Schema.Struct({
+        /** Without it, the newest entries the other filters keep. */
+        text: Schema.optional(Text.check(Schema.isMinLength(2), Schema.isMaxLength(LIMITS.query))),
+        repo: Schema.optional(Repo),
+        /** Only threads linked to this commit (a SHA or its prefix). */
+        commit: Schema.optional(Sha),
+        /** Only actions of these kinds. */
+        kinds: Schema.optional(
+          Schema.Array(ActionKind).check(Schema.isMaxLength(ACTION_KINDS.length)),
+        ),
+        limit: Schema.optional(
+          Schema.Number.check(
+            Schema.isInt(),
+            Schema.isBetween({ minimum: 1, maximum: LIMITS.hits }),
+          ),
+        ),
+      }),
+      success: Schema.Struct({
+        hits: Schema.Array(SearchHit),
+        /** More entries matched than `limit`. */
+        truncated: Schema.Boolean,
+      }),
+      error: [Forbidden, BackendFailed],
     }),
     // A citation (thread, entry, version) read back: the entry when that version is stored,
     // else why not. A GitHub sign-in names the repo, and reads only threads linked to it.

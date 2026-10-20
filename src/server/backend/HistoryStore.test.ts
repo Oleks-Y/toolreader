@@ -159,7 +159,96 @@ describe("HistoryStore", () => {
       }),
     );
 
-    it.effect("reads a citation back, or says why not; a deleted thread isn't stored again", () =>
+    it.effect("finds commands, outputs and paths in a repo's threads, citing each", () =>
+      Effect.gen(function* () {
+        const store = yield* inWorkspace("search");
+        const run = (id: string, at: string, extra: Partial<Entry>): Entry =>
+          ({
+            type: "action",
+            id,
+            at,
+            kind: "test",
+            status: "failed",
+            title: "vitest run",
+            command: "vitest run",
+            ...extra,
+          }) as Entry;
+        yield* store.putThread(
+          threadRecord("t1", [
+            message("u1", "fix the flaky retry test"),
+            run("a1", "2026-01-01T10:01:00.000Z", { output: "TypeError: retries is undefined" }),
+            run("a2", "2026-01-01T10:02:00.000Z", {
+              kind: "edit",
+              status: "ok",
+              title: "edit src/retry.ts",
+              command: undefined,
+              files: [
+                { path: "src/retry.ts", added: 1, removed: 0, isNew: false, isDeleted: false },
+              ],
+            }),
+            run("a3", "2026-01-01T10:03:00.000Z", { output: "coverage 100% of lines" }),
+          ]),
+        );
+        // Another repo's thread, and one no commit links.
+        yield* store.putThread(
+          threadRecord("t2", [run("b1", "2026-01-01T11:00:00.000Z", { output: "retries ok" })]),
+        );
+        yield* store.putCommit(commitRecord("abc1234", ["t1"]));
+        yield* store.putCommit({ ...commitRecord("def5678", ["t2"]), repo: "acme/other" });
+
+        const find = (text: string, repo?: string, limit = 20) =>
+          store.search({ text, repo, limit });
+        const hit = (yield* find("RETRIES IS", "acme/app")).hits;
+        assert.deepStrictEqual(
+          hit.map((h) => [h.threadId, h.entryId, h.kind, h.status, h.snippet]),
+          [["t1", "a1", "test", "failed", "TypeError: retries is undefined"]],
+        );
+        // Cited at the version found: the thread's stored content hash.
+        assert.strictEqual(hit[0]!.version, (yield* store.hashes(["t1"])).get("t1"));
+        // A path, newest first across the workspace, and a message's text.
+        assert.deepStrictEqual(
+          (yield* find("retr")).hits.map((h) => h.entryId),
+          ["b1", "a2", "a1", "u1"],
+        );
+        assert.deepStrictEqual(
+          (yield* find("retr", "acme/app")).hits.map((h) => h.entryId),
+          ["a2", "a1", "u1"],
+        );
+        // `%` and `_` match themselves, not anything.
+        assert.deepStrictEqual(
+          (yield* find("100%")).hits.map((h) => h.entryId),
+          ["a3"],
+        );
+        assert.deepStrictEqual((yield* find("1_0")).hits, []);
+        const page = yield* find("retr", undefined, 2);
+        assert.deepStrictEqual([page.hits.length, page.truncated], [2, true]);
+        // One commit's threads (by SHA prefix), actions of some kinds, and no text at all.
+        const ids = (q: Parameters<typeof store.search>[0]) =>
+          store.search(q).pipe(Effect.map((r) => r.hits.map((h) => h.entryId)));
+        assert.deepStrictEqual(yield* ids({ text: "retr", commit: "def5", limit: 20 }), ["b1"]);
+        assert.deepStrictEqual(
+          yield* ids({ text: "retr", commit: "def5", repo: "acme/app", limit: 20 }),
+          [],
+        );
+        assert.deepStrictEqual(yield* ids({ kinds: ["edit"], limit: 20 }), ["a2"]);
+        assert.deepStrictEqual(yield* ids({ commit: "abc1234", kinds: ["test"], limit: 20 }), [
+          "a3",
+          "a1",
+        ]);
+        const listed = (yield* store.search({ commit: "abc1234", limit: 20 })).hits;
+        assert.deepStrictEqual(
+          listed.map((h) => [h.entryId, h.snippet]),
+          [
+            ["a3", "coverage 100% of lines"],
+            ["a2", "src/retry.ts"],
+            ["a1", "TypeError: retries is undefined"],
+            ["u1", "fix the flaky retry test"],
+          ],
+        );
+      }),
+    );
+
+    it.effect("reads a citation back, or says why not; removal reaches search", () =>
       Effect.gen(function* () {
         const hs = yield* HistoryStore;
         const ws = yield* hs.workspace("evidence");
@@ -192,6 +281,7 @@ describe("HistoryStore", () => {
 
         assert.isTrue(yield* hs.deleteThread("evidence", "t1"));
         assert.strictEqual((yield* store.evidence(cite)).status, "deleted");
+        assert.deepStrictEqual((yield* store.search({ text: "something", limit: 5 })).hits, []);
         // The next sync sends it again: not stored.
         assert.strictEqual(
           yield* store.putThread(threadRecord("t1", [message("u1", "again")])),

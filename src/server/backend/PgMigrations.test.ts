@@ -6,11 +6,17 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { ThreadRecordV1 } from "../../core/historyRecord.ts";
+import { forJsonb, threadSha } from "../recordHash.ts";
 import { HistoryStore } from "./HistoryStore.ts";
 import { migrate, migrationEntries } from "./PgMigrations.ts";
 import { inWorkspace, PgTestLive } from "./testPostgres.ts";
+import { threadRecord } from "./testRecords.ts";
+
+const encodeThread = Schema.encodeSync(Schema.fromJsonString(ThreadRecordV1));
 
 const TestLive = HistoryStore.layer.pipe(
   Layer.provideMerge(PgTestLive),
@@ -78,6 +84,35 @@ describe("PgMigrations", () => {
           assert.strictEqual(
             error.message,
             "thread format v2 is newer than this toolreader reads (v1): upgrade toolreader",
+          );
+        }),
+      ),
+    );
+
+    it.effect("indexes the threads stored before search had its own rows", () =>
+      inFreshSchema(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* migrate({ through: 4 });
+          const store = yield* inWorkspace("upgraded");
+          const record = threadRecord("old", [
+            {
+              type: "message",
+              id: "u1",
+              at: "2026-01-01T10:00:00.000Z",
+              role: "user",
+              text: "why does retries come back undefined",
+            },
+          ]);
+          yield* sql`
+            INSERT INTO threads (workspace_id, id, payload, content_sha, client)
+            SELECT id, 'old', ${forJsonb(encodeThread(record))}::jsonb, ${threadSha(record)}, '0.1.0'
+            FROM workspaces WHERE slug = 'upgraded'`;
+          yield* migrate();
+          const { hits } = yield* store.search({ text: "Retries come", limit: 5 });
+          assert.deepStrictEqual(
+            hits.map((h) => [h.threadId, h.entryId, h.snippet]),
+            [["old", "u1", "why does retries come back undefined"]],
           );
         }),
       ),

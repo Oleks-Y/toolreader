@@ -218,6 +218,11 @@ describe("Backend", () => {
           ["abc1234"],
         );
         assert.strictEqual(
+          (yield* alex.history.search({ params, payload: { text: "retries", repo: "acme/app" } }))
+            .hits.length,
+          1,
+        );
+        assert.strictEqual(
           (yield* alex.history.threads({ params, payload: { ids: ["t1"], repo: "acme/app" } }))
             .threads.length,
           1,
@@ -232,6 +237,10 @@ describe("Backend", () => {
               payload: { shas: ["def5678"] },
             }),
           ),
+          "Forbidden",
+        );
+        assert.strictEqual(
+          yield* tag(alex.history.search({ params, payload: { text: "retries" } })),
           "Forbidden",
         );
         assert.strictEqual(

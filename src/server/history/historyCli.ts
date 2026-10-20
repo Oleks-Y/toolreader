@@ -6,6 +6,7 @@
 //   toolreader history site (--range A..B | --pr N) [--repo PATH] [--out DIR]
 //   toolreader history audit [--repo PATH] [--source …]           (core/audit.ts)
 //   toolreader history login                                     (githubLogin.ts)
+//   toolreader history search TEXT [--repo PATH] [--all] [--limit N]
 //   toolreader history show THREAD#ENTRY@VERSION [--repo PATH]
 //   toolreader history turns|link|unlink …                       (declareCli.ts)
 //   toolreader history skill install|uninstall [--repo PATH] [--commit]   (historySkill.ts)
@@ -22,6 +23,7 @@ import * as HttpApiClient from "effect/unstable/httpapi/HttpApiClient";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { auditLines, auditSessions } from "../../core/audit.ts";
+import { ACTION_KINDS } from "../../core/domain.ts";
 import { CHECK_KINDS, type Check } from "../../core/checks.ts";
 import { redactText } from "../../core/proof.ts";
 import { CliApp } from "../app.ts";
@@ -33,7 +35,7 @@ import { backendUrl, call, HistoryFailed } from "./HistoryClient.ts";
 import { deviceLogin, saveGithubToken } from "./githubLogin.ts";
 import { commitSkill, dirtyPaths, INSTALLED_PATHS, installSkill } from "./historySkill.ts";
 import { appendLog, causeMessage, installHooks, pending } from "./historyHooks.ts";
-import type { Evidence } from "../../core/historyApi.ts";
+import type { Evidence, SearchHit } from "../../core/historyApi.ts";
 import { HistorySync, type SyncReport } from "./HistorySync.ts";
 
 const PullRequest = Schema.Struct({ baseRefOid: Schema.String, headRefOid: Schema.String });
@@ -281,6 +283,66 @@ const site = Command.make(
   ),
 );
 
+/** A search hit, as `history search` prints it: when and what, its session, the match, a citation. */
+export const hitLines = (hit: SearchHit): string[] => [
+  `${hit.at.slice(0, 16).replace("T", " ")} · ${hit.kind}${hit.status ? ` ${hit.status}` : ""} · ${short(title(hit.title || "(untitled)"))}`,
+  `  in ${short(title(hit.threadTitle || hit.threadId))}`,
+  ...(hit.snippet ? [`  ${title(hit.snippet)}`] : []),
+  `  cite ${hit.threadId}#${hit.entryId}@${hit.version.slice(0, 12)}`,
+];
+
+const search = Command.make(
+  "search",
+  {
+    text: Argument.string("text").pipe(
+      Argument.withDescription(
+        "What to find, in any case: an error, a command, a path; leave it out to list the newest entries the other filters keep",
+      ),
+      Argument.optional,
+    ),
+    repo: Flag.string("repo").pipe(
+      Flag.withDescription("Repository (any path inside it): searches its sessions"),
+      Flag.withDefault("."),
+    ),
+    all: Flag.boolean("all").pipe(
+      Flag.withDescription("Search every session in the workspace, not only this repo's"),
+    ),
+    commit: Flag.string("commit").pipe(
+      Flag.withDescription("Only sessions linked to this commit (any revision, or a SHA prefix)"),
+      Flag.optional,
+    ),
+    kind: Flag.choice("kind", ACTION_KINDS).pipe(
+      Flag.withDescription("Only actions of this kind (repeatable): read, edit, test, build…"),
+      Flag.atLeast(0),
+    ),
+    limit: Flag.integer("limit").pipe(Flag.withDescription("Hits to show"), Flag.withDefault(20)),
+  },
+  Effect.fn("toolreader history search")(function* (flags) {
+    const repo = (yield* Path.Path).resolve(flags.repo);
+    const text = Option.getOrUndefined(flags.text)?.trim();
+    if (text !== undefined && text.length < 2)
+      return yield* new HistoryFailed({ message: "Search for at least 2 characters" });
+    const { hits, truncated } = yield* Effect.flatMap(HistorySync, (h) =>
+      h.search(repo, text, {
+        all: flags.all,
+        limit: flags.limit,
+        commit: Option.getOrUndefined(flags.commit),
+        kinds: flags.kind,
+      }),
+    ).pipe(Effect.provide(CliApp({ appServer: false, codexHome: null })));
+    for (const hit of hits) for (const line of hitLines(hit)) yield* Console.log(line);
+    yield* Console.log(
+      hits.length === 0
+        ? "nothing found"
+        : `${hits.length} hit${hits.length === 1 ? "" : "s"}${truncated ? ", more not shown (--limit)" : ""}`,
+    );
+  }),
+).pipe(
+  Command.withDescription(
+    "Find sessions' commands, errors, outputs, messages and paths on the backend, newest first, each with a citation",
+  ),
+);
+
 /** What a citation reads now, as `history show` prints it. */
 export const evidenceLines = (cite: string, e: Evidence): string[] => {
   if (e.status !== "ok" || !e.entry)
@@ -465,6 +527,7 @@ export const historyCommand = Command.make("history").pipe(
     sync,
     site,
     login,
+    search,
     show,
     audit,
     ...declareCommands,

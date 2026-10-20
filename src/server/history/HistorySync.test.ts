@@ -29,7 +29,7 @@ import { RepoSessions } from "../RepoSessions.ts";
 import { ServerConfig } from "../ServerConfig.ts";
 import { ThreadStore } from "../ThreadStore.ts";
 import { HistorySync } from "./HistorySync.ts";
-import { reportLines } from "./historyCli.ts";
+import { evidenceLines, hitLines, reportLines } from "./historyCli.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -358,6 +358,24 @@ describe("history sync", () => {
           assert.deepStrictEqual(
             view.commits.map((c) => c.entry?.links.map((l) => [l.thread.id, l.via])),
             [[["codex:coder", "trailer"]], [["codex:coder", "trailer"]]],
+          );
+          // Searchable by what the session ran, cited to the entry.
+          const found = yield* history.search(repo, "VITEST", { all: false, limit: 5 });
+          assert.deepStrictEqual(
+            found.hits.map((h) => [h.threadId, h.entryId, h.kind, h.status]),
+            [["codex:coder", "t1", "test", "ok"]],
+          );
+          assert.include(hitLines(found.hits[0]!).at(-1)!, "cite codex:coder#t1@");
+          // And read back through the citation search printed.
+          const cite = hitLines(found.hits[0]!).at(-1)!.replace("  cite ", "");
+          const shown = yield* history.show(repo, cite);
+          assert.deepStrictEqual([shown.status, shown.entry?.id], ["ok", "t1"]);
+          assert.match(evidenceLines(cite, shown).join("\n"), /test ok \(exit 0\).*vitest run/s);
+          // A version the stored one doesn't start with.
+          const wrongVersion = `${cite.slice(0, -1)}${cite.endsWith("0") ? "1" : "0"}`;
+          assert.strictEqual(
+            (yield* history.show(repo, wrongVersion)).status,
+            "version-unavailable",
           );
           // The page shows each link's checks, read back from the backend.
           assert.deepStrictEqual(
