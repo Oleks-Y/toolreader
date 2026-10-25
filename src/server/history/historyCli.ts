@@ -10,6 +10,7 @@
 //   toolreader history review show ID                            (core/review.ts)
 //   toolreader history search TEXT [--repo PATH] [--all] [--limit N]
 //   toolreader history show THREAD#ENTRY@VERSION [--repo PATH]
+//   toolreader history sql QUERY                                 (backend/AgentSql.ts)
 //   toolreader history insights [--repo PATH] [--no-detect] [--status S]… [--limit N]
 //   toolreader history insight propose|accept|reject|modify|implemented|monitor|evaluate ID --why TEXT
 //   toolreader history insight sample --out FILE [--per-detector N]   (core/insightsEval.ts)
@@ -38,7 +39,7 @@ import { RepoSessions, SESSION_SOURCES } from "../RepoSessions.ts";
 import { ServerConfig } from "../ServerConfig.ts";
 import { declareCommands } from "./declareCli.ts";
 import { BackendApi } from "../../core/historyApi.ts";
-import { backendUrl, call, HistoryFailed } from "./HistoryClient.ts";
+import { backendSettings, backendUrl, call, connect, HistoryFailed } from "./HistoryClient.ts";
 import { deviceLogin, saveGithubToken } from "./githubLogin.ts";
 import { commitSkill, dirtyPaths, INSTALLED_PATHS, installSkill } from "./historySkill.ts";
 import { appendLog, causeMessage, installHooks, pending } from "./historyHooks.ts";
@@ -355,6 +356,41 @@ const search = Command.make(
 ).pipe(
   Command.withDescription(
     "Find sessions' commands, errors, outputs, messages and paths on the backend, newest first, each with a citation",
+  ),
+);
+
+const encodeSqlRow = Schema.encodeSync(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+);
+
+// What agents read the workspace's conversations with: one JSON object per row on stdout, the
+// count on stderr, so the rows pipe straight into jq.
+const sql = Command.make(
+  "sql",
+  {
+    query: Argument.string("query").pipe(
+      Argument.withDescription(
+        "Read-only SQL over agent_threads (id, title, source, provider, parent, taken_at, version, entry_count) and agent_entries (thread_id, seq, turn, entry_id, at, type, kind, status, title, hint, command, exit_code, output, text, files)",
+      ),
+    ),
+  },
+  Effect.fn("toolreader history sql")(
+    function* ({ query }) {
+      const settings = yield* backendSettings("reader");
+      const api = yield* connect(settings);
+      const { rows, truncated } = yield* call(
+        api.history.sql({ params: { ws: settings.workspace }, payload: { query } }),
+      );
+      for (const row of rows) yield* Console.log(encodeSqlRow(row));
+      yield* Console.error(
+        `${rows.length} row${rows.length === 1 ? "" : "s"}${truncated ? ", more not shown: add a LIMIT or select fewer columns" : ""}`,
+      );
+    },
+    Effect.provide([FetchHttpClient.layer, ServerConfig.layer]),
+  ),
+).pipe(
+  Command.withDescription(
+    "Query every conversation in the workspace with read-only SQL, whoever's machine it came from",
   ),
 );
 
@@ -896,6 +932,7 @@ export const historyCommand = Command.make("history").pipe(
     login,
     search,
     show,
+    sql,
     Command.make("review").pipe(
       Command.withDescription("Frozen reviews: their whole decision context, reopened as it was"),
       Command.withSubcommands([freeze, reopen]),

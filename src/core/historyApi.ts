@@ -35,6 +35,8 @@ export const LIMITS = {
   hits: 100,
   /** Characters of a search's text. */
   query: 200,
+  /** Characters of an agent's SQL. */
+  sql: 20_000,
 } as const;
 
 export class Unauthorized extends Schema.TaggedErrorClass<Unauthorized>()(
@@ -85,6 +87,13 @@ export class Conflict extends Schema.TaggedErrorClass<Conflict>()(
   "Conflict",
   { message: Schema.String },
   { httpApiStatus: 409 },
+) {}
+
+/** Postgres refused an agent's SQL (its syntax, a permission, the timeout), in its own words. */
+export class QueryRefused extends Schema.TaggedErrorClass<QueryRefused>()(
+  "QueryRefused",
+  { message: Schema.String },
+  { httpApiStatus: 400 },
 ) {}
 
 /** The backend failed (its database): retry later. Never quotes record text. */
@@ -207,6 +216,13 @@ export const Evidence = Schema.Struct({
   version: Schema.optional(Schema.String),
 });
 export type Evidence = typeof Evidence.Type;
+
+export const SqlResult = Schema.Struct({
+  rows: Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
+  /** Rows past the backend's row or byte cap were dropped. */
+  truncated: Schema.Boolean,
+});
+export type SqlResult = typeof SqlResult.Type;
 
 export class HistoryApi extends HttpApiGroup.make("history")
   .add(
@@ -368,6 +384,16 @@ export class HistoryApi extends HttpApiGroup.make("history")
         ),
       }),
       error: [NotFound, Forbidden, BackendFailed],
+    }),
+    // An agent's read-only SQL over the workspace's conversations: every member reads every one.
+    // It sees the `agent_threads` and `agent_entries` views and nothing else (AgentSql.ts).
+    HttpApiEndpoint.post("sql", "/workspaces/:ws/sql", {
+      params: ws,
+      payload: Schema.Struct({
+        query: Text.check(Schema.isMinLength(1), Schema.isMaxLength(LIMITS.sql)),
+      }),
+      success: SqlResult,
+      error: [QueryRefused, Forbidden, BackendFailed],
     }),
     HttpApiEndpoint.post("commits", "/workspaces/:ws/repos/:repo/commits/query", {
       params: { ...ws, repo: Repo },

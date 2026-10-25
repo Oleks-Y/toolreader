@@ -46,6 +46,7 @@ import { ReviewManifest, type EvidenceNow } from "../../core/review.ts";
 import { hunkKey, StoredBlame } from "../../core/blame.ts";
 import { forJsonb, sha256, threadSha } from "../recordHash.ts";
 import { ENTRY_ROWS } from "./Migrations/005_Entries.ts";
+import { AGENT_VIEWS } from "./Migrations/009_AgentSchema.ts";
 
 export class HistoryStoreFailed extends Schema.TaggedErrorClass<HistoryStoreFailed>()(
   "HistoryStoreFailed",
@@ -87,6 +88,9 @@ export type Writer = {
   readonly actor?: string | undefined;
 };
 
+/** A Postgres login that reads one workspace's `agent_*` views (AgentSql.ts). */
+export type AgentLogin = { readonly role: string; readonly password: string };
+
 /** A bearer token's owner, as `authenticate` finds it. */
 export type Caller = {
   readonly tokenId: string;
@@ -108,6 +112,8 @@ const CallerRow = Schema.Struct({
   workspace: Schema.String,
 });
 const decodeCallerRows = Schema.decodeUnknownEffect(Schema.Array(CallerRow));
+const LoginRow = Schema.Struct({ role: Schema.String, password: Schema.String });
+const decodeLoginRows = Schema.decodeUnknownEffect(Schema.Array(LoginRow));
 const opt = Schema.optional(Schema.NullOr(Schema.String));
 const SearchRow = Schema.Struct({
   threadId: Schema.String,
@@ -421,6 +427,11 @@ export class HistoryStore extends Context.Service<
       workspace: string,
       name: string,
     ) => Effect.Effect<number, HistoryStoreFailed>;
+    /**
+     * The workspace's agent login (`agent_logins`, Migrations/009): made on first use, which needs
+     * CREATEROLE. It reads the `agent_*` views, only its workspace's rows.
+     */
+    readonly agentLogin: (workspaceId: string) => Effect.Effect<AgentLogin, HistoryStoreFailed>;
     /** The live token's owner; marks it used. */
     readonly authenticate: (
       token: string,
@@ -1260,6 +1271,45 @@ export class HistoryStore extends Context.Service<
         return Option.fromNullishOr(row);
       }, bounded);
 
+      // The settings bound an agent's session even before AgentSql sets its own; it can't SET ROLE
+      // anywhere (it is a member of no role). Name and password are random hex: safe to inline in
+      // the DDL, which takes no parameters.
+      const agentLogin = Effect.fn("HistoryStore.agentLogin")(
+        function* (workspaceId: string) {
+          const existing = sql`
+            SELECT role_name AS role, password FROM agent_logins
+            WHERE workspace_id = ${workspaceId}`.pipe(Effect.flatMap(decodeLoginRows));
+          const [found] = yield* existing;
+          if (found) return found;
+          return yield* sql.withTransaction(
+            Effect.gen(function* () {
+              yield* sql`SELECT pg_advisory_xact_lock(hashtext(${workspaceId}))`;
+              const [raced] = yield* existing;
+              if (raced) return raced;
+              const role = `tr_agent_${NodeCrypto.randomBytes(8).toString("hex")}`;
+              // ponytail: sent in clear, so a server logging DDL logs it; send a SCRAM verifier
+              // if that matters.
+              const password = NodeCrypto.randomBytes(24).toString("hex");
+              yield* sql.unsafe(
+                `CREATE ROLE ${role} LOGIN NOINHERIT CONNECTION LIMIT 5 PASSWORD '${password}'`,
+              );
+              yield* sql.unsafe(`ALTER ROLE ${role} SET statement_timeout = '30s'`);
+              yield* sql.unsafe(`ALTER ROLE ${role} SET default_transaction_read_only = on`);
+              yield* sql.unsafe(
+                `DO $$ BEGIN EXECUTE format('GRANT USAGE ON SCHEMA %I TO ${role}', current_schema()); END $$`,
+              );
+              yield* sql.unsafe(`GRANT SELECT ON ${AGENT_VIEWS.join(", ")} TO ${role}`);
+              yield* sql`
+                INSERT INTO agent_logins (workspace_id, role_name, password)
+                VALUES (${workspaceId}, ${role}, ${password})`;
+              return { role, password };
+            }),
+          );
+        },
+        Effect.mapError(failed),
+        bounded,
+      );
+
       const at = (writer: Writer): WorkspaceStore => {
         const ws = writer.workspaceId;
         return {
@@ -1295,6 +1345,7 @@ export class HistoryStore extends Context.Service<
         deleteThread,
         expire,
         revokeToken,
+        agentLogin,
         authenticate,
       });
     }),
