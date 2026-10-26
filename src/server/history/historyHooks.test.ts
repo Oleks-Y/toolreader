@@ -6,6 +6,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
@@ -20,6 +21,8 @@ import {
   sealSkill,
   skillFiles,
 } from "./historySkill.ts";
+
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 const sh = (cwd: string, args: ReadonlyArray<string>, env: Record<string, string> = {}) =>
   Effect.gen(function* () {
@@ -126,6 +129,49 @@ describe("history hooks", () => {
       // Private from the start, though the shell wrote it.
       assert.strictEqual((yield* fs.stat(`${dir}/.toolreader/history.log`)).mode & 0o777, 0o600);
       assert.isFalse(yield* fs.exists(calls));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("remind, after a commit, warns when this repo's delivery is failing", () =>
+    Effect.gen(function* () {
+      const { dir, repo } = yield* setup;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const bin = path.resolve(import.meta.dirname, "..", "bin.ts");
+      const remind = (cwd: string) =>
+        sh(dir, ["-c", 'printf "%s" "$INPUT" | node "$BIN" history remind'], {
+          HOME: dir,
+          BIN: bin,
+          INPUT: encodeJson({
+            tool_name: "Bash",
+            cwd,
+            tool_input: { command: "git commit -m x" },
+          }),
+        });
+      assert.notInclude((yield* remind(repo)).out, "delivery is failing");
+      const common = (yield* sh(repo, [
+        "-c",
+        "git rev-parse --path-format=absolute --git-common-dir",
+      ])).out;
+      yield* fs.makeDirectory(`${dir}/.toolreader/pending`, { recursive: true });
+      yield* fs.writeFileString(
+        `${dir}/.toolreader/pending/a.json`,
+        encodeJson({
+          repo: common,
+          range: "a..b",
+          firstFailureAt: "2026-10-25T23:23:10.000Z",
+          lastAttemptAt: "2026-10-26T08:00:00.000Z",
+          lastErrorCode: "CONNECTION_REFUSED",
+        }),
+      );
+      const warned = yield* remind(repo);
+      assert.strictEqual(warned.code, 0);
+      assert.include(
+        warned.out,
+        "history delivery is failing: 1 range pending since 2026-10-25T23:23Z; run `toolreader history status`",
+      );
+      // Another repo's pending ranges are its own.
+      assert.notInclude((yield* remind(dir)).out, "delivery is failing");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 

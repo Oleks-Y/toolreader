@@ -23,10 +23,10 @@ description: Use right after you make a git commit in this repository, and whene
 
 # Declare the agent history of your commits
 
-This repository keeps, per commit, the agent turns that produced it. Your declaration is what
-reviewers see first; matching by content only fills in commits nobody declared. A declaration is a
-command you run in your session: it stores nothing, \`history sync\` reads it from your session's
-history later. Run the commands from the repository. If \`toolreader\` isn't on PATH, use
+This repository keeps, per commit, the agent turns that produced it. Your declaration (or the
+commit's \`Agent-Session\` trailer) is the only link a commit gets: nothing fills in a commit
+nobody declared. A declaration is a command you run in your session: it stores nothing,
+\`history sync\` reads it from your session's history later. Run the commands from the repository. If \`toolreader\` isn't on PATH, use
 \`npx toolreader\`.
 
 ## After each commit you make
@@ -46,7 +46,7 @@ toolreader history link --sha HEAD --turns 3-5,9 --note "…"
 
 ## When you split, squash, rebase or move work between commits
 
-You know where each part came from; matching may not. For each commit that comes out, link the
+You know where each part came from; nothing else does. For each commit that comes out, link the
 turns that wrote its content, in whichever session they ran:
 
 \`\`\`bash
@@ -68,7 +68,8 @@ toolreader history unlink --sha <commit> [--session <id>]
 - A command that fails declares nothing: read its error, fix it, run it again.
 - The note is published with the history (redacted, but don't rely on that): no secrets, no names
   of clients or people.
-- Don't run \`history sync\` or push for this: the pre-push hook sends it.
+- Don't run \`history sync\` or push for this: the pre-push hook attempts delivery. A successful
+  \`git push\` doesn't confirm it; \`toolreader history status\` shows what's still pending.
 `;
 
 const SEAL = "<!-- toolreader skill sha256 ";
