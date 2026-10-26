@@ -263,6 +263,22 @@ const HistoryHandlers = HttpApiBuilder.group(
           return { result: yield* store.putCommit(record).pipe(Effect.mapError(putFailed)) };
         }),
       )
+      .handle("search", ({ payload }) =>
+        readable(payload.repo).pipe(
+          Effect.andThen(
+            Effect.flatMap(scoped, (s) =>
+              s.search({
+                text: payload.text,
+                repo: payload.repo,
+                commit: payload.commit,
+                kinds: payload.kinds,
+                limit: payload.limit ?? 20,
+              }),
+            ),
+          ),
+          Effect.catchTag("HistoryStoreFailed", () => Effect.fail(failed())),
+        ),
+      )
       .handle("evidence", ({ payload }) =>
         Effect.gen(function* () {
           const caller = yield* Caller;

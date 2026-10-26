@@ -4,6 +4,7 @@
 import { historyRange } from "../../core/historyPage.ts";
 import type { CommitRecord, ThreadRecord } from "../../core/historyRecord.ts";
 import type { LedgerCommit, LedgerRange } from "../../core/ledger.ts";
+import { splitTurns } from "../../core/tree.ts";
 import * as backend from "./backend.ts";
 import * as github from "./github.ts";
 import type { User } from "./session.ts";
@@ -146,4 +147,55 @@ export async function commitHistory(user: User, repo: string, sha: string) {
   return rangeOf(repo, sha.slice(0, 8), [
     { sha: record.sha, subject: record.subject, committedAt: record.committedAt, patchId: null },
   ]);
+}
+
+export async function search(user: User, repo: string, q: backend.SearchQuery) {
+  await mustRead(user, repo);
+  return backend.search(repo, q);
+}
+
+export async function evidence(
+  user: User,
+  repo: string,
+  cite: {
+    readonly threadId: string;
+    readonly entryId: string;
+    readonly version?: string | undefined;
+  },
+) {
+  await mustRead(user, repo);
+  const found = await backend.evidence(repo, cite);
+  if (found.status !== "ok" || !found.entry) return { ...found, title: null, turn: null };
+  // ponytail: reads the whole thread for one turn; a turn read on the backend if threads get big.
+  const [record] = await backend.threads([cite.threadId], repo);
+  const turns = record ? splitTurns(record.entries) : [];
+  const n = turns.findIndex(
+    (t) => t.prompt?.id === cite.entryId || t.entries.some((e) => e.id === cite.entryId),
+  );
+  const turn = turns[n];
+  return {
+    ...found,
+    title: record?.thread.title ?? null,
+    turn: turn
+      ? {
+          n: n + 1,
+          prompt: turn.prompt?.text.slice(0, 200) ?? null,
+          steps: turn.entries.flatMap((e) =>
+            e.type === "action"
+              ? [
+                  {
+                    id: e.id,
+                    at: e.at,
+                    kind: e.kind,
+                    status: e.status,
+                    title: e.title,
+                    added: (e.files ?? []).reduce((a, f) => a + f.added, 0),
+                    removed: (e.files ?? []).reduce((a, f) => a + f.removed, 0),
+                  },
+                ]
+              : [],
+          ),
+        }
+      : null,
+  };
 }

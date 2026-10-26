@@ -24,9 +24,10 @@ import {
   type ThreadRecord,
 } from "../../core/historyRecord.ts";
 import { Entry } from "../../core/domain.ts";
-import type { Evidence } from "../../core/historyApi.ts";
+import type { Evidence, SearchHit } from "../../core/historyApi.ts";
 import { hunkKey, StoredBlame } from "../../core/blame.ts";
 import { forJsonb, sha256, threadSha } from "../recordHash.ts";
+import { ENTRY_ROWS } from "./Migrations/005_Entries.ts";
 
 export class HistoryStoreFailed extends Schema.TaggedErrorClass<HistoryStoreFailed>()(
   "HistoryStoreFailed",
@@ -74,6 +75,20 @@ const CallerRow = Schema.Struct({
   workspace: Schema.String,
 });
 const decodeCallerRows = Schema.decodeUnknownEffect(Schema.Array(CallerRow));
+const opt = Schema.optional(Schema.NullOr(Schema.String));
+const SearchRow = Schema.Struct({
+  threadId: Schema.String,
+  threadTitle: opt,
+  version: Schema.String,
+  entryId: Schema.String,
+  at: opt,
+  type: Schema.Literals(["action", "message"]),
+  kind: opt,
+  status: opt,
+  title: opt,
+  search: Schema.String,
+});
+const decodeSearchRows = Schema.decodeUnknownEffect(Schema.Array(SearchRow));
 const RemovedRow = Schema.Struct({
   version: Schema.String,
   reason: Schema.Literals(["deleted", "expired"]),
@@ -88,6 +103,31 @@ const decodeEvidenceRows = Schema.decodeUnknownEffect(Schema.Array(EvidenceRow))
 const decodeEntry = Schema.decodeUnknownOption(Entry);
 const CountRow = Schema.Struct({ n: Schema.Number });
 const decodeCountRows = Schema.decodeUnknownEffect(Schema.Array(CountRow));
+/** `text` as an ILIKE pattern that matches it literally anywhere. */
+const containing = (text: string) => `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+
+/** The first field holding `text`, cut to a window around it. */
+const snippetOf = (
+  fields: ReadonlyArray<string | null | undefined>,
+  text: string,
+  title?: string | null,
+) => {
+  // No text: the first field that isn't the title (a command, a message, an output).
+  if (!text) {
+    const f = fields.find((x) => x?.trim() && x !== title) ?? "";
+    return f.length > 120 ? `${f.slice(0, 120).replace(/\s+/g, " ")}…` : f.replace(/\s+/g, " ");
+  }
+  const needle = text.toLowerCase();
+  for (const f of fields) {
+    const at = f?.toLowerCase().indexOf(needle) ?? -1;
+    if (f && at >= 0) {
+      const from = Math.max(0, at - 60);
+      const to = Math.min(f.length, at + text.length + 60);
+      return `${from > 0 ? "…" : ""}${f.slice(from, to).replace(/\s+/g, " ")}${to < f.length ? "…" : ""}`;
+    }
+  }
+  return "";
+};
 const RepoRow = Schema.Struct({
   repo: Schema.String,
   commits: Schema.NumberFromString,
@@ -164,6 +204,20 @@ export type WorkspaceStore = {
   readonly putCommit: (
     record: CommitRecord,
   ) => Effect.Effect<PutResult, HistoryStoreFailed | HistoryRefused>;
+  /**
+   * Entries holding `text` (any, without it), newest first; `repo` keeps threads linked to its
+   * commits, `commit` those linked to that commit (SHA or prefix), `kinds` actions of those kinds.
+   */
+  readonly search: (query: {
+    readonly text?: string | undefined;
+    readonly repo?: string | undefined;
+    readonly commit?: string | undefined;
+    readonly kinds?: ReadonlyArray<string> | undefined;
+    readonly limit: number;
+  }) => Effect.Effect<
+    { readonly hits: ReadonlyArray<SearchHit>; readonly truncated: boolean },
+    HistoryStoreFailed
+  >;
   /** A citation read back, or why not (`Evidence`); `repo` keeps it to threads linked there. */
   readonly evidence: (cite: {
     readonly threadId: string;
@@ -289,14 +343,29 @@ export class HistoryStore extends Context.Service<
               DELETE FROM removed
               WHERE workspace_id = ${writer.workspaceId} AND thread_id = ${record.thread.id}`;
           const payload = forJsonb(encodeThreadJson(record));
-          return yield* upsert(
+          const result = yield* upsert(
             "threads",
             { id: record.thread.id },
             payload,
             threadSha(record),
             writer,
           );
+          // Search's rows follow the thread, in the same transaction.
+          if (result !== "same") {
+            yield* sql`
+              DELETE FROM entries
+              WHERE workspace_id = ${writer.workspaceId} AND thread_id = ${record.thread.id}`;
+            yield* sql.unsafe(
+              `INSERT INTO entries (workspace_id, thread_id, entry_id, at, type, kind, status, title,
+                                    thread_title, search)
+               ${ENTRY_ROWS} WHERE t.workspace_id = $1 AND t.id = $2
+               ON CONFLICT DO NOTHING`,
+              [writer.workspaceId, record.thread.id],
+            );
+          }
+          return result;
         },
+        (self) => sql.withTransaction(self),
         Effect.mapError(putFailed),
         bounded,
       );
@@ -329,10 +398,6 @@ export class HistoryStore extends Context.Service<
         );
         return new Map(rows.map((r) => [r.id, r.contentSha]));
       }, bounded);
-
-      const linkedTo = (ws: string, repo: string) => sql`
-        SELECT DISTINCT l->>'threadId' FROM commits c, jsonb_array_elements(c.payload->'links') l
-        WHERE c.workspace_id = ${ws} AND c.repo = ${repo}`;
 
       const threads = Effect.fn("HistoryStore.threads")(function* (
         ws: string,
@@ -370,6 +435,57 @@ export class HistoryStore extends Context.Service<
           readCommit,
         );
       }, bounded);
+
+      // Over `entries` (migration 5): matching rows only, through the trigram index.
+      const search = Effect.fn("HistoryStore.search")(function* (
+        ws: string,
+        query: {
+          readonly text?: string | undefined;
+          readonly repo?: string | undefined;
+          readonly commit?: string | undefined;
+          readonly kinds?: ReadonlyArray<string> | undefined;
+          readonly limit: number;
+        },
+      ) {
+        const text = query.text ?? "";
+        const matching = text ? sql`AND n.search ILIKE ${containing(text)}` : sql``;
+        const inRepo = query.repo ? sql`AND n.thread_id IN (${linkedTo(ws, query.repo)})` : sql``;
+        const inCommit = query.commit
+          ? sql`AND n.thread_id IN (
+              SELECT l->>'threadId' FROM commits c, jsonb_array_elements(c.payload->'links') l
+              WHERE c.workspace_id = ${ws} AND c.sha LIKE ${`${query.commit}%`}
+              ${query.repo ? sql`AND c.repo = ${query.repo}` : sql``})`
+          : sql``;
+        const ofKinds = query.kinds?.length
+          ? sql`AND n.type = 'action' AND n.kind IN ${sql.in(query.kinds)}`
+          : sql``;
+        const rows = yield* sql`
+          SELECT n.thread_id AS "threadId", n.thread_title AS "threadTitle",
+                 t.content_sha AS version, n.entry_id AS "entryId", n.at, n.type, n.kind,
+                 n.status, n.title, n.search
+          FROM entries n
+          JOIN threads t ON t.workspace_id = n.workspace_id AND t.id = n.thread_id
+          WHERE n.workspace_id = ${ws} ${matching} ${inRepo} ${inCommit} ${ofKinds}
+          ORDER BY n.at DESC NULLS LAST
+          LIMIT ${query.limit + 1}`.pipe(Effect.flatMap(decodeSearchRows), Effect.mapError(failed));
+        const hits = rows.slice(0, query.limit).map((r) => ({
+          threadId: r.threadId,
+          threadTitle: r.threadTitle ?? "",
+          version: r.version,
+          entryId: r.entryId,
+          at: r.at ?? "",
+          type: r.type,
+          kind: r.kind ?? "",
+          ...(r.status ? { status: r.status } : {}),
+          title: r.title ?? "",
+          snippet: snippetOf(r.search.split("\u001f"), text, r.title),
+        }));
+        return { hits, truncated: rows.length > query.limit };
+      }, bounded);
+
+      const linkedTo = (ws: string, repo: string) => sql`
+        SELECT DISTINCT l->>'threadId' FROM commits c, jsonb_array_elements(c.payload->'links') l
+        WHERE c.workspace_id = ${ws} AND c.repo = ${repo}`;
 
       const evidence = Effect.fn("HistoryStore.evidence")(function* (
         ws: string,
@@ -635,6 +751,7 @@ export class HistoryStore extends Context.Service<
           putThread: (record) => putThread(writer, record),
           threads: (ids, repo) => threads(ws, ids, repo),
           putCommit: (record) => putCommit(writer, record),
+          search: (query) => search(ws, query),
           evidence: (cite) => evidence(ws, cite),
           commits: (repo, shas) => commits(ws, repo, shas),
           repos: () => repos(ws),

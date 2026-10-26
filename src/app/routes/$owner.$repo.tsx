@@ -29,6 +29,9 @@ function RepoLayout() {
         <Link to="/$owner/$repo/blame" params={params}>
           Blame
         </Link>
+        <Link to="/$owner/$repo/search" params={params}>
+          Search
+        </Link>
       </nav>
       <Outlet />
     </main>
