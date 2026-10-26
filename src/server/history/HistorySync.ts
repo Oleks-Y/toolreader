@@ -419,6 +419,7 @@ export class HistorySync extends Context.Service<
           home: config.home,
           snapshot: s.snapshot,
           origin: s.origin,
+          sourceState: s.sourceState,
         });
       };
 
@@ -462,6 +463,21 @@ export class HistorySync extends Context.Service<
           for (const [id, sha] of Object.entries(hashes)) stored.set(id, sha);
         }
         let sent = 0;
+        // As stored: read again just now, so checked now. An older backend doesn't keep that.
+        const same = threads.filter((t) => stored.get(t.thread.id) === threadSha(t));
+        for (let i = 0; i < same.length; i += LIMITS.ids)
+          yield* call(
+            api.history.checked({
+              params,
+              payload: {
+                threads: same.slice(i, i + LIMITS.ids).map((t) => ({
+                  id: t.thread.id,
+                  version: threadSha(t),
+                  ...(t.sourceState ? { sourceState: t.sourceState } : {}),
+                })),
+              },
+            }),
+          ).pipe(Effect.ignore);
         for (const thread of threads) {
           if (stored.get(thread.thread.id) === threadSha(thread)) continue;
           // `same`: the backend had it, or won't keep it (deleted on request): not sent as new.
@@ -482,27 +498,20 @@ export class HistorySync extends Context.Service<
         const loaded = yield* sessions
           .load(repo, source)
           .pipe(Effect.mapError((e) => new HistoryFailed({ message: e.message })));
-        const chosen = new Map<string, RepoSession>();
+        const chosen = new Set<string>();
         for (const name of names) {
           const found = loaded.named(name);
           if (found.length === 0)
             return yield* new HistoryFailed({
               message: `No session ${name} worked in ${repo} (or it ran no actions)`,
             });
-          for (const s of found) chosen.set(s.thread.id, s);
+          for (const s of found) chosen.add(s.thread.id);
         }
         // Its subagents, and theirs: what it delegated is part of what it did.
-        for (let grew = true; grew; ) {
-          grew = false;
-          for (const s of loaded.sessions)
-            if (s.thread.parent && chosen.has(s.thread.parent) && !chosen.has(s.thread.id)) {
-              chosen.set(s.thread.id, s);
-              grew = true;
-            }
-        }
+        const family = yield* loaded.family([...chosen]);
         const now = DateTime.formatIso(yield* DateTime.now);
         const blobs = new Map<string, Blob>();
-        const threads = [...chosen.values()].map((s) => threadRecordOf(s, now, blobs));
+        const threads = family.map((s) => threadRecordOf(s, now, blobs));
         const { sent, media } = yield* sendThreads(threads, blobs);
         const { clean } = redactor(config.home);
         return {
@@ -630,10 +639,9 @@ export class HistorySync extends Context.Service<
         if (options.dryRun) return report(0, 0);
 
         const blobs = new Map<string, Blob>();
-        const threads = linked.flatMap((id) => {
-          const s = byId.get(id);
-          return s ? [threadRecordOf(s, now, blobs)] : [];
-        });
+        // With their subagents, wherever those ran and whatever they did (a QA pass that changed
+        // nothing): context for the linked work, not its authors, so no commit links them.
+        const threads = (yield* loaded.family(linked)).map((s) => threadRecordOf(s, now, blobs));
         const { api, params, sent } = yield* sendThreads(threads, blobs);
         // Links last: a commit names only threads the backend has.
         for (const record of records)

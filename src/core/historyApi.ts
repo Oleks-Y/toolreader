@@ -10,7 +10,13 @@ import * as HttpApiMiddleware from "effect/unstable/httpapi/HttpApiMiddleware";
 import * as HttpApiSecurity from "effect/unstable/httpapi/HttpApiSecurity";
 
 import { StoredBlame } from "./blame.ts";
-import { CommitRecordV1, REJECT_REASONS, REPO_MAX, ThreadRecordV1 } from "./historyRecord.ts";
+import {
+  CommitRecordV1,
+  REJECT_REASONS,
+  REPO_MAX,
+  SOURCE_STATES,
+  ThreadRecordV1,
+} from "./historyRecord.ts";
 import { ACTION_KINDS, ActionKind, Entry } from "./domain.ts";
 import { Finding, FINDING_STATUSES } from "./insights.ts";
 import { EVIDENCE_NOW, ReviewManifest, VERDICTS } from "./review.ts";
@@ -229,20 +235,49 @@ export type Evidence = typeof Evidence.Type;
 export const AGENT_SCHEMA = `Read-only Postgres SQL over the latest imported copy of every agent conversation in the workspace, whoever's machine it ran on. A copy can be behind its live session (taken_at says when it was read), so a row you don't find means "not found in the imported history as of taken_at", never "it never happened". One statement; at most 1000 rows, 1 MB and 10 s. Two views:
 
 agent_threads: one row per conversation.
-  id (T3 thread ids are bare; codex:<id>, claude:<id>), title (its first prompt), source (t3|codex|claude), provider, origin (the client that ran it), parent (the conversation that delegated this one, for a subagent; null otherwise), snapshot (jsonb: how it started, e.g. startCommit, branch), taken_at, uploaded_at, version, entry_count.
+  id (T3 thread ids are bare; codex:<id>, claude:<id>), title (its first prompt), source (t3|codex|claude), provider, origin (the client that ran it), parent (the conversation that delegated this one, for a subagent; null otherwise), snapshot (jsonb: how it started, e.g. startCommit, branch), taken_at, uploaded_at, version, entry_count, last_entry_at (its newest step when read), source_state (running|idle|error|unknown: what its source said when last checked; nothing says a conversation ended), checked_at (when a client last confirmed this copy matched its source).
 
 agent_entries: one row per step, in order.
   thread_id, seq (order in the conversation), turn (user messages so far: a turn's steps share it), entry_id, at (ISO time, text), type (action|message|event), kind (an action's kind: read|search|edit|git|docker|setup|build|run|test|web|tool|agent; a message's role: user|assistant|reasoning; an event's tone: error|info), status (ok|failed|running|unknown), title (one-line summary), hint (the agent's stated intent), command, exit_code, output (clipped to 8 KB), text (a message's or event's text), files (jsonb: [{path, added, removed, isNew, isDeleted, diff}]), media (jsonb: [{mime, sha256, bytes}], images the tool returned, such as a screenshot the agent read; view one with the media tool).
+
+Every result carries coverage: the workspace's conversation count and up to 20 that may be behind their live session (running, or not checked in the last hour), as of the server's time; say "as of" with it, not "never".
 
 Examples:
   SELECT id, title FROM agent_threads WHERE parent = '<id>'                      -- what a conversation delegated
   SELECT turn, seq, kind, status, title FROM agent_entries WHERE thread_id = '<id>' AND type = 'action' ORDER BY seq
   SELECT thread_id, title, output FROM agent_entries WHERE status = 'failed' ORDER BY at DESC LIMIT 20`;
 
+/** Conversations the workspace holds that may be behind their live session: how many to list. */
+export const COVERAGE_LISTED = 20;
+
+/**
+ * How current the workspace's copies are, beside every SQL result: how many conversations it
+ * holds, and those that may be behind (running when last checked, or not checked in the last
+ * hour), running ones first, as of the server's time. Facts, so an absent row reads "as of".
+ */
+export const Coverage = Schema.Struct({
+  asOf: Schema.String,
+  threads: Schema.Number,
+  /** How many may be behind; `mayBeBehind` lists the first `COVERAGE_LISTED`. */
+  behind: Schema.Number,
+  mayBeBehind: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      title: Schema.String,
+      state: Schema.Literals(SOURCE_STATES),
+      lastEntryAt: Schema.NullOr(Schema.String),
+      checkedAt: Schema.NullOr(Schema.String),
+    }),
+  ),
+});
+export type Coverage = typeof Coverage.Type;
+
 export const SqlResult = Schema.Struct({
   rows: Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
   /** Rows past the backend's row or byte cap were dropped. */
   truncated: Schema.Boolean,
+  /** Absent from older backends. */
+  coverage: Schema.optional(Coverage),
 });
 export type SqlResult = typeof SqlResult.Type;
 
@@ -254,6 +289,22 @@ export class HistoryApi extends HttpApiGroup.make("history")
       params: ws,
       payload: Schema.Struct({ ids: Ids }),
       success: Schema.Struct({ hashes: Schema.Record(Schema.String, Schema.String) }),
+      error: [Forbidden, BackendFailed],
+    }),
+    // Threads the client read again and found as stored (by content hash): marks them checked
+    // now, with what their source says of them. One whose stored hash differs is left alone.
+    HttpApiEndpoint.post("checked", "/workspaces/:ws/threads/checked", {
+      params: ws,
+      payload: Schema.Struct({
+        threads: Schema.Array(
+          Schema.Struct({
+            id: Text,
+            version: Text,
+            sourceState: Schema.optional(Schema.Literals(SOURCE_STATES)),
+          }),
+        ).check(Schema.isMaxLength(LIMITS.ids)),
+      }),
+      success: Schema.Struct({ checked: Schema.Number }),
       error: [Forbidden, BackendFailed],
     }),
     // A thread's whole history; replaces the stored one when it changed. Decoded by

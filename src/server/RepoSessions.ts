@@ -53,7 +53,33 @@ export type RepoSession = {
   readonly snapshot?: SessionSnapshot | undefined;
   /** Where it was read from, and the digest of what was read. */
   readonly origin: SessionOrigin;
+  /**
+   * What its source said about it when read: T3 and the Codex app-server report one; rollout
+   * files and Claude transcripts don't (`unknown`). Never "ended": nothing says a session is over.
+   */
+  readonly sourceState: SourceState;
 };
+
+export type SourceState = "running" | "idle" | "error" | "unknown";
+
+/**
+ * `roots` and every session descending from one (subagents, theirs, …), in `sessions`' order:
+ * what a conversation delegated is part of what it did. Pure.
+ */
+export function selectDescendants<
+  S extends { readonly id: string; readonly parent: string | null },
+>(sessions: ReadonlyArray<S>, roots: Iterable<string>): S[] {
+  const chosen = new Set(roots);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const s of sessions)
+      if (s.parent !== null && chosen.has(s.parent) && !chosen.has(s.id)) {
+        chosen.add(s.id);
+        grew = true;
+      }
+  }
+  return sessions.filter((s) => chosen.has(s.id));
+}
 
 export type Loaded = {
   readonly sources: ReadonlyArray<string>;
@@ -64,6 +90,11 @@ export type Loaded = {
   readonly unread: ReadonlyArray<{ readonly id: string; readonly title: string }>;
   /** The sessions a name means: a thread id, `codex:<id>`, or what an agent exports (`claude-code:<id>`). */
   readonly named: (name: string) => ReadonlyArray<RepoSession>;
+  /**
+   * The sessions of `roots` (thread ids of `sessions`) and all their descendants, read whole:
+   * subagents count wherever they ran and whether or not they ran any action.
+   */
+  readonly family: (roots: ReadonlyArray<string>) => Effect.Effect<ReadonlyArray<RepoSession>>;
 };
 
 export class RepoSessions extends Context.Service<
@@ -179,10 +210,8 @@ export class RepoSessions extends Context.Service<
         return {
           sources,
           roots,
-          found: found.flatMap((f) => {
-            const root = rootOf(f.summary.worktree);
-            return root ? [{ ...f, root }] : [];
-          }),
+          // Elsewhere: only ever read as some session's descendant.
+          found: found.map((f) => ({ ...f, root: rootOf(f.summary.worktree) })),
         };
       });
 
@@ -200,19 +229,18 @@ export class RepoSessions extends Context.Service<
           if (t.provider === "claudeAgent") return claude.snapshot(native);
           return Effect.succeed(null);
         };
-        const sessions: RepoSession[] = [];
-        const unread: Array<{ id: string; title: string }> = [];
-        for (const { summary, load, root, parent, reader } of found) {
+        const parentOf = (id: string, parent: string | null | undefined) =>
+          parent === undefined
+            ? (parents.get(id) ?? null)
+            : parent && (nativeIds.get(nativeId(parent)) ?? parent);
+        const read = Effect.fn("RepoSessions.read")(function* (f: (typeof found)[number]) {
+          const { summary, load, parent, reader } = f;
           const labels = yield* labeler.forThread(summary.id);
           const view = yield* load(labels).pipe(Effect.option);
-          if (Option.isNone(view)) {
-            unread.push({ id: summary.id, title: summary.title });
-            continue;
-          }
+          if (Option.isNone(view)) return null;
           const { entries, thread: t } = view.value;
-          if (!entries.some((e) => e.type === "action")) continue;
-          sessions.push({
-            root,
+          return {
+            root: f.root ?? summary.worktree ?? "",
             entries,
             labels: { ...view.value.labels },
             snapshot: yield* Effect.map(
@@ -235,6 +263,8 @@ export class RepoSessions extends Context.Service<
               (s) => extendSnapshot(s, { treeShown: treeShownIn(entries) }, "derived"),
             ),
             origin: view.value.origin ?? { reader },
+            sourceState:
+              reader === "t3" || reader === "codex-app-server" ? summary.status : "unknown",
             thread: {
               id: t.id,
               title: t.title,
@@ -242,13 +272,48 @@ export class RepoSessions extends Context.Service<
               provider: t.provider,
               origin: t.origin,
               // A parent T3 ran is known there by its own thread id.
-              parent:
-                parent === undefined
-                  ? (parents.get(t.id) ?? null)
-                  : parent && (nativeIds.get(nativeId(parent)) ?? parent),
+              parent: parentOf(t.id, parent),
             },
-          });
+          } satisfies RepoSession;
+        });
+        const sessions: RepoSession[] = [];
+        /** Here, but no action of their own: only read as some session's descendant. */
+        const quiet: RepoSession[] = [];
+        const unread: Array<{ id: string; title: string }> = [];
+        const elsewhere: typeof found = [];
+        for (const f of found) {
+          if (!f.root) {
+            if (parentOf(f.summary.id, f.parent) !== null) elsewhere.push(f);
+            continue;
+          }
+          const session = yield* read(f);
+          if (!session) unread.push({ id: f.summary.id, title: f.summary.title });
+          else if (session.entries.some((e) => e.type === "action")) sessions.push(session);
+          else quiet.push(session);
         }
+        const family = (roots: ReadonlyArray<string>) =>
+          Effect.gen(function* () {
+            const nodes = [
+              ...[...sessions, ...quiet].map((s) => ({
+                id: s.thread.id,
+                parent: s.thread.parent,
+                session: s as RepoSession | null,
+                f: null as (typeof found)[number] | null,
+              })),
+              ...elsewhere.map((f) => ({
+                id: f.summary.id,
+                parent: parentOf(f.summary.id, f.parent),
+                session: null,
+                f,
+              })),
+            ];
+            const out: RepoSession[] = [];
+            for (const n of selectDescendants(nodes, roots)) {
+              const session = n.session ?? (n.f ? yield* read(n.f) : null);
+              if (session) out.push(session);
+            }
+            return out;
+          });
         // A name is a thread id, `codex:<id>`, or what an agent exports (`claude-code:<id>`),
         // which T3 knows by its provider thread.
         const named = (name: string) => {
@@ -262,7 +327,7 @@ export class RepoSessions extends Context.Service<
           ]);
           return sessions.filter((s) => ids.has(s.thread.id));
         };
-        return { sources, sessions, unread, named, roots };
+        return { sources, sessions, unread, named, roots, family };
       });
 
       return RepoSessions.of({ load });

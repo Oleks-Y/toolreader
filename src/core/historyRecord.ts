@@ -14,6 +14,9 @@ import { redactEntries, redactLabels, redactor, redactText } from "./proof.ts";
 
 export const HISTORY_FORMAT_VERSION = 1;
 
+/** What a session's source said about it when it was read. */
+export const SOURCE_STATES = ["running", "idle", "error", "unknown"] as const;
+
 export const ThreadRecordV1 = Schema.Struct({
   formatVersion: Schema.Literal(1),
   thread: LedgerThread,
@@ -31,6 +34,13 @@ export const ThreadRecordV1 = Schema.Struct({
    * version, apart from this record's own hash. Absent from older clients.
    */
   origin: Schema.optional(SessionOrigin),
+  /**
+   * Its newest entry's time, and what its source said of it when read (`unknown` when the source
+   * says nothing; never "ended"). How current this copy is, apart from its content: neither is in
+   * its content hash. Absent from older clients.
+   */
+  lastEntryAt: Schema.optional(Schema.String),
+  sourceState: Schema.optional(Schema.Literals(SOURCE_STATES)),
 });
 export type ThreadRecord = typeof ThreadRecordV1.Type;
 
@@ -202,8 +212,10 @@ export function buildThreadRecord(input: {
   readonly home?: string | undefined;
   readonly snapshot?: SessionSnapshot | undefined;
   readonly origin?: SessionOrigin | undefined;
+  readonly sourceState?: (typeof SOURCE_STATES)[number] | undefined;
 }): ThreadRecord {
   const { clean, count } = redactor(input.home);
+  const last = lastAt(input.entries);
   const redacted = redactEntries(input.entries, { outputs: true, home: input.home });
   const entries = clipOutputs(redacted.entries, input.maxOutput).map((e) =>
     e.type !== "action"
@@ -243,8 +255,19 @@ export function buildThreadRecord(input: {
         }
       : {}),
     redactions: redacted.redactions + count(),
+    ...(last ? { lastEntryAt: last } : {}),
+    ...(input.sourceState ? { sourceState: input.sourceState } : {}),
   };
 }
+
+/** The newest entry's time, as the entry has it. */
+const lastAt = (entries: ReadonlyArray<Entry>) => {
+  let best: string | undefined;
+  for (const e of entries)
+    if (Number.isFinite(Date.parse(e.at)) && (!best || Date.parse(e.at) > Date.parse(best)))
+      best = e.at;
+  return best;
+};
 
 /** A commit's record: its links as `linkByContent` found them, its subject redacted. */
 export function buildCommitRecord(input: {

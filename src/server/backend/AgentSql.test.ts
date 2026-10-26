@@ -125,6 +125,52 @@ describe("AgentSql", () => {
       }),
     );
 
+    it.effect("says how current each conversation is, and lists what may be behind", () =>
+      Effect.gen(function* () {
+        const ws = yield* seeded("current", "codex:ours");
+        const live = yield* inWorkspace("current");
+        yield* live.putThread({
+          ...threadRecord("codex:live", steps),
+          lastEntryAt: "2026-01-01T10:00:00.000Z",
+          sourceState: "running",
+        });
+        // Another workspace's running conversation is never in this one's coverage.
+        yield* Effect.flatMap(inWorkspace("rival"), (s) =>
+          s.putThread({ ...threadRecord("codex:rival-live", steps), sourceState: "running" }),
+        );
+        const { rows } = yield* query(
+          ws,
+          "SELECT id, last_entry_at, source_state, checked_at IS NOT NULL AS checked FROM agent_threads ORDER BY id",
+        );
+        assert.deepStrictEqual(rows, [
+          {
+            id: "codex:live",
+            last_entry_at: "2026-01-01T10:00:00.000Z",
+            source_state: "running",
+            checked: true,
+          },
+          // An older client's record: its newest step from its entries, its state unknown.
+          { id: "codex:ours", last_entry_at: at, source_state: "unknown", checked: true },
+        ]);
+        const coverage = yield* live.coverage;
+        assert.strictEqual(coverage.threads, 2);
+        assert.deepStrictEqual(
+          coverage.mayBeBehind.map((t) => [t.id, t.state, t.lastEntryAt]),
+          [["codex:live", "running", "2026-01-01T10:00:00.000Z"]],
+        );
+        assert.strictEqual(coverage.behind, 1);
+        assert.match(coverage.asOf, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
+        // Read again as stored, and idle now: checked, so no longer listed.
+        const version = (yield* live.hashes(["codex:live"])).get("codex:live")!;
+        assert.strictEqual(
+          yield* live.checked([{ id: "codex:live", version, sourceState: "idle" }]),
+          1,
+        );
+        assert.strictEqual(yield* live.checked([{ id: "codex:live", version: "other" }]), 0);
+        assert.deepStrictEqual((yield* live.coverage).mayBeBehind, []);
+      }),
+    );
+
     it.effect("refuses the tables behind the views", () =>
       Effect.gen(function* () {
         const ws = yield* seeded("acme", "codex:ours");
