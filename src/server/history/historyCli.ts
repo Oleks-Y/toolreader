@@ -3,6 +3,7 @@
 //   toolreader history sync (--range A..B | --pr N | --sha X) [--repo PATH]
 //                           [--source auto|t3|codex-app-server|codex-rollouts|claude-transcripts]
 //                           [--dry-run] [--hook]
+//   toolreader history status [--repo PATH] [--json] [--check]     (historyHooks.ts)
 //   toolreader history push SESSION… [--repo PATH] [--source …]
 //   toolreader history site (--range A..B | --pr N) [--repo PATH] [--out DIR]
 //   toolreader history audit [--repo PATH] [--source …]           (core/audit.ts)
@@ -43,10 +44,26 @@ import { RepoSessions, SESSION_SOURCES } from "../RepoSessions.ts";
 import { ServerConfig } from "../ServerConfig.ts";
 import { declareCommands } from "./declareCli.ts";
 import { BackendApi, MEDIA_TYPES, Sha256 } from "../../core/historyApi.ts";
-import { backendSettings, backendUrl, call, connect, HistoryFailed } from "./HistoryClient.ts";
+import {
+  backendSettings,
+  backendTarget,
+  backendUrl,
+  call,
+  connect,
+  HistoryFailed,
+} from "./HistoryClient.ts";
 import { deviceLogin, saveGithubToken } from "./githubLogin.ts";
 import { commitSkill, dirtyPaths, INSTALLED_PATHS, installSkill } from "./historySkill.ts";
-import { appendLog, causeMessage, installHooks, pending } from "./historyHooks.ts";
+import {
+  appendLog,
+  causeMessage,
+  commonGitDir,
+  deliveryLine,
+  deliveryOf,
+  installHooks,
+  minute,
+  pending,
+} from "./historyHooks.ts";
 import type { Evidence, SearchHit } from "../../core/historyApi.ts";
 import {
   FINDING_STATUSES,
@@ -220,27 +237,18 @@ const sync = Command.make(
     // As a hook: what failed before in this repo first, then this push; whatever fails waits.
     yield* Effect.gen(function* () {
       // Keyed by the repository (its common git dir), so any of its worktrees retries.
-      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const common = (yield* spawner
-        .string(
-          ChildProcess.make("git", [
-            "-C",
-            repo,
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-common-dir",
-          ]),
-        )
-        .pipe(Effect.orElseSucceed(() => repo))).trim();
-      const store = yield* pending(common);
+      const store = yield* pending(yield* commonGitDir(repo));
       const lines: string[] = [];
-      for (const r of new Set([...(yield* store.list), range])) {
+      for (const r of new Set([...(yield* store.list).map((p) => p.range), range])) {
         const done = yield* Effect.result(syncRange(r));
         if (done._tag === "Success") {
           lines.push(...reportLines(done.success, false));
           yield* store.done(r);
         } else {
-          yield* store.add(r);
+          yield* store.failed(
+            r,
+            done.failure._tag === "HistoryFailed" ? (done.failure.code ?? "FAILED") : "FAILED",
+          );
           lines.push(
             `✗ ${shortShas(r)}: ${redactText(done.failure.message).text} (retried by the next push)`,
           );
@@ -259,6 +267,123 @@ const sync = Command.make(
 ).pipe(
   Command.withDescription(
     "Sync a range's explicit agent declarations and session trailers to the backend",
+  ),
+);
+
+const StatusJson = Schema.Struct({
+  backend: Schema.Struct({
+    url: Schema.NullOr(Schema.String),
+    workspace: Schema.NullOr(Schema.String),
+    hasToken: Schema.Boolean,
+  }),
+  delivery: Schema.Struct({
+    pending: Schema.Number,
+    firstFailureAt: Schema.NullOr(Schema.String),
+    lastAttemptAt: Schema.NullOr(Schema.String),
+    lastErrorCode: Schema.NullOr(Schema.String),
+    ranges: Schema.Array(
+      Schema.Struct({
+        range: Schema.String,
+        firstFailureAt: Schema.NullOr(Schema.String),
+        lastAttemptAt: Schema.NullOr(Schema.String),
+        lastErrorCode: Schema.NullOr(Schema.String),
+      }),
+    ),
+  }),
+  check: Schema.optional(
+    Schema.Struct({
+      ok: Schema.Boolean,
+      server: Schema.optional(Schema.String),
+      errorCode: Schema.optional(Schema.String),
+    }),
+  ),
+});
+export type StatusJson = typeof StatusJson.Type;
+const encodeStatus = Schema.encodeSync(Schema.fromJsonString(StatusJson, { space: 2 }));
+
+/** `history status`, as plain lines. */
+export const statusLines = (s: StatusJson): string[] => [
+  s.backend.url
+    ? `Backend: ${s.backend.url}${s.backend.workspace ? ` (workspace ${s.backend.workspace})` : " (no workspace set)"}${s.backend.hasToken ? "" : ", no token"}`
+    : "Backend: not configured",
+  deliveryLine(s.delivery),
+  ...s.delivery.ranges.map(
+    (r) =>
+      `  ${shortShas(r.range)}: first failure ${minute(r.firstFailureAt)}, last attempt ${minute(r.lastAttemptAt)}, last error ${r.lastErrorCode ?? "unknown"}`,
+  ),
+  ...(s.check
+    ? [
+        s.check.ok
+          ? `Check: ok (backend ${s.check.server ?? "?"} took this token)`
+          : `Check: failed (${s.check.errorCode ?? "FAILED"})`,
+      ]
+    : []),
+];
+
+/** What `history status` reports: pending ranges for this repo, the backend, and with `check` a signed-in call. */
+export const deliveryStatus = Effect.fn("history.status")(function* (repo: string, check: boolean) {
+  const ranges = yield* Effect.flatMap(Effect.flatMap(commonGitDir(repo), pending), (s) => s.list);
+  const target = yield* backendTarget.pipe(
+    Effect.orElseSucceed(() => ({ file: "", url: null, workspace: null, hasToken: false })),
+  );
+  const checked = check
+    ? yield* Effect.flatMap(backendSettings(), (settings) =>
+        Effect.flatMap(connect(settings), (api) => call(api.system.meta())),
+      ).pipe(
+        Effect.match({
+          onSuccess: (meta): NonNullable<StatusJson["check"]> => ({
+            ok: true,
+            server: meta.server,
+          }),
+          onFailure: (e): NonNullable<StatusJson["check"]> => ({
+            ok: false,
+            errorCode: e.code ?? "FAILED",
+          }),
+        }),
+        Effect.provide(FetchHttpClient.layer),
+      )
+    : undefined;
+  return {
+    backend: { url: target.url, workspace: target.workspace, hasToken: target.hasToken },
+    delivery: {
+      ...deliveryOf(ranges),
+      ranges: ranges.map((r) => ({
+        range: r.range,
+        firstFailureAt: r.firstFailureAt ?? null,
+        lastAttemptAt: r.lastAttemptAt ?? null,
+        lastErrorCode: r.lastErrorCode ?? null,
+      })),
+    },
+    ...(checked ? { check: checked } : {}),
+  } satisfies StatusJson;
+});
+
+const status = Command.make(
+  "status",
+  {
+    repo: Flag.string("repo").pipe(
+      Flag.withDescription("Repository (any path inside it)"),
+      Flag.withDefault("."),
+    ),
+    json: Flag.boolean("json").pipe(Flag.withDescription("Print it as JSON")),
+    check: Flag.boolean("check").pipe(
+      Flag.withDescription("Also ask the backend whether it takes this machine's token"),
+    ),
+  },
+  Effect.fn("toolreader history status")(function* (flags) {
+    const repo = (yield* Path.Path).resolve(flags.repo);
+    const s = yield* deliveryStatus(repo, flags.check);
+    if (flags.json) yield* Console.log(encodeStatus(s));
+    else for (const line of statusLines(s)) yield* Console.log(line);
+    if (s.check && !s.check.ok)
+      return yield* new HistoryFailed({
+        message: `The backend check failed (${s.check.errorCode})`,
+        code: s.check.errorCode,
+      });
+  }, Effect.provide(ServerConfig.layer)),
+).pipe(
+  Command.withDescription(
+    "Show what history delivery is waiting on in this repo (ranges a hook couldn't send), and where it goes; retries nothing",
   ),
 );
 
@@ -1028,6 +1153,7 @@ export const historyCommand = Command.make("history").pipe(
   Command.withDescription("Agent history per commit, kept on the history backend"),
   Command.withSubcommands([
     sync,
+    status,
     push,
     site,
     login,

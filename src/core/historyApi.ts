@@ -226,7 +226,7 @@ export const Evidence = Schema.Struct({
 export type Evidence = typeof Evidence.Type;
 
 /** What an agent's SQL can read: the `sql` endpoint's views, as agents are told about them. */
-export const AGENT_SCHEMA = `Read-only Postgres SQL over every agent conversation in the workspace, whoever's machine it ran on. One statement; at most 1000 rows, 1 MB and 10 s. Two views:
+export const AGENT_SCHEMA = `Read-only Postgres SQL over the latest imported copy of every agent conversation in the workspace, whoever's machine it ran on. A copy can be behind its live session (taken_at says when it was read), so a row you don't find means "not found in the imported history as of taken_at", never "it never happened". One statement; at most 1000 rows, 1 MB and 10 s. Two views:
 
 agent_threads: one row per conversation.
   id (T3 thread ids are bare; codex:<id>, claude:<id>), title (its first prompt), source (t3|codex|claude), provider, origin (the client that ran it), parent (the conversation that delegated this one, for a subagent; null otherwise), snapshot (jsonb: how it started, e.g. startCommit, branch), taken_at, uploaded_at, version, entry_count.

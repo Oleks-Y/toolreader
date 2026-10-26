@@ -258,7 +258,18 @@ export const causeMessage = (cause: Cause.Cause<unknown>) => {
   return redactText(message).text;
 };
 
-const Pending = Schema.Struct({ repo: Schema.String, range: Schema.String });
+const Pending = Schema.Struct({
+  repo: Schema.String,
+  range: Schema.String,
+  /**
+   * When the range first failed and was last tried (ISO), and why, as `HistoryFailed.code` (never
+   * a message: those can quote a URL or a path). Absent from files older hooks wrote.
+   */
+  firstFailureAt: Schema.optional(Schema.String),
+  lastAttemptAt: Schema.optional(Schema.String),
+  lastErrorCode: Schema.optional(Schema.String),
+});
+export type Pending = typeof Pending.Type;
 const decodePending = Schema.decodeUnknownEffect(Schema.fromJsonString(Pending));
 const encodePending = Schema.encodeEffect(Schema.fromJsonString(Pending));
 
@@ -276,26 +287,91 @@ export const pending = (repo: string) =>
     const dir = path.join(home, ".toolreader", "pending");
     const file = (range: string) =>
       path.join(dir, `${sha256(`${repo}\n${range}`).slice(0, 32)}.json`);
+    const read = (name: string) =>
+      fs.readFileString(name).pipe(Effect.flatMap(decodePending), Effect.option);
+    /** This repository's pending ranges, oldest failure first (unknown times last). */
     const list = fs.readDirectory(dir).pipe(
       Effect.flatMap((names) =>
         Effect.forEach(
           names.filter((n) => n.endsWith(".json")),
-          (n) =>
-            fs.readFileString(path.join(dir, n)).pipe(Effect.flatMap(decodePending), Effect.option),
+          (n) => read(path.join(dir, n)),
         ),
       ),
       Effect.map((found) =>
-        found.flatMap((p) => (p._tag === "Some" && p.value.repo === repo ? [p.value.range] : [])),
+        found
+          .flatMap((p) => (p._tag === "Some" && p.value.repo === repo ? [p.value] : []))
+          .sort((a, b) => (a.firstFailureAt ?? "~").localeCompare(b.firstFailureAt ?? "~")),
       ),
-      Effect.orElseSucceed(() => [] as string[]),
+      Effect.orElseSucceed((): ReadonlyArray<Pending> => []),
     );
-    const add = (range: string) =>
+    /** Keeps a range that failed with `code`: its first failure stays, its last attempt moves. */
+    const failed = (range: string, code: string) =>
       Effect.gen(function* () {
         yield* fs.makeDirectory(dir, { recursive: true, mode: 0o700 });
+        const now = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+        const before = yield* read(file(range));
         const tmp = `${file(range)}.${NodeCrypto.randomUUID()}.tmp`;
-        yield* fs.writeFileString(tmp, yield* encodePending({ repo, range }), { mode: 0o600 });
+        yield* fs.writeFileString(
+          tmp,
+          yield* encodePending({
+            repo,
+            range,
+            // A file an older hook wrote has no first failure: this one is the first we know of.
+            firstFailureAt:
+              (before._tag === "Some" ? before.value.firstFailureAt : undefined) ?? now,
+            lastAttemptAt: now,
+            lastErrorCode: code,
+          }),
+          { mode: 0o600 },
+        );
         yield* fs.rename(tmp, file(range));
       }).pipe(Effect.ignore);
     const done = (range: string) => fs.remove(file(range)).pipe(Effect.ignore);
-    return { list, add, done };
+    return { list, failed, done };
   });
+
+/** The repository a path is in, as pending files key it: its common git directory. */
+export const commonGitDir = (repo: string) =>
+  git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).pipe(
+    Effect.orElseSucceed(() => repo),
+  );
+
+/** What's waiting to be delivered for a repository: how many ranges, since when, and why. */
+export type Delivery = {
+  readonly pending: number;
+  readonly firstFailureAt: string | null;
+  readonly lastAttemptAt: string | null;
+  readonly lastErrorCode: string | null;
+};
+
+/** Pending ranges, summed up: the oldest first failure, the latest attempt and its error. */
+export function deliveryOf(ranges: ReadonlyArray<Pending>): Delivery {
+  const known = (xs: ReadonlyArray<string | undefined>) =>
+    xs.filter((x): x is string => x !== undefined).sort();
+  const last = [...ranges]
+    .filter((r) => r.lastAttemptAt !== undefined)
+    .sort((a, b) => a.lastAttemptAt!.localeCompare(b.lastAttemptAt!))
+    .at(-1);
+  return {
+    pending: ranges.length,
+    firstFailureAt: known(ranges.map((r) => r.firstFailureAt))[0] ?? null,
+    lastAttemptAt: last?.lastAttemptAt ?? null,
+    lastErrorCode:
+      last?.lastErrorCode ?? ranges.find((r) => r.lastErrorCode)?.lastErrorCode ?? null,
+  };
+}
+
+/** An ISO time to the minute, as status lines show it. */
+export const minute = (iso: string | null) => (iso === null ? "unknown" : `${iso.slice(0, 16)}Z`);
+
+/** `Delivery: …`, as `history status` prints it. */
+export const deliveryLine = (d: Delivery) =>
+  d.pending === 0
+    ? "Delivery: nothing pending"
+    : `Delivery: ${d.pending} range${d.pending === 1 ? "" : "s"} pending (first failure ${minute(d.firstFailureAt)}, last attempt ${minute(d.lastAttemptAt)}, last error ${d.lastErrorCode ?? "unknown"})`;
+
+/** What `history remind` adds to its reminder while delivery fails; null when nothing waits. */
+export const deliveryWarning = (d: Delivery) =>
+  d.pending === 0
+    ? null
+    : `history delivery is failing: ${d.pending} range${d.pending === 1 ? "" : "s"} pending since ${minute(d.firstFailureAt)}; run \`toolreader history status\``;
