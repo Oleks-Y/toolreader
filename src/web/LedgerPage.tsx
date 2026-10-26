@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
+import { CHECK_KINDS, type Check } from "../core/checks.ts";
 import type { ThreadView } from "../core/domain.ts";
 import {
   isStale,
@@ -168,11 +169,55 @@ function LinkRow({
           )}
         </span>
       </summary>
+      {link.checks && link.checks.length > 0 && <Checks checks={link.checks} />}
+      {link.reads && link.reads.paths.length > 0 && (
+        <details className="ledger-reads dim">
+          <summary>
+            read {link.reads.paths.length + link.reads.more} file
+            {link.reads.paths.length + link.reads.more === 1 ? "" : "s"} for this commit (as far as
+            its read actions show)
+          </summary>
+          <ul>
+            {link.reads.paths.map((p) => (
+              <li key={p}>{p}</li>
+            ))}
+            {link.reads.more > 0 && <li>…and {link.reads.more} more</li>}
+          </ul>
+        </details>
+      )}
       {!open ? null : link.entries.length > 0 ? (
         <ActionView view={view} embedded />
       ) : (
         <p className="dim">no history recorded for this thread yet</p>
       )}
     </details>
+  );
+}
+
+const OUTCOME_MARK = { passed: "✓", failed: "✗", interrupted: "?", unknown: "?" } as const;
+
+/** A link's tests and builds: how each ended, what that rests on, and what it didn't see. */
+function Checks({ checks }: { checks: ReadonlyArray<Check> }) {
+  const last = CHECK_KINDS.flatMap((kind) => checks.findLast((k) => k.kind === kind) ?? []);
+  return (
+    <ul className="ledger-checks dim">
+      {last.map((k) => (
+        <li key={k.actionId} title={k.title}>
+          last {k.kind}: {OUTCOME_MARK[k.outcome]} {k.outcome} (
+          {k.masked ? "can't fail: || true" : k.basis}) · ran on: {k.testedState} · for this commit:{" "}
+          {k.applicability}
+          <div className="dim">{k.reasons.join("; ")}</div>
+        </li>
+      ))}
+      <li>
+        {checks.length} check{checks.length === 1 ? "" : "s"} in all:{" "}
+        {(["passed", "failed", "interrupted", "unknown"] as const)
+          .flatMap((o) => {
+            const n = checks.filter((k) => k.outcome === o).length;
+            return n > 0 ? [`${n} ${o}`] : [];
+          })
+          .join(", ")}
+      </li>
+    </ul>
   );
 }

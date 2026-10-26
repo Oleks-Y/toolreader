@@ -118,29 +118,101 @@ export const ThreadHead = Schema.Struct({ head: Schema.String, status: ThreadSta
 export type ThreadHead = typeof ThreadHead.Type;
 
 /**
- * How a session started, as its own files recorded it: what a rerun or a reviewer needs to know.
- * A field is absent when the source didn't record it; nothing is filled in from the current state.
+ * How each snapshot field is known: `recorded` in the session's own files, `derived` from them
+ * by a join or a command's output (a T3 thread's provider file, git's own words), `asserted` by
+ * an agent's text, `conflicting` (the source records more than one value; the first is kept), or
+ * `unavailable` (not recorded: never filled in from the current state).
  */
-export const SessionSnapshot = Schema.Struct({
+export const SNAPSHOT_STATUSES = [
+  "recorded",
+  "derived",
+  "asserted",
+  "conflicting",
+  "unavailable",
+] as const;
+export type SnapshotStatus = (typeof SNAPSHOT_STATUSES)[number];
+
+/** What a rerun or a reviewer needs to know about how a session started. */
+export const SnapshotFields = Schema.Struct({
   /** The commit the session started on (Codex records it; Claude Code doesn't). */
   startCommit: Schema.optional(Schema.String),
   branch: Schema.optional(Schema.String),
+  cwd: Schema.optional(Schema.String),
   clientVersion: Schema.optional(Schema.String),
   modelProvider: Schema.optional(Schema.String),
-  /** The first turn's: a session can switch later. */
+  /** The first turn's: a session can switch later (then `conflicting`). */
   model: Schema.optional(Schema.String),
   effort: Schema.optional(Schema.String),
   approvalPolicy: Schema.optional(Schema.String),
   sandbox: Schema.optional(Schema.String),
   permissionMode: Schema.optional(Schema.String),
+  /** SHA-256 of the instructions text the session ran with, never the text. */
+  instructionsSha: Schema.optional(Schema.String),
+  /** `clean` or `dirty`, as git showed the tree before the session's first edit. */
+  treeShown: Schema.optional(Schema.String),
+  /** Lockfile digest of an identified tree: unavailable from history so far. */
+  lockfileDigest: Schema.optional(Schema.String),
+});
+export type SnapshotField = keyof typeof SnapshotFields.Type;
+export const SNAPSHOT_FIELDS = Object.keys(SnapshotFields.fields) as Array<SnapshotField>;
+
+/** The snapshot manifest: its fields, its version, and how each field is known. */
+export const SessionSnapshot = Schema.Struct({
+  ...SnapshotFields.fields,
+  manifestVersion: Schema.optional(Schema.Number),
+  provenance: Schema.optional(Schema.Record(Schema.String, Schema.Literals(SNAPSHOT_STATUSES))),
 });
 export type SessionSnapshot = typeof SessionSnapshot.Type;
 
-/** `fields` without the ones that are missing or empty, as a snapshot. */
+export const SNAPSHOT_MANIFEST_VERSION = 1;
+
+/**
+ * A manifest of `fields` without the missing or empty ones, each present field `recorded` unless
+ * `statuses` says otherwise, each missing one `unavailable`.
+ */
 export const snapshotOf = (
-  fields: Record<keyof SessionSnapshot, string | null | undefined>,
-): SessionSnapshot =>
-  Object.fromEntries(Object.entries(fields).filter(([, v]) => !!v?.trim())) as SessionSnapshot;
+  fields: Partial<Record<SnapshotField, string | null | undefined>>,
+  statuses: Partial<Record<SnapshotField, SnapshotStatus>> = {},
+): SessionSnapshot => {
+  const values = Object.fromEntries(
+    Object.entries(fields).filter(([, v]) => !!v?.trim()),
+  ) as Partial<Record<SnapshotField, string>>;
+  return {
+    ...values,
+    manifestVersion: SNAPSHOT_MANIFEST_VERSION,
+    provenance: Object.fromEntries(
+      SNAPSHOT_FIELDS.map((f) => [
+        f,
+        values[f] === undefined ? "unavailable" : (statuses[f] ?? "recorded"),
+      ]),
+    ),
+  };
+};
+
+/** The snapshot's values alone, without its manifest version and statuses. */
+export const snapshotValues = (s: SessionSnapshot): Partial<Record<SnapshotField, string>> =>
+  Object.fromEntries(SNAPSHOT_FIELDS.flatMap((f) => (s[f] === undefined ? [] : [[f, s[f]]])));
+
+/** The snapshot with more fields, and how they are known (already-known fields win). */
+export const extendSnapshot = (
+  s: SessionSnapshot,
+  fields: Partial<Record<SnapshotField, string | null | undefined>>,
+  status: SnapshotStatus,
+): SessionSnapshot => {
+  const values = snapshotValues(s);
+  const added = Object.fromEntries(
+    Object.entries(fields).filter(
+      ([f, v]) => !!v?.trim() && values[f as SnapshotField] === undefined,
+    ),
+  );
+  return snapshotOf(
+    { ...values, ...added },
+    {
+      ...(s.provenance as Partial<Record<SnapshotField, SnapshotStatus>>),
+      ...Object.fromEntries(Object.keys(added).map((f) => [f, status])),
+    },
+  );
+};
 
 /**
  * Where a session's history was read from: the native file (a T3 thread has none: its rows

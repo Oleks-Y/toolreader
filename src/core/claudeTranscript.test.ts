@@ -5,7 +5,7 @@ import {
   claudeTranscriptMeta,
   claudeTranscriptToRows,
 } from "./claudeTranscript.ts";
-import type { Action, Entry } from "./domain.ts";
+import { snapshotValues, type Action, type Entry } from "./domain.ts";
 import { normalize } from "./normalize.ts";
 
 let n = 0;
@@ -82,19 +82,27 @@ const actions = (entries: Entry[]) => entries.filter((e): e is Action => e.type 
 describe("claudeTranscript", () => {
   it("keeps how the session started, and claims no commit", () => {
     const line = (o: object) => JSON.stringify({ ...base, ...o });
+    const snapshot = claudeSnapshot([
+      line({ type: "user", version: "2.1.0", gitBranch: "fix/x", permissionMode: "plan" }),
+      line({ type: "assistant", message: { model: "<synthetic>", content: [] } }),
+      line({ type: "assistant", message: { model: "claude-opus-5-5", content: [] } }),
+      line({ type: "user", version: "2.2.0", permissionMode: "acceptEdits" }),
+    ]);
+    assert.deepStrictEqual(snapshotValues(snapshot), {
+      branch: "fix/x",
+      cwd: "/repo",
+      clientVersion: "2.1.0",
+      model: "claude-opus-5-5",
+      permissionMode: "plan",
+    });
+    // Upgraded and switched mode mid-session: the first value, marked conflicting.
     assert.deepStrictEqual(
-      claudeSnapshot([
-        line({ type: "user", version: "2.1.0", gitBranch: "fix/x", permissionMode: "plan" }),
-        line({ type: "assistant", message: { model: "<synthetic>", content: [] } }),
-        line({ type: "assistant", message: { model: "claude-opus-5-5", content: [] } }),
-        line({ type: "user", version: "2.2.0", permissionMode: "acceptEdits" }),
-      ]),
-      {
-        branch: "fix/x",
-        clientVersion: "2.1.0",
-        model: "claude-opus-5-5",
-        permissionMode: "plan",
-      },
+      [
+        snapshot.provenance?.["clientVersion"],
+        snapshot.provenance?.["permissionMode"],
+        snapshot.provenance?.["startCommit"],
+      ],
+      ["conflicting", "conflicting", "unavailable"],
     );
   });
 

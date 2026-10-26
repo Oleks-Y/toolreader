@@ -41,6 +41,47 @@ const range: LedgerRange = {
             reviewedSha: null,
             files: ["src/a.ts"],
             labels: {},
+            reads: { paths: ["src/a.ts", "docs/spec.md"], more: 0 },
+            checks: [
+              {
+                actionId: "c1",
+                turn: "m0",
+                at: "2026-01-01T09:58:30Z",
+                kind: "test",
+                title: "vitest run",
+                outcome: "passed",
+                basis: "exit code",
+                linesAfter: 4,
+                scope: ["src/a.ts"],
+                testedState: "candidate",
+                base: "c".repeat(40),
+                applicability: "definitely stale",
+                reasons: [
+                  "started on cccccccc; the tree was never shown clean",
+                  "4 of the commit's lines went into src/a.ts, which it named, after it ran",
+                ],
+                method: "checks/2",
+              },
+              {
+                actionId: "c2",
+                turn: "m0",
+                at: "2026-01-01T09:58:40Z",
+                kind: "build",
+                title: "tsc || true",
+                outcome: "unknown",
+                basis: "error flag",
+                masked: true,
+                linesAfter: 0,
+                scope: [],
+                testedState: "unknown",
+                applicability: "unknown",
+                reasons: [
+                  "the session's starting commit isn't recorded",
+                  "nothing shows it ran on this commit, or that it didn't",
+                ],
+                method: "checks/2",
+              },
+            ],
             entries: [
               {
                 type: "message",
@@ -106,5 +147,20 @@ describe("static ledger page", () => {
     for (const text of ["Do it", "Review it", "reviewer", "stale: reviewed bbbbbbbb", "untracked"])
       assert.include(html, text);
     assert.include(html, "b.css by hand");
+  });
+
+  it("shows each link's last test and build, what they rest on and what they didn't see", async () => {
+    Object.assign(globalThis, { location: { origin: "http://127.0.0.1", hash: "" } });
+    const { LedgerPage } = await import("./LedgerPage.tsx");
+    const html = renderToStaticMarkup(<LedgerPage data={range} />);
+    for (const text of [
+      "last test: ✓ passed (exit code) · ran on: candidate · for this commit: definitely stale",
+      "4 of the commit&#x27;s lines went into src/a.ts, which it named, after it ran",
+      "last build: ? unknown (can&#x27;t fail: || true) · ran on: unknown · for this commit: unknown",
+      "2 checks in all: 1 passed, 1 unknown",
+      "read 2 files for this commit (as far as its read actions show)",
+      "docs/spec.md",
+    ])
+      assert.include(html, text);
   });
 });

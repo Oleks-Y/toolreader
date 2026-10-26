@@ -31,6 +31,9 @@ const SessionMeta = Schema.Struct({
   git: opt(Schema.Struct({ branch: opt(Schema.String), commit_hash: opt(Schema.String) })),
   cli_version: opt(Schema.String),
   model_provider: opt(Schema.String),
+  base_instructions: opt(
+    Schema.Union([Schema.String, Schema.Struct({ text: opt(Schema.String) })]),
+  ),
   /** Delegated threads start with a copy of their parent's history; thread/read hides it. */
   subagent_history_start_ordinal: opt(Schema.Number),
 });
@@ -220,6 +223,8 @@ export type RolloutSession = {
   /** Spawned by another session (subagents, guardian reviews): reached through its parent. */
   readonly subagent: boolean;
   readonly snapshot: SessionSnapshot;
+  /** The instructions text it ran with: the server keeps only its hash in the snapshot. */
+  readonly instructions?: string | undefined;
 };
 
 /**
@@ -230,6 +235,8 @@ export type RolloutSession = {
 export function readRollout(lines: ReadonlyArray<string>, path: string): RolloutSession | null {
   let meta: typeof SessionMeta.Type | undefined;
   let context: typeof TurnContext.Type | undefined;
+  // Every turn's settings, to tell a session that switched model or policy from one that didn't.
+  const settings = new Map<string, Set<string>>();
   let lastAt: string | undefined;
   let turnId: string | undefined;
   let preview: string | undefined;
@@ -253,7 +260,15 @@ export function readRollout(lines: ReadonlyArray<string>, path: string): Rollout
       continue;
     }
     if (line.type === "turn_context") {
-      context ??= Option.getOrUndefined(decodeTurnContext(line.payload));
+      const turn = Option.getOrUndefined(decodeTurnContext(line.payload));
+      context ??= turn;
+      for (const [k, v] of [
+        ["model", turn?.model],
+        ["effort", turn?.effort],
+        ["approvalPolicy", turn?.approval_policy],
+        ["sandbox", turn?.sandbox_policy?.type],
+      ] as const)
+        if (v) settings.set(k, (settings.get(k) ?? new Set()).add(v));
       continue;
     }
     if (line.type !== "event_msg") continue;
@@ -311,16 +326,28 @@ export function readRollout(lines: ReadonlyArray<string>, path: string): Rollout
     },
     scan: scanRollout(lines),
     subagent: isSubagent(meta.source),
-    snapshot: snapshotOf({
-      startCommit: meta.git?.commit_hash,
-      branch: meta.git?.branch,
-      clientVersion: meta.cli_version,
-      modelProvider: meta.model_provider,
-      model: context?.model,
-      effort: context?.effort,
-      approvalPolicy: context?.approval_policy,
-      sandbox: context?.sandbox_policy?.type,
-      permissionMode: undefined,
-    }),
+    ...(meta.base_instructions
+      ? {
+          instructions: Predicate.isString(meta.base_instructions)
+            ? meta.base_instructions
+            : (meta.base_instructions.text ?? undefined),
+        }
+      : {}),
+    snapshot: snapshotOf(
+      {
+        startCommit: meta.git?.commit_hash,
+        branch: meta.git?.branch,
+        cwd: meta.cwd,
+        clientVersion: meta.cli_version,
+        modelProvider: meta.model_provider,
+        model: context?.model,
+        effort: context?.effort,
+        approvalPolicy: context?.approval_policy,
+        sandbox: context?.sandbox_policy?.type,
+      },
+      Object.fromEntries(
+        [...settings].flatMap(([k, values]) => (values.size > 1 ? [[k, "conflicting"]] : [])),
+      ),
+    ),
   };
 }

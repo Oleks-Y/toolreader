@@ -19,6 +19,8 @@ import type {
   ThreadSummary,
   ThreadView,
 } from "../core/domain.ts";
+import { treeShownIn } from "../core/checks.ts";
+import { extendSnapshot, snapshotOf, snapshotValues } from "../core/domain.ts";
 import { nativeId, type LedgerThread } from "../core/ledger.ts";
 import { CLAUDE_ID_PREFIX, ClaudeTranscripts } from "./ClaudeTranscripts.ts";
 import { CodexRollouts, ROLLOUT_DIRS } from "./CodexRollouts.ts";
@@ -191,7 +193,7 @@ export class RepoSessions extends Context.Service<
         // A T3 thread's provider session, whose own files say how it started.
         const nativeOf = new Map<string, string>();
         for (const [native, id] of nativeIds) if (!nativeOf.has(id)) nativeOf.set(id, native);
-        const snapshotOf = (t: ThreadSummary) => {
+        const nativeSnapshot = (t: ThreadSummary) => {
           const native = t.source === "t3" ? nativeOf.get(t.id) : undefined;
           if (!native) return Effect.succeed(null);
           if (t.provider === "codex") return rollouts.snapshot(native);
@@ -213,7 +215,25 @@ export class RepoSessions extends Context.Service<
             root,
             entries,
             labels: { ...view.value.labels },
-            snapshot: view.value.snapshot ?? (yield* snapshotOf(t)) ?? undefined,
+            snapshot: yield* Effect.map(
+              view.value.snapshot
+                ? Effect.succeed(view.value.snapshot)
+                : // Found through T3's native id: derived, not recorded with the thread.
+                  Effect.map(nativeSnapshot(t), (s) =>
+                    s
+                      ? snapshotOf(
+                          snapshotValues(s),
+                          Object.fromEntries(
+                            Object.entries(s.provenance ?? {}).map(([f, status]) => [
+                              f,
+                              status === "recorded" ? "derived" : status,
+                            ]),
+                          ),
+                        )
+                      : snapshotOf({}),
+                  ),
+              (s) => extendSnapshot(s, { treeShown: treeShownIn(entries) }, "derived"),
+            ),
             origin: view.value.origin ?? { reader },
             thread: {
               id: t.id,

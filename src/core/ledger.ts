@@ -7,6 +7,8 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 import { Entry, Labels, ThreadSource } from "./domain.ts";
 import { redactEntries, redactLabels, redactor } from "./proof.ts";
 import { humanizeCommand } from "./shell.ts";
+import { Check } from "./checks.ts";
+import { Reads } from "./coverage.ts";
 
 export const LEDGER_FORMAT_VERSION = 2;
 export const LedgerCommit = Schema.Struct({
@@ -62,6 +64,10 @@ export const LedgerLink = Schema.Struct({
   /** History since the thread's previous commit (or its start), up to this commit; empty until sync finds it. */
   entries: Schema.Array(Entry),
   labels: Labels,
+  /** The tests and builds it ran for this commit (checks.ts), when sync recorded them. */
+  checks: Schema.optional(Schema.Array(Check)),
+  /** The files it was seen reading for this commit (coverage.ts). */
+  reads: Schema.optional(Reads),
 });
 export type LedgerLink = typeof LedgerLink.Type;
 
@@ -198,6 +204,8 @@ export type FoundLink = {
   readonly reviewedSha: string | null;
   readonly segment: ReadonlyArray<Entry>;
   readonly labels: Labels;
+  readonly checks?: ReadonlyArray<Check> | undefined;
+  readonly reads?: Reads | undefined;
 };
 
 /**
@@ -241,6 +249,19 @@ export function buildEntry(input: {
         ),
         clean,
       ),
+      ...(found.checks?.length
+        ? {
+            checks: found.checks.map((c) => ({
+              ...c,
+              title: clean(c.title),
+              scope: c.scope.map(clean),
+              reasons: c.reasons.map(clean),
+            })),
+          }
+        : {}),
+      ...(found.reads?.paths.length
+        ? { reads: { ...found.reads, paths: found.reads.paths.map(clean) } }
+        : {}),
     };
   });
   const notes = (input.notes ?? []).map((n) => ({ ...n, text: clean(n.text) }));

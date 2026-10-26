@@ -111,22 +111,25 @@ export function claudeTranscriptMeta(lines: ReadonlyArray<string>): ClaudeTransc
 /** How the session started: the first value each field has. Claude Code records no commit. */
 export function claudeSnapshot(lines: ReadonlyArray<string>): SessionSnapshot {
   const parsed = parse(lines);
-  const first = (f: (l: Line) => string | null | undefined) =>
-    parsed.map(f).find((v) => !!v?.trim());
-  return snapshotOf({
-    startCommit: undefined,
-    branch: first((l) => l.gitBranch),
-    clientVersion: first((l) => l.version),
-    modelProvider: undefined,
+  const values = (f: (l: Line) => string | null | undefined) => [
+    ...new Set(parsed.map(f).filter((v): v is string => !!v?.trim())),
+  ];
+  const fields = {
+    branch: values((l) => l.gitBranch),
+    cwd: values((l) => l.cwd),
+    clientVersion: values((l) => l.version),
     // Synthetic placeholders (`<synthetic>`) aren't a model.
-    model: first((l) =>
+    model: values((l) =>
       l.type === "assistant" && !l.message?.model?.startsWith("<") ? l.message?.model : null,
     ),
-    effort: undefined,
-    approvalPolicy: undefined,
-    sandbox: undefined,
-    permissionMode: first((l) => l.permissionMode),
-  });
+    permissionMode: values((l) => l.permissionMode),
+  };
+  return snapshotOf(
+    Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, v[0]])),
+    Object.fromEntries(
+      Object.entries(fields).flatMap(([k, v]) => (v.length > 1 ? [[k, "conflicting"]] : [])),
+    ),
+  );
 }
 
 /**

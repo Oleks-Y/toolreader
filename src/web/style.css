@@ -710,6 +710,21 @@ a.chip {
   border-radius: 9px;
   background: var(--panel);
 }
+.ledger-reads {
+  font-size: 12.5px;
+  margin: 0 0 8px;
+}
+.ledger-reads ul {
+  margin: 4px 0;
+  padding-left: 18px;
+  font-family: var(--mono);
+}
+.ledger-checks {
+  list-style: none;
+  padding: 0;
+  margin: 2px 0 8px;
+  font-size: 12.5px;
+}
 .ledger-link .stale,
 .ledger-files .bucket.untracked {
   color: var(--fail);

@@ -61,6 +61,17 @@ export function publicRange(local: LedgerRange, home?: string): LedgerRange {
           files: l.files.map(clean),
           entries: redactEntries(l.entries, { outputs: true, home }).entries,
           labels: redactLabels(l.labels, clean),
+          ...(l.checks
+            ? {
+                checks: l.checks.map((k) => ({
+                  ...k,
+                  title: clean(k.title),
+                  scope: k.scope.map(clean),
+                  reasons: k.reasons.map(clean),
+                })),
+              }
+            : {}),
+          ...(l.reads ? { reads: { ...l.reads, paths: l.reads.paths.map(clean) } } : {}),
         })),
         files: c.entry.files.map((f) => ({ ...f, path: clean(f.path) })),
         notes: c.entry.notes.map((n) => ({

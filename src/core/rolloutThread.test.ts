@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 
+import { snapshotValues } from "./domain.ts";
 import { readItem, readRollout, rolloutMeta } from "./rolloutThread.ts";
 
 let ordinal = 0;
@@ -174,9 +175,10 @@ describe("rolloutThread", () => {
       ],
       "/r.jsonl",
     )!;
-    assert.deepStrictEqual(session.snapshot, {
+    assert.deepStrictEqual(snapshotValues(session.snapshot), {
       startCommit: "a".repeat(40),
       branch: "main",
+      cwd: "/repo",
       clientVersion: "0.130.0",
       modelProvider: "openai",
       model: "gpt-6",
@@ -184,7 +186,21 @@ describe("rolloutThread", () => {
       approvalPolicy: "never",
       sandbox: "workspace-write",
     });
+    // A versioned manifest: the model switched mid-session, the rest was recorded once.
+    assert.strictEqual(session.snapshot.manifestVersion, 1);
+    assert.strictEqual(session.snapshot.provenance?.["model"], "conflicting");
+    assert.strictEqual(session.snapshot.provenance?.["effort"], "recorded");
+    assert.strictEqual(session.snapshot.provenance?.["lockfileDigest"], "unavailable");
     // Nothing recorded, nothing claimed.
-    assert.deepStrictEqual(readRollout([meta()], "/r.jsonl")!.snapshot, {});
+    const bare = readRollout([meta({ cwd: undefined })], "/r.jsonl")!.snapshot;
+    assert.deepStrictEqual(snapshotValues(bare), {});
+    assert.isTrue(Object.values(bare.provenance ?? {}).every((s) => s === "unavailable"));
+    // The instructions text stays with the parser, for the server to hash: never in the snapshot.
+    const withText = readRollout(
+      [meta({ base_instructions: { text: "be careful" } })],
+      "/r.jsonl",
+    )!;
+    assert.strictEqual(withText.instructions, "be careful");
+    assert.notInclude(JSON.stringify(withText.snapshot), "be careful");
   });
 });

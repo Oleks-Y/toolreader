@@ -14,6 +14,7 @@ import * as HttpServer from "effect/unstable/http/HttpServer";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { ThreadNotFound } from "../../core/api.ts";
+import { snapshotValues } from "../../core/domain.ts";
 import { SITE_DATA_MARKER } from "../../core/ledgerSite.ts";
 import { BackendRoutes } from "../backend/Backend.ts";
 import { HistoryStore } from "../backend/HistoryStore.ts";
@@ -165,6 +166,18 @@ const scenario = Effect.gen(function* () {
           },
         },
       },
+      {
+        at: "2026-01-01T10:02:00.000Z",
+        item: {
+          type: "CommandExecution",
+          id: "t1",
+          command: ["/bin/zsh", "-lc", "vitest run"],
+          cwd: repo,
+          status: "completed",
+          aggregated_output: "2 passed",
+          exit_code: 0,
+        },
+      },
     ],
     { git: { commit_hash: init, branch: "main" }, cli_version: "0.130.0" },
   );
@@ -305,9 +318,14 @@ describe("history sync", () => {
 
             const store = yield* inWorkspace("acme");
             const shas = (yield* git(repo, ["rev-list", "main~2..main"])).split("\n");
+            const stored = yield* store.commits("acme/app", shas);
+            assert.deepStrictEqual(stored.map((c) => c.links.length).sort(), [1, 1]);
+            // Each link keeps the test its session ran after writing the commit's lines.
             assert.deepStrictEqual(
-              (yield* store.commits("acme/app", shas)).map((c) => c.links.length).sort(),
-              [1, 1],
+              stored.map((c) =>
+                c.links[0]?.checks?.map((k) => [k.kind, k.outcome, k.basis, k.linesAfter]),
+              ),
+              [[["test", "passed", "exit code", 0]], [["test", "passed", "exit code", 0]]],
             );
             const [thread] = yield* store.threads(["codex:coder"]);
             // Sent redacted: the home directory reads `~`, never the temp path.
@@ -317,11 +335,13 @@ describe("history sync", () => {
             assert.match(thread?.origin?.file ?? "", /^sessions\/2026\/01\/01\/rollout-.*\.jsonl$/);
             assert.match(thread?.origin?.sha256 ?? "", /^[0-9a-f]{64}$/);
             // With how the session started, as its rollout recorded it.
-            assert.deepStrictEqual(thread?.snapshot, {
+            assert.deepStrictEqual(snapshotValues(thread!.snapshot!), {
               startCommit: yield* git(repo, ["rev-parse", "main~2"]),
               branch: "main",
+              cwd: repo.replace(home, "~"),
               clientVersion: "0.130.0",
             });
+            assert.strictEqual(thread?.snapshot?.provenance?.["startCommit"], "recorded");
 
             // Read back as the range's page.
             yield* fs.makeDirectory(`${home}/dist/site`, { recursive: true });
@@ -333,6 +353,11 @@ describe("history sync", () => {
             assert.deepStrictEqual(
               view.commits.map((c) => c.entry?.links.map((l) => [l.thread.id, l.via])),
               [[["codex:coder", "content"]], [["codex:coder", "content"]]],
+            );
+            // The page shows each link's checks, read back from the backend.
+            assert.deepStrictEqual(
+              view.commits.map((c) => c.entry?.links[0]?.checks?.map((k) => k.outcome)),
+              [["passed"], ["passed"]],
             );
             assert.include(yield* fs.readFileString(file), "Add the store and client");
             // The turn's edits are the commits' files: each attributed, not "untracked".

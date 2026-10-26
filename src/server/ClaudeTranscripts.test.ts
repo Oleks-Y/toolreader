@@ -5,6 +5,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 
+import { snapshotValues } from "../core/domain.ts";
 import { ClaudeTranscripts } from "./ClaudeTranscripts.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 import { ThreadStore } from "./ThreadStore.ts";
@@ -125,7 +126,10 @@ describe("ClaudeTranscripts", () => {
         const missing = yield* claude.get("owned", {}).pipe(Effect.flip);
         assert.strictEqual(missing._tag, "ThreadNotFound");
         // T3 keeps no starting state, so a session it runs is still read for that.
-        assert.deepStrictEqual(yield* claude.snapshot("owned"), { branch: "main" });
+        assert.deepStrictEqual(snapshotValues((yield* claude.snapshot("owned"))!), {
+          branch: "main",
+          cwd: "/repo",
+        });
         assert.isNull(yield* claude.snapshot("nowhere"));
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.provide(NodeServices.layer)),

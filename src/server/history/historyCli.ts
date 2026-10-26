@@ -4,6 +4,7 @@
 //                           [--source auto|t3|codex-app-server|codex-rollouts|claude-transcripts]
 //                           [--dry-run] [--hook]
 //   toolreader history site (--range A..B | --pr N) [--repo PATH] [--out DIR]
+//   toolreader history audit [--repo PATH] [--source …]           (core/audit.ts)
 //   toolreader history turns|link|unlink …                       (declareCli.ts)
 //   toolreader history skill install|uninstall [--repo PATH] [--commit]   (historySkill.ts)
 //   toolreader history hook install|uninstall [--repo PATH]    (historyHooks.ts)
@@ -16,9 +17,11 @@ import * as Stream from "effect/Stream";
 import { Command, Flag } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
+import { auditLines, auditSessions } from "../../core/audit.ts";
+import { CHECK_KINDS, type Check } from "../../core/checks.ts";
 import { redactText } from "../../core/proof.ts";
 import { CliApp } from "../app.ts";
-import { SESSION_SOURCES } from "../RepoSessions.ts";
+import { RepoSessions, SESSION_SOURCES } from "../RepoSessions.ts";
 import { ServerConfig } from "../ServerConfig.ts";
 import { declareCommands } from "./declareCli.ts";
 import { HistoryFailed } from "./HistoryClient.ts";
@@ -77,12 +80,32 @@ const shortShas = (range: string) => range.replace(/\b[0-9a-f]{40}\b/g, (sha) =>
 /** Titles are a session's first prompt line: logs (CI's included) get them redacted. */
 const title = (t: string) => redactText(t).text;
 
+/** A command as a report line shows it: chains run long. */
+const short = (t: string) => (t.length > 80 ? `${t.slice(0, 79)}…` : t);
+
+/** A link's checks: how many of each outcome, then its last test and last build, which matter most. */
+const checkLines = (checks: ReadonlyArray<Check>): string[] => {
+  if (checks.length === 0) return [];
+  const count = (o: Check["outcome"]) => checks.filter((k) => k.outcome === o).length;
+  const counts = (["passed", "failed", "interrupted", "unknown"] as const)
+    .flatMap((o) => (count(o) > 0 ? [`${count(o)} ${o}`] : []))
+    .join(", ");
+  const last = CHECK_KINDS.flatMap((kind) => checks.findLast((k) => k.kind === kind) ?? []);
+  return [
+    `    checks: ${counts}`,
+    ...last.flatMap((k) => [
+      `    last ${k.kind}: ${k.outcome} (${k.masked ? "can't fail: || true" : k.basis}), ran on: ${k.testedState}, for this commit: ${k.applicability} · ${short(title(k.title))}`,
+      `      ${k.reasons.map(title).join("; ")}`,
+    ]),
+  ];
+};
+
 /** What `sync` did, a line each. */
 export const reportLines = (report: SyncReport, dryRun: boolean): string[] => {
   const lines: string[] = [];
   for (const { record: c, titles } of report.commits) {
     lines.push(`${c.sha.slice(0, 8)} ${c.subject}`);
-    for (const l of c.links)
+    for (const l of c.links) {
       lines.push(
         l.via === "asserted"
           ? `  ✓ ${title(titles.get(l.threadId) ?? l.threadId)} (declared: ${l.turns.length} turn${l.turns.length === 1 ? "" : "s"}${l.note ? `, "${title(l.note)}"` : ""})`
@@ -90,6 +113,12 @@ export const reportLines = (report: SyncReport, dryRun: boolean): string[] => {
             ? `  ✓ ${title(titles.get(l.threadId) ?? l.threadId)} (named by its trailer)`
             : `  ✓ ${title(titles.get(l.threadId) ?? l.threadId)} (${l.turns.length} turn${l.turns.length === 1 ? "" : "s"}, ${l.lines} line${l.lines === 1 ? "" : "s"})`,
       );
+      lines.push(...checkLines(l.checks ?? []));
+      if (l.reads)
+        lines.push(
+          `    read ${l.reads.paths.length + l.reads.more} files for it (as its read actions show)`,
+        );
+    }
     lines.push(
       c.links.length === 0
         ? `  · no agent turn wrote its ${c.novel} new lines`
@@ -249,6 +278,40 @@ const site = Command.make(
   ),
 );
 
+const audit = Command.make(
+  "audit",
+  {
+    repo: Flag.string("repo").pipe(
+      Flag.withDescription("Repository (any path inside it)"),
+      Flag.withDefault("."),
+    ),
+    source: Flag.choice("source", SESSION_SOURCES).pipe(
+      Flag.withDescription("Where sessions come from, as for sync"),
+      Flag.withDefault("auto"),
+    ),
+  },
+  Effect.fn("toolreader history audit")(function* (flags) {
+    const repo = (yield* Path.Path).resolve(flags.repo);
+    const loaded = yield* Effect.flatMap(RepoSessions, (r) => r.load(repo, flags.source)).pipe(
+      Effect.mapError((e) => new HistoryFailed({ message: e.message })),
+      Effect.provide(CliApp({ appServer: flags.source === "codex-app-server", codexHome: null })),
+    );
+    const audit = auditSessions(
+      loaded.sessions.map((s) => ({
+        provider: s.thread.provider ?? s.thread.source,
+        subagent: s.thread.parent !== null,
+        entries: s.entries,
+        snapshot: s.snapshot,
+      })),
+    );
+    for (const line of auditLines(audit, loaded.unread.length)) yield* Console.log(line);
+  }),
+).pipe(
+  Command.withDescription(
+    "Count what this repo's sessions recorded (starting state, exit codes, exact edits), without printing any of it",
+  ),
+);
+
 const installer = (action: "install" | "uninstall") =>
   Command.make(
     action,
@@ -317,6 +380,7 @@ export const historyCommand = Command.make("history").pipe(
   Command.withSubcommands([
     sync,
     site,
+    audit,
     ...declareCommands,
     Command.make("skill").pipe(
       Command.withDescription("The agent skill, committed once per repo"),
