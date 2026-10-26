@@ -5,6 +5,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
@@ -13,6 +14,7 @@ import * as HttpApiClient from "effect/unstable/httpapi/HttpApiClient";
 import type { Entry } from "../../core/domain.ts";
 import { BackendApi, CLIENT_HEADER, LIMITS } from "../../core/historyApi.ts";
 import { BackendRoutes, MIN_CLIENT } from "./Backend.ts";
+import { GitHub } from "./GitHub.ts";
 import { HistoryStore } from "./HistoryStore.ts";
 import { PgMigrationsLive } from "./PgMigrations.ts";
 import { PgTestLive } from "./testPostgres.ts";
@@ -24,6 +26,24 @@ const TestLive = HttpRouter.serve(BackendRoutes, {
   routerConfig: { maxParamLength: 2048 },
 }).pipe(
   Layer.provideMerge(NodeHttpServer.layerTest),
+  Layer.provideMerge(
+    // Two people GitHub knows: alex reads acme/app, sam reads nothing of ours.
+    Layer.succeed(
+      GitHub,
+      GitHub.of({
+        config: { clientId: "Iv1.test", apiUrl: "", webUrl: "https://github.com" },
+        user: (token) =>
+          Effect.succeed(
+            token === "gho_alex"
+              ? Option.some("alex")
+              : token === "gho_sam"
+                ? Option.some("sam")
+                : Option.none(),
+          ),
+        canRead: (token, repo) => Effect.succeed(token === "gho_alex" && repo === "acme/app"),
+      }),
+    ),
+  ),
   Layer.provideMerge(HistoryStore.layer),
   Layer.provideMerge(PgMigrationsLive),
   Layer.provideMerge(PgTestLive),
@@ -168,6 +188,91 @@ describe("Backend", () => {
           HttpClientRequest.bodyText("x".repeat(LIMITS.requestBytes + 1), "application/json"),
         );
         assert.strictEqual(yield* status(request), 413);
+      }),
+    );
+
+    it.effect("lets a GitHub member read the repos GitHub lets them read, and write nothing", () =>
+      Effect.gen(function* () {
+        const machine = yield* clientWith(headers(yield* token("gh")));
+        yield* Effect.flatMap(HistoryStore, (s) => s.addMember("gh", "Alex"));
+        yield* Effect.flatMap(HistoryStore, (s) => s.addMember("gh", "sam"));
+        const params = { ws: "gh" };
+        // A machine syncs, as today.
+        yield* machine.history.putThread({
+          params,
+          payload: threadRecord("t1", [message("u1", "retries is undefined")]),
+        });
+        yield* machine.history.putCommit({ params, payload: commitRecord("abc1234", ["t1"]) });
+        yield* machine.history.putCommit({
+          params,
+          payload: { ...commitRecord("def5678", ["t1"]), repo: "acme/secret" },
+        });
+
+        const alex = yield* clientWith(headers("gho_alex"));
+        const app = { ...params, repo: "acme/app" };
+        assert.deepStrictEqual(
+          (yield* alex.history.commits({
+            params: app,
+            payload: { shas: ["abc1234"] },
+          })).commits.map((c) => c.sha),
+          ["abc1234"],
+        );
+        assert.strictEqual(
+          (yield* alex.history.threads({ params, payload: { ids: ["t1"], repo: "acme/app" } }))
+            .threads.length,
+          1,
+        );
+        const tag = <A, E extends { _tag: string }>(e: Effect.Effect<A, E>) =>
+          Effect.map(Effect.flip(e), (x) => x._tag);
+        // A repo GitHub says no to, a read that names no repo, any write.
+        assert.strictEqual(
+          yield* tag(
+            alex.history.commits({
+              params: { ...params, repo: "acme/secret" },
+              payload: { shas: ["def5678"] },
+            }),
+          ),
+          "Forbidden",
+        );
+        assert.strictEqual(
+          yield* tag(alex.history.threads({ params, payload: { ids: ["t1"] } })),
+          "Forbidden",
+        );
+        assert.strictEqual(
+          yield* tag(alex.history.putThread({ params, payload: threadRecord("t2", []) })),
+          "Forbidden",
+        );
+        assert.strictEqual(
+          yield* tag(alex.history.hashes({ params, payload: { ids: ["t1"] } })),
+          "Forbidden",
+        );
+
+        // One GitHub says no to can't read the repo.
+        const shas = { shas: ["abc1234"] };
+        const sam = yield* clientWith(headers("gho_sam"));
+        assert.strictEqual(
+          yield* tag(sam.history.commits({ params: app, payload: shas })),
+          "Forbidden",
+        );
+        // Not a member, and not a GitHub user at all.
+        yield* Effect.flatMap(HistoryStore, (s) => s.addMember("other", "alex"));
+        const outsider = yield* clientWith(headers("gho_alex"));
+        assert.strictEqual(
+          yield* tag(
+            outsider.history.commits({ params: { ws: "nope", repo: "acme/app" }, payload: shas }),
+          ),
+          "Forbidden",
+        );
+        const stranger = yield* clientWith(headers("gho_nobody"));
+        assert.strictEqual(
+          yield* tag(stranger.history.commits({ params: app, payload: shas })),
+          "Unauthorized",
+        );
+        // How to sign in, without a token.
+        const anonymous = yield* clientWith(headers(null, null));
+        assert.deepStrictEqual(yield* anonymous.system.signIn(), {
+          github: { clientId: "Iv1.test", webUrl: "https://github.com" },
+        });
       }),
     );
   });

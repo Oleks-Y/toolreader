@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema";
 import {
   buildEntry,
   remoteWebUrl,
+  repoKey,
   clipOutputs,
   editedPaths,
   fileCoverage,
@@ -216,5 +217,13 @@ describe("several threads per commit", () => {
       "ssh://git@github.com:22/acme/app",
     ])
       assert.strictEqual(remoteWebUrl(remote), "https://github.com/acme/app", remote);
+  });
+
+  it("keys a repo by owner/name on github.com, and by its host anywhere else", () => {
+    assert.strictEqual(repoKey("https://github.com/acme/app"), "acme/app");
+    assert.strictEqual(
+      repoKey(remoteWebUrl("git@git.acme.test:acme/app.git")!),
+      "git.acme.test/acme/app",
+    );
   });
 });

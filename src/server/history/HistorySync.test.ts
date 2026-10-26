@@ -17,6 +17,7 @@ import { ThreadNotFound } from "../../core/api.ts";
 import { snapshotValues } from "../../core/domain.ts";
 import { SITE_DATA_MARKER } from "../../core/ledgerSite.ts";
 import { BackendRoutes } from "../backend/Backend.ts";
+import { GitHub } from "../backend/GitHub.ts";
 import { HistoryStore } from "../backend/HistoryStore.ts";
 import { PgMigrationsLive } from "../backend/PgMigrations.ts";
 import { inWorkspace, PgTestLive } from "../backend/testPostgres.ts";
@@ -38,6 +39,7 @@ const ServerLive = HttpRouter.serve(BackendRoutes, {
   routerConfig: { maxParamLength: 2048 },
 }).pipe(
   Layer.provideMerge(NodeHttpServer.layerTest),
+  Layer.provideMerge(GitHub.disabled),
   Layer.provideMerge(HistoryStore.layer),
   Layer.provideMerge(PgMigrationsLive),
   Layer.provideMerge(PgTestLive),

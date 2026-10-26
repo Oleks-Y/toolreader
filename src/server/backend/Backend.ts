@@ -40,6 +40,7 @@ import {
   HISTORY_FORMAT_VERSION,
   type Rejection,
 } from "../../core/historyRecord.ts";
+import { GitHub } from "./GitHub.ts";
 import { HistoryStore, type HistoryRefused, type HistoryStoreFailed } from "./HistoryStore.ts";
 
 /**
@@ -60,27 +61,67 @@ const putFailed = (e: HistoryStoreFailed | HistoryRefused) =>
     ? new Rejected({ reason: "invalid", detail: "the database refused the record's data" })
     : failed();
 
+/** Workspace tokens are ours; any other bearer is tried as a GitHub sign-in. */
+const WORKSPACE_TOKEN = "trk_";
+
+/**
+ * A workspace token for its workspace, or a GitHub sign-in for a workspace that lists the login
+ * as a member. What a sign-in may read is checked per repo (`readable`).
+ */
 export const AuthorizationLive = Layer.effect(
   Authorization,
   Effect.gen(function* () {
     const store = yield* HistoryStore;
+    const github = yield* GitHub;
+    const signedIn = Effect.fn("Backend.signedIn")(function* (
+      token: string,
+      ws: string | undefined,
+    ) {
+      const login = yield* github.user(token).pipe(Effect.mapError(failed));
+      if (Option.isNone(login))
+        return yield* new Unauthorized({ message: "GitHub doesn't accept this sign-in" });
+      // Outside a workspace (meta) there's nothing to read: who they are is enough.
+      if (ws === undefined)
+        return {
+          workspaceId: "",
+          workspace: "",
+          tokenId: null,
+          github: { login: login.value, token },
+        };
+      const member = yield* store.member(ws, login.value).pipe(Effect.mapError(failed));
+      if (Option.isNone(member))
+        return yield* new Forbidden({
+          message: `${login.value} is not a member of workspace ${ws}`,
+        });
+      return {
+        workspaceId: member.value.workspaceId,
+        workspace: ws,
+        tokenId: null,
+        github: { login: login.value, token },
+      };
+    });
     return Authorization.of({
       bearer: Effect.fn("Backend.authorize")(function* (
         handler: Effect.Effect<HttpServerResponse.HttpServerResponse, unhandled, Caller>,
         { credential }: { readonly credential: Redacted.Redacted<string> },
       ) {
         const token = Redacted.value(credential);
+        const { ws } = yield* HttpRouter.params;
+        if (token !== "" && !token.startsWith(WORKSPACE_TOKEN) && github.config) {
+          const caller = yield* signedIn(token, ws);
+          yield* Effect.annotateCurrentSpan("workspace", caller.workspace);
+          return yield* Effect.provideService(handler, Caller, caller);
+        }
         const caller =
           token === ""
             ? Option.none()
             : yield* store.authenticate(token).pipe(Effect.mapError(failed));
         if (Option.isNone(caller))
           return yield* new Unauthorized({ message: "Missing, unknown or revoked token" });
-        const { ws } = yield* HttpRouter.params;
         if (ws !== undefined && ws !== caller.value.workspace)
           return yield* new Forbidden({ message: `This token is not for workspace ${ws}` });
         yield* Effect.annotateCurrentSpan("workspace", caller.value.workspace);
-        return yield* Effect.provideService(handler, Caller, caller.value);
+        return yield* Effect.provideService(handler, Caller, { ...caller.value, github: null });
       }),
     });
   }),
@@ -135,6 +176,11 @@ const admitted = <A>(r: Result.Result<A, Rejection>) =>
 const SystemHandlers = HttpApiBuilder.group(BackendApi, "system", (handlers) =>
   handlers
     .handle("health", () => Effect.succeed({ ok: true }))
+    .handle("signIn", () =>
+      Effect.map(GitHub, (g) => ({
+        github: g.config ? { clientId: g.config.clientId, webUrl: g.config.webUrl } : null,
+      })),
+    )
     .handle("meta", () =>
       Effect.succeed({
         server: packageJson.version,
@@ -150,7 +196,8 @@ const HistoryHandlers = HttpApiBuilder.group(
   "history",
   Effect.fn(function* (handlers) {
     const pg = yield* HistoryStore;
-    /** The caller's workspace, written as the caller (its token and client version). */
+    const github = yield* GitHub;
+    /** The caller's workspace, written as the caller (its token or login, and client version). */
     const scoped = Effect.gen(function* () {
       const caller = yield* Caller;
       const request = yield* HttpServerRequest.HttpServerRequest;
@@ -158,39 +205,68 @@ const HistoryHandlers = HttpApiBuilder.group(
         workspaceId: caller.workspaceId,
         tokenId: caller.tokenId,
         client: request.headers[CLIENT_HEADER] ?? "",
+        actor: caller.github ? `github:${caller.github.login}` : undefined,
       });
     });
+    /** Writing history is for machines with a workspace token, not a person's sign-in. */
+    const writer = Effect.gen(function* () {
+      if ((yield* Caller).github)
+        return yield* new Forbidden({
+          message: "A GitHub sign-in reads and decides; sync with a workspace token",
+        });
+    });
+    /** A sign-in reads only repos GitHub says it can; a workspace token reads its workspace. */
+    const readable = (repo: string | undefined) =>
+      Effect.gen(function* () {
+        const { github: signIn } = yield* Caller;
+        if (!signIn) return;
+        if (repo === undefined)
+          return yield* new Forbidden({ message: "A GitHub sign-in names the repo it reads" });
+        const ok = yield* github.canRead(signIn.token, repo).pipe(Effect.mapError(failed));
+        if (!ok)
+          return yield* new Forbidden({
+            message: `GitHub says ${signIn.login} can't read ${repo}`,
+          });
+      });
     return handlers
       .handle("hashes", ({ payload }) =>
-        Effect.flatMap(scoped, (s) => s.hashes(payload.ids)).pipe(
+        writer.pipe(
+          Effect.andThen(Effect.flatMap(scoped, (s) => s.hashes(payload.ids))),
           Effect.map((found) => ({ hashes: Object.fromEntries(found) })),
-          Effect.mapError(failed),
+          Effect.catchTag("HistoryStoreFailed", () => Effect.fail(failed())),
         ),
       )
       .handle("putThread", ({ payload }) =>
         Effect.gen(function* () {
+          yield* writer;
           const record = yield* admitted(admitThread(payload));
           const store = yield* scoped;
           return { result: yield* store.putThread(record).pipe(Effect.mapError(putFailed)) };
         }),
       )
       .handle("threads", ({ payload }) =>
-        Effect.flatMap(scoped, (s) => s.threads(payload.ids)).pipe(
-          Effect.map((threads) => ({ threads })),
-          Effect.mapError(failed),
-        ),
+        Effect.gen(function* () {
+          yield* readable(payload.repo);
+          const store = yield* scoped;
+          const threads = yield* store
+            .threads(payload.ids, payload.repo)
+            .pipe(Effect.mapError(failed));
+          return { threads };
+        }),
       )
       .handle("putCommit", ({ payload }) =>
         Effect.gen(function* () {
+          yield* writer;
           const record = yield* admitted(admitCommit(payload));
           const store = yield* scoped;
           return { result: yield* store.putCommit(record).pipe(Effect.mapError(putFailed)) };
         }),
       )
       .handle("commits", ({ params, payload }) =>
-        Effect.flatMap(scoped, (s) => s.commits(params.repo, payload.shas)).pipe(
+        readable(params.repo).pipe(
+          Effect.andThen(Effect.flatMap(scoped, (s) => s.commits(params.repo, payload.shas))),
           Effect.map((commits) => ({ commits })),
-          Effect.mapError(failed),
+          Effect.catchTag("HistoryStoreFailed", () => Effect.fail(failed())),
         ),
       );
   }),
