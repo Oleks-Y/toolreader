@@ -10,12 +10,14 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
+import { stopTarget } from "./historyCli.ts";
 import { commitMsgHook, hookFile, prePushHook, sealHook } from "./historyHooks.ts";
 import {
   commitSkill,
   dirtyPaths,
   INSTALLED_PATHS,
   installSkill,
+  CAPTURE_COMMAND,
   REMIND_COMMAND,
   SKILL,
   sealSkill,
@@ -23,6 +25,23 @@ import {
 } from "./historySkill.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const HookEntries = Schema.Array(
+  Schema.Struct({
+    matcher: Schema.optional(Schema.String),
+    hooks: Schema.Array(Schema.Struct({ type: Schema.String, command: Schema.String })),
+  }),
+);
+const decodeHooks = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      hooks: Schema.Struct({
+        PostToolUse: Schema.optional(HookEntries),
+        Stop: Schema.optional(HookEntries),
+        SubagentStop: Schema.optional(HookEntries),
+      }),
+    }),
+  ),
+);
 
 const sh = (cwd: string, args: ReadonlyArray<string>, env: Record<string, string> = {}) =>
   Effect.gen(function* () {
@@ -279,8 +298,19 @@ describe("history hooks", () => {
       const settings = (yield* read(".claude/settings.json")) as string;
       assert.include(settings, '"Bash(ls)"');
       assert.include(settings, REMIND_COMMAND);
-      // Codex: the same hook, in its own file.
-      assert.include((yield* read(".codex/hooks.json")) as string, REMIND_COMMAND);
+      // Codex: the same hooks, in its own file.
+      for (const file of [".claude/settings.json", ".codex/hooks.json"]) {
+        const hooks = decodeHooks(yield* read(file)).hooks;
+        assert.deepStrictEqual(
+          [hooks.PostToolUse, hooks.Stop, hooks.SubagentStop],
+          [
+            [{ matcher: "Bash", hooks: [{ type: "command", command: REMIND_COMMAND }] }],
+            [{ hooks: [{ type: "command", command: CAPTURE_COMMAND }] }],
+            [{ hooks: [{ type: "command", command: CAPTURE_COMMAND }] }],
+          ],
+          file,
+        );
+      }
       assert.deepStrictEqual(yield* dirtyPaths(repo, INSTALLED_PATHS), [
         ".claude/skills/toolreader-history",
         ".agents/skills/toolreader-history",
@@ -315,4 +345,73 @@ describe("history hooks", () => {
       assert.strictEqual(yield* git("ls-files .agents .claude/skills CLAUDE.md"), "");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
+  it.live("upgrades its agent hooks to add the stop capture, and keeps others' stop hooks", () =>
+    Effect.gen(function* () {
+      const { repo } = yield* setup;
+      const fs = yield* FileSystem.FileSystem;
+      const file = `${repo}/.claude/settings.json`;
+      yield* fs.makeDirectory(`${repo}/.claude`, { recursive: true });
+      // An older toolreader's reminder, and someone's own Stop hook.
+      const mine = { hooks: [{ type: "command", command: "say done" }] };
+      yield* fs.writeFileString(
+        file,
+        encodeJson({
+          hooks: {
+            PostToolUse: [
+              { matcher: "Bash", hooks: [{ type: "command", command: REMIND_COMMAND }] },
+            ],
+            Stop: [mine],
+          },
+        }),
+      );
+      const installed = yield* installSkill(repo, "install");
+      assert.isTrue(
+        installed.lines.some((l) =>
+          l.startsWith(`Updated the commit reminder and session capture hooks in ${file}`),
+        ),
+      );
+      assert.deepStrictEqual(decodeHooks(yield* fs.readFileString(file)).hooks.Stop, [
+        mine,
+        { hooks: [{ type: "command", command: CAPTURE_COMMAND }] },
+      ]);
+      // Gone again with ours; theirs stays.
+      yield* installSkill(repo, "uninstall");
+      assert.deepStrictEqual(decodeHooks(yield* fs.readFileString(file)).hooks, { Stop: [mine] });
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it("reads which session stopped, from Claude Code's and Codex's hook input", () => {
+    // Claude Code's Stop (SubagentStop adds agent_id and agent_transcript_path).
+    assert.deepStrictEqual(
+      stopTarget(
+        encodeJson({
+          session_id: "0c6e1b3a-7d61-4c3e-9a40-1f2b3c4d5e6f",
+          transcript_path: "/home/u/.claude/projects/-repo/0c6e1b3a.jsonl",
+          cwd: "/repo",
+          hook_event_name: "SubagentStop",
+          stop_hook_active: false,
+          agent_id: "a1",
+        }),
+        "/elsewhere",
+      ),
+      { session: "0c6e1b3a-7d61-4c3e-9a40-1f2b3c4d5e6f", repo: "/repo" },
+    );
+    // Codex's Stop: a turn id and the last message too.
+    assert.deepStrictEqual(
+      stopTarget(
+        encodeJson({
+          session_id: "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b",
+          turn_id: "t3",
+          hook_event_name: "Stop",
+          last_assistant_message: "done",
+        }),
+        "/cwd",
+      ),
+      { session: "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b", repo: "/cwd" },
+    );
+    // Nothing to name, or a name no session has (it would reach git as an argument).
+    assert.isNull(stopTarget("", "/cwd"));
+    assert.isNull(stopTarget(encodeJson({ session_id: "--upload-pack=x y" }), "/cwd"));
+    assert.isNull(stopTarget(encodeJson({ session_id: "--repo" }), "/cwd"));
+  });
 });

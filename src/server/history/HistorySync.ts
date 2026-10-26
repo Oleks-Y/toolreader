@@ -104,6 +104,8 @@ export type PushReport = {
   readonly sent: number;
   readonly unchanged: number;
   readonly skipped: ReadonlyArray<Skipped>;
+  /** Commits (full SHAs, this repo has them) the pushed sessions declared links about. */
+  readonly declared: ReadonlyArray<string>;
   /** Images the sessions hold, and how many the backend took (none when it doesn't keep them). */
   readonly images: number;
   readonly imagesSent: number;
@@ -526,6 +528,7 @@ export class HistorySync extends Context.Service<
           if (found.length === 0)
             return yield* new HistoryFailed({
               message: `No session ${name} worked in ${repo} (or it ran no actions)`,
+              code: "SESSION_NOT_FOUND",
             });
           for (const s of found) chosen.add(s.thread.id);
         }
@@ -536,7 +539,14 @@ export class HistorySync extends Context.Service<
         const threads = family.map((s) => threadRecordOf(s, now, blobs));
         const { sent, media, skipped } = yield* sendThreads(threads, blobs);
         const { clean } = redactor(config.home);
+        const declared: string[] = [];
+        for (const sha of new Set(
+          family.flatMap((s) => declarationsIn(s.thread.id, s.entries).map((d) => d.sha)),
+        ))
+          if ((yield* git(repo, ["cat-file", "-t", sha], [1, 128])).trim() === "commit")
+            declared.push(sha);
         return {
+          declared,
           threads: threads.map((t) => ({
             id: t.thread.id,
             title: clean(t.thread.title),

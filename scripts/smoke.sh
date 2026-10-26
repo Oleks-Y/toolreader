@@ -1,7 +1,8 @@
 #!/bin/sh
 # The packaged CLI end to end, as a team installs it: `npm pack`, installed into a temp directory,
 # then a backend on a throwaway Postgres, and a repo that opted in: a Codex session writes a file,
-# the file is committed and pushed, and the push's background job sends the history. Everything
+# commits and declares it, the push's background job sends the history, and the session's Stop
+# hook later sends the QA subagent it delegated, which made no commit. Everything
 # lives under a temp HOME; the Postgres container and the backend are stopped by the id and PID
 # this script got when it started them.
 # CI runs it after the build. Locally: `vp run build && sh scripts/smoke.sh` (needs Docker).
@@ -72,22 +73,24 @@ git -C "$repo" config remote.origin.pushurl "$tmp/origin.git"
 git -C "$repo" commit -q --allow-empty -m one
 git -C "$repo" push -q origin HEAD:main
 
-# A Codex session that wrote store.ts, a minute ago.
+# A Codex session that wrote store.ts a minute ago, committed it, and declared the commit its own.
 rollouts="$CODEX_HOME/sessions/2026/01/01"
 mkdir -p "$rollouts"
 at=$(date -u -v-1M +%Y-%m-%dT%H:%M:%SZ 2> /dev/null || date -u -d '1 minute ago' +%Y-%m-%dT%H:%M:%SZ)
+printf 'export function saveThread(record) {\n  return store.put(record.id, record);\n}\n' > "$repo/store.ts"
+git -C "$repo" add store.ts
+git -C "$repo" commit -q -m "feat: store"
+sha=$(git -C "$repo" rev-parse HEAD)
 cat > "$rollouts/rollout-2026-01-01T10-00-00-smoke-1.jsonl" << EOF
 {"timestamp":"$at","type":"session_meta","payload":{"id":"smoke-1","timestamp":"$at","cwd":"$repo","originator":"codex_exec"}}
 {"timestamp":"$at","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
 {"timestamp":"$at","type":"event_msg","payload":{"type":"item_completed","turn_id":"t1","item":{"type":"UserMessage","id":"u1","content":[{"type":"text","text":"add the store"}]}}}
 {"timestamp":"$at","type":"event_msg","payload":{"type":"item_completed","turn_id":"t1","item":{"type":"FileChange","id":"f1","status":"completed","changes":{"$repo/store.ts":{"type":"add","content":"export function saveThread(record) {\\n  return store.put(record.id, record);\\n}\\n"}}}}}
+{"timestamp":"$at","type":"event_msg","payload":{"type":"item_completed","turn_id":"t1","item":{"type":"CommandExecution","id":"d1","command":["/bin/sh","-lc","toolreader history link --sha HEAD --note 'the store'"],"cwd":"$repo","status":"completed","aggregated_output":"history link: $sha for HEAD","exit_code":0}}}
 {"timestamp":"$at","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}
 EOF
-printf 'export function saveThread(record) {\n  return store.put(record.id, record);\n}\n' > "$repo/store.ts"
-git -C "$repo" add store.ts
-git -C "$repo" commit -q -m "feat: store"
 
-expect "1 of its 1 new lines\|2 of its 2 new lines" \
+expect "declared: 1 turn" \
   "$("$tr" --log-level error history sync --repo "$repo" --range HEAD~1..HEAD --dry-run 2>&1)"
 
 # Opted in, a push sends it in the background.
@@ -99,6 +102,28 @@ for _ in $(seq 60); do
 done
 log=$(cat "$HOME/.toolreader/history.log")
 expect "acme/smoke: 1 thread sent" "$log"
+
+# A QA subagent it delegated afterwards: it ran outside the repo, changed nothing and made no
+# commit. The parent's Stop hook sends it, with no git push involved.
+cat > "$rollouts/rollout-2026-01-01T10-30-00-smoke-qa.jsonl" << EOF
+{"timestamp":"$at","type":"session_meta","payload":{"id":"smoke-qa","timestamp":"$at","cwd":"$tmp","originator":"codex_exec","source":{"subagent":{"other":"qa"}},"parent_thread_id":"smoke-1"}}
+{"timestamp":"$at","type":"event_msg","payload":{"type":"task_started","turn_id":"q1"}}
+{"timestamp":"$at","type":"event_msg","payload":{"type":"item_completed","turn_id":"q1","item":{"type":"UserMessage","id":"q1","content":[{"type":"text","text":"check staging"}]}}}
+{"timestamp":"$at","type":"event_msg","payload":{"type":"item_completed","turn_id":"q1","item":{"type":"CommandExecution","id":"q2","command":["/bin/sh","-lc","curl -sf https://staging.example.test/health"],"cwd":"$tmp","status":"completed","aggregated_output":"ok","exit_code":0}}}
+{"timestamp":"$at","type":"event_msg","payload":{"type":"task_complete","turn_id":"q1"}}
+EOF
+printf '{"session_id":"smoke-1","cwd":"%s","hook_event_name":"Stop"}' "$repo" |
+  "$tr" --log-level error history capture
+for _ in $(seq 60); do
+  grep -q "capture smoke-1" "$HOME/.toolreader/history.log" 2> /dev/null && break
+  sleep 0.5
+done
+log=$(cat "$HOME/.toolreader/history.log")
+expect "codex:smoke-qa (subagent of codex:smoke-1)" "$log"
+expect "1 sent, 1 unchanged" "$log"
+expect '"parent":"codex:smoke-1"' \
+  "$("$tr" --log-level error history sql "SELECT parent FROM agent_threads WHERE id = 'codex:smoke-qa'" 2> /dev/null)"
+expect "Delivery: nothing pending" "$("$tr" --log-level error history status --repo "$repo" --check)"
 if printf '%s\n' "$log" | grep -q "✗"; then
   printf 'smoke: a hook failed:\n%s\n' "$log" >&2
   exit 1

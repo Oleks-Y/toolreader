@@ -12,7 +12,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../ServerConfig.ts";
 import { deliveryStatus, statusLines } from "./historyCli.ts";
-import { deliveryLine, deliveryOf, deliveryWarning, pending } from "./historyHooks.ts";
+import { captureLock, deliveryLine, deliveryOf, deliveryWarning, pending } from "./historyHooks.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -182,6 +182,31 @@ describe("pending syncs", () => {
       });
       assert.deepStrictEqual(status.check, { ok: false, errorCode: "CONNECTION_REFUSED" });
       assert.strictEqual(status.delivery.pending, 0);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("runs one capture per repository: a held lock says no, a dead holder's is free", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({ prefix: "toolreader-lock-" });
+      yield* Effect.gen(function* () {
+        const lock = yield* captureLock("/repos/a/.git");
+        const other = yield* captureLock("/repos/b/.git");
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            assert.isTrue(yield* lock.acquire);
+            assert.isTrue(yield* lock.held);
+            assert.isFalse(yield* Effect.scoped(lock.acquire));
+            assert.isFalse(yield* other.held);
+          }),
+        );
+        // Released with its scope.
+        assert.isFalse(yield* fs.exists(lock.file));
+        // Left by a job that died: taken over.
+        yield* fs.writeFileString(lock.file, "2147483646\n");
+        assert.isFalse(yield* lock.held);
+        assert.isTrue(yield* Effect.scoped(lock.acquire));
+      }).pipe(Effect.provide(configAt(home)));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

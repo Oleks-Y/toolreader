@@ -4,7 +4,8 @@
 //                           [--source auto|t3|codex-app-server|codex-rollouts|claude-transcripts]
 //                           [--dry-run] [--hook]
 //   toolreader history status [--repo PATH] [--json] [--check]     (historyHooks.ts)
-//   toolreader history push SESSION… [--repo PATH] [--source …]
+//   toolreader history push SESSION… [--repo PATH] [--source …] [--hook]
+//   toolreader history capture [--session ID] [--repo PATH]       (the agents' Stop hook)
 //   toolreader history site (--range A..B | --pr N) [--repo PATH] [--out DIR]
 //   toolreader history audit [--repo PATH] [--source …]           (core/audit.ts)
 //   toolreader history login                                     (githubLogin.ts)
@@ -29,6 +30,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Stdio from "effect/Stdio";
 import * as Stream from "effect/Stream";
 import { Argument, Command, Flag } from "effect/unstable/cli";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
@@ -61,7 +63,9 @@ import {
   deliveryLine,
   deliveryOf,
   installHooks,
+  captureLock,
   minute,
+  OPT_IN_KEY,
   pending,
 } from "./historyHooks.ts";
 import type { Coverage, Evidence, SearchHit } from "../../core/historyApi.ts";
@@ -73,7 +77,7 @@ import {
 } from "../../core/insights.ts";
 import { evaluate, LabelRow, sampleRows } from "../../core/insightsEval.ts";
 import { VERDICTS, type EvidenceNow } from "../../core/review.ts";
-import { HistorySync, type SyncReport } from "./HistorySync.ts";
+import { HistorySync, type PushReport, type SyncReport } from "./HistorySync.ts";
 
 const PullRequest = Schema.Struct({ baseRefOid: Schema.String, headRefOid: Schema.String });
 const decodePullRequest = Schema.decodeUnknownEffect(Schema.fromJsonString(PullRequest));
@@ -188,6 +192,35 @@ export const reportLines = (report: SyncReport, dryRun: boolean): string[] => {
   return lines;
 };
 
+/**
+ * What every hook run does first: this repo's pending ranges (keyed by its common git dir, so any
+ * worktree retries them), then `ranges`, each synced; one that succeeds leaves pending/, one that
+ * fails is kept with its error code for the next hook. Lines for the log.
+ */
+export const deliver = Effect.fn("history.deliver")(function* <
+  E extends { readonly _tag: string; readonly message: string },
+  R,
+>(
+  repo: string,
+  ranges: ReadonlyArray<string>,
+  syncRange: (range: string) => Effect.Effect<SyncReport, E, R>,
+) {
+  const store = yield* pending(yield* commonGitDir(repo));
+  const lines: string[] = [];
+  for (const r of new Set([...(yield* store.list).map((p) => p.range), ...ranges])) {
+    const done = yield* Effect.result(syncRange(r));
+    if (done._tag === "Success") {
+      lines.push(...reportLines(done.success, false));
+      yield* store.done(r);
+    } else {
+      const e = done.failure as E & { readonly code?: string };
+      yield* store.failed(r, (e._tag === "HistoryFailed" && e.code) || "FAILED");
+      lines.push(`✗ ${shortShas(r)}: ${redactText(e.message).text} (retried by the next hook)`);
+    }
+  }
+  return lines;
+});
+
 const sync = Command.make(
   "sync",
   {
@@ -247,24 +280,7 @@ const sync = Command.make(
     }
     // As a hook: what failed before in this repo first, then this push; whatever fails waits.
     yield* Effect.gen(function* () {
-      // Keyed by the repository (its common git dir), so any of its worktrees retries.
-      const store = yield* pending(yield* commonGitDir(repo));
-      const lines: string[] = [];
-      for (const r of new Set([...(yield* store.list).map((p) => p.range), range])) {
-        const done = yield* Effect.result(syncRange(r));
-        if (done._tag === "Success") {
-          lines.push(...reportLines(done.success, false));
-          yield* store.done(r);
-        } else {
-          yield* store.failed(
-            r,
-            done.failure._tag === "HistoryFailed" ? (done.failure.code ?? "FAILED") : "FAILED",
-          );
-          lines.push(
-            `✗ ${shortShas(r)}: ${redactText(done.failure.message).text} (retried by the next push)`,
-          );
-        }
-      }
+      const lines = yield* deliver(repo, [range], syncRange);
       yield* appendLog(`sync ${shortShas(range)} in ${repo}`, lines);
     }).pipe(
       // Crashes too: a detached job has nowhere else to say it died.
@@ -398,6 +414,24 @@ const status = Command.make(
   ),
 );
 
+/** What `push` did, a line each: the threads, what the backend didn't take, the counts. */
+export const pushLines = (report: PushReport): string[] => [
+  ...report.threads.map(
+    (t) => `${t.id}${t.parent ? ` (subagent of ${t.parent})` : ""} · ${short(title(t.title))}`,
+  ),
+  ...skippedLines(report.skipped),
+  `${report.sent} sent, ${report.unchanged} unchanged${report.images ? `; ${report.imagesSent} of ${report.images} images sent` : ""}`,
+];
+
+/** Runs `work` as a hook does: its lines to history.log under `what`, never failing, crashes logged. */
+const asHook = <E, R>(what: string, work: Effect.Effect<ReadonlyArray<string>, E, R>) =>
+  Effect.flatMap(work, (lines) => (lines.length > 0 ? appendLog(what, lines) : Effect.void)).pipe(
+    // Crashes too: a detached job has nowhere else to say it died.
+    Effect.catchCause((cause) => appendLog(what, [`✗ ${causeMessage(cause)}`])),
+    Effect.provide(ServerConfig.layer),
+    Effect.ignore,
+  );
+
 const push = Command.make(
   "push",
   {
@@ -415,24 +449,161 @@ const push = Command.make(
       Flag.withDescription("Where sessions come from, as for sync"),
       Flag.withDefault("auto"),
     ),
+    hook: Flag.boolean("hook").pipe(
+      Flag.withDescription("Run as a hook: report to ~/.toolreader/history.log and never fail"),
+    ),
   },
   Effect.fn("toolreader history push")(function* (flags) {
     const repo = (yield* Path.Path).resolve(flags.repo);
-    const report = yield* Effect.flatMap(HistorySync, (h) =>
+    const pushed = Effect.flatMap(HistorySync, (h) =>
       h.push(repo, flags.sessions, flags.source),
     ).pipe(Effect.provide(CliApp({ appServer: false, codexHome: null })));
-    for (const t of report.threads)
-      yield* Console.log(
-        `${t.id}${t.parent ? ` (subagent of ${t.parent})` : ""} · ${short(title(t.title))}`,
+    if (flags.hook)
+      return yield* asHook(
+        `push ${flags.sessions.join(" ")} in ${repo}`,
+        Effect.map(pushed, pushLines),
       );
-    for (const line of skippedLines(report.skipped)) yield* Console.log(line);
-    yield* Console.log(
-      `${report.sent} sent, ${report.unchanged} unchanged${report.images ? `; ${report.imagesSent} of ${report.images} images sent` : ""}`,
-    );
+    for (const line of pushLines(yield* pushed)) yield* Console.log(line);
   }),
 ).pipe(
   Command.withDescription(
     "Send sessions whole, with their subagents, so agents elsewhere can read them by id (redacted, as sync sends them)",
+  ),
+);
+
+/**
+ * What Claude Code and Codex hand a `Stop` or `SubagentStop` hook on stdin (the same fields in
+ * both): the session that stopped and where it ran. A subagent's stop names its parent session in
+ * Claude Code, and the subagent in Codex; either way the session goes with its subagents.
+ */
+const StopInput = Schema.Struct({
+  session_id: Schema.optional(Schema.String.check(Schema.isPattern(/^\w[\w.:-]{0,199}$/))),
+  cwd: Schema.optional(Schema.String),
+  hook_event_name: Schema.optional(Schema.String),
+  transcript_path: Schema.optional(Schema.String),
+});
+const decodeStopInput = Schema.decodeUnknownOption(Schema.fromJsonString(StopInput));
+
+/** The session a stop hook's input names, and the repo it ran in; null when it names none. */
+export const stopTarget = (input: string, cwd: string) => {
+  const parsed = Option.getOrNull(decodeStopInput(input));
+  return parsed?.session_id ? { session: parsed.session_id, repo: parsed.cwd ?? cwd } : null;
+};
+
+/**
+ * What a stop sends, in a repo that opted in: what failed before, the session with its
+ * subagents, and the commits it declared links about (an unpushed or long-pushed one too, so a
+ * late `history link` lands). Each part reports and goes on when one fails.
+ */
+export const capture = Effect.fn("history.capture")(function* (repo: string, session: string) {
+  const history = yield* HistorySync;
+  const syncRange = (range: string) => history.sync(repo, range, { source: "auto", dryRun: false });
+  const lines = [...(yield* deliver(repo, [], syncRange))];
+  const pushed = yield* Effect.result(history.push(repo, [session], "auto"));
+  if (pushed._tag === "Failure") {
+    // Not one this repo's sessions know (a Codex subagent's own id, a session that ran no
+    // action here): nothing of it to send, and nothing wrong.
+    if (pushed.failure.code !== "SESSION_NOT_FOUND")
+      lines.push(`✗ push ${session}: ${redactText(pushed.failure.message).text}`);
+    return lines;
+  }
+  lines.push(...pushLines(pushed.success));
+  if (pushed.success.declared.length > 0)
+    lines.push(
+      ...(yield* deliver(repo, [`--no-walk ${pushed.success.declared.join(" ")}`], syncRange)),
+    );
+  return lines;
+});
+
+const BUSY = "· skipped: another capture is running in this repository; the next stop sends it";
+
+/** Whether `repo` opted in to history (`history hook install`). */
+const optedIn = (repo: string) =>
+  run(repo, "git", ["config", "--bool", OPT_IN_KEY]).pipe(
+    Effect.map((out) => out.trim() === "true"),
+    Effect.orElseSucceed(() => false),
+  );
+
+const captureCommand = Command.make(
+  "capture",
+  {
+    session: Flag.string("session").pipe(
+      Flag.withDescription(
+        "Capture this session now (what the hook runs in the background); default: the one on the hook's stdin",
+      ),
+      Flag.optional,
+    ),
+    repo: Flag.string("repo").pipe(
+      Flag.withDescription("Repository (any path inside it); default: where the session ran"),
+      Flag.optional,
+    ),
+  },
+  Effect.fn("toolreader history capture")(function* (flags) {
+    const path = yield* Path.Path;
+    if (Option.isSome(flags.session)) {
+      const repo = path.resolve(Option.getOrElse(flags.repo, () => "."));
+      if (!(yield* optedIn(repo))) return;
+      const session = flags.session.value;
+      return yield* asHook(
+        `capture ${session} in ${repo}`,
+        Effect.gen(function* () {
+          const lock = yield* captureLock(yield* commonGitDir(repo));
+          if (!(yield* lock.acquire)) return [BUSY];
+          return yield* capture(repo, session).pipe(
+            Effect.provide(CliApp({ appServer: false, codexHome: null })),
+          );
+        }).pipe(Effect.scoped),
+      );
+    }
+    // As the agents' Stop hook: quick, silent, never failing. The work runs detached.
+    const input = yield* Effect.flatMap(Stdio.Stdio, (stdio) =>
+      stdio.stdin.pipe(Stream.decodeText(), Stream.mkString),
+    ).pipe(Effect.orElseSucceed(() => ""));
+    const target = stopTarget(input, process.cwd());
+    if (!target) return;
+    const repo = path.resolve(Option.getOrElse(flags.repo, () => target.repo));
+    if (!(yield* optedIn(repo))) return;
+    const configured = yield* backendSettings().pipe(
+      Effect.provide(ServerConfig.layer),
+      Effect.isSuccess,
+    );
+    if (!configured) return;
+    // One job per repository: a stop while one runs is caught up by the next stop.
+    const busy = yield* Effect.flatMap(captureLock(yield* commonGitDir(repo)), (l) => l.held).pipe(
+      Effect.provide(ServerConfig.layer),
+    );
+    if (busy)
+      return yield* appendLog(`capture ${target.session} in ${repo}`, [BUSY]).pipe(
+        Effect.provide(ServerConfig.layer),
+        Effect.ignore,
+      );
+    // An argv, never a shell line: the session id came from the hook's input. Unreferenced, so
+    // it outlives this process (and the agent's wait on it).
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    yield* Effect.scoped(
+      Effect.flatMap(
+        spawner.spawn(
+          ChildProcess.make(
+            process.execPath,
+            [
+              path.resolve(process.argv[1]!),
+              "history",
+              "capture",
+              "--session",
+              target.session,
+              "--repo",
+              repo,
+            ],
+            { cwd: repo, detached: true, stdin: "ignore", stdout: "ignore", stderr: "ignore" },
+          ),
+        ),
+        (child) => child.unref,
+      ),
+    ).pipe(Effect.ignore);
+  }),
+).pipe(
+  Command.withDescription(
+    "The agents' Stop hook: sends the session that stopped, with its subagents and the commits it declared, in the background",
   ),
 );
 
@@ -1168,8 +1339,8 @@ const skillCommand = (action: "install" | "uninstall") =>
   ).pipe(
     Command.withDescription(
       action === "install"
-        ? "Have agents declare which turns produced each commit: the skill, a rule in AGENTS.md and CLAUDE.md, and Claude Code's reminder after each commit"
-        : "Remove the skill, the rule and the reminder (each left alone if edited)",
+        ? "Have agents declare which turns produced each commit: the skill, a rule in AGENTS.md and CLAUDE.md, and Claude Code's and Codex's hooks (a reminder after each commit, the session sent when it stops)"
+        : "Remove the skill, the rule and the hooks (each left alone if edited)",
     ),
   );
 
@@ -1179,6 +1350,7 @@ export const historyCommand = Command.make("history").pipe(
     sync,
     status,
     push,
+    captureCommand,
     site,
     login,
     search,
