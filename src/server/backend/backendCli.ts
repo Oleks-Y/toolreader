@@ -2,13 +2,17 @@
 // TOOLREADER_DATABASE_URL, migrated on start.
 //   toolreader backend serve [--port N]                       (default 4780, 127.0.0.1 only)
 //   toolreader backend token create --workspace SLUG --name NAME
-//   toolreader backend member add --workspace SLUG --github LOGIN
+//   toolreader backend token revoke --workspace SLUG --name NAME
+//   toolreader backend member add|remove --workspace SLUG --github LOGIN
+//   toolreader backend thread delete --workspace SLUG --id THREAD
+// TOOLREADER_RETENTION_DAYS, when set, removes threads stored longer ago than that, hourly.
 // GitHub sign-in is on when TOOLREADER_GITHUB_CLIENT_ID names the OAuth or GitHub App people sign
 // in through (TOOLREADER_GITHUB_API and TOOLREADER_GITHUB_WEB for GitHub Enterprise).
 import * as Config from "effect/Config";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import { Command, Flag } from "effect/unstable/cli";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
@@ -60,8 +64,17 @@ const serve = Command.make(
   ({ port }) =>
     Effect.gen(function* () {
       yield* Effect.log(`toolreader backend → http://127.0.0.1:${port}/v1`);
-      return yield* Layer.launch(
-        BackendServerLive(port).pipe(Layer.provide([BackendApp, GitHubLive])),
+      const days = yield* Config.int("TOOLREADER_RETENTION_DAYS").pipe(Config.option);
+      const server = Layer.launch(BackendServerLive(port).pipe(Layer.provide(GitHubLive)));
+      if (days._tag === "None") return yield* server.pipe(Effect.provide(BackendApp));
+      // Retention: hourly, and once at start. A failed sweep is logged and tried again next hour.
+      const sweep = Effect.flatMap(HistoryStore, (s) => s.expire(days.value)).pipe(
+        Effect.tap((n) => (n > 0 ? Effect.log(`retention: ${n} threads expired`) : Effect.void)),
+        Effect.catchTag("HistoryStoreFailed", (e) => Effect.logWarning(`retention: ${e.message}`)),
+        Effect.repeat(Schedule.spaced("1 hour")),
+      );
+      return yield* Effect.all([server, sweep], { concurrency: 2, discard: true }).pipe(
+        Effect.provide(BackendApp),
       );
     }),
 ).pipe(Command.withDescription("Serve the history backend's /v1 API"));
@@ -103,17 +116,73 @@ const addMember = Command.make(
   }),
 ).pipe(Command.withDescription("Let a GitHub login sign in to the workspace"));
 
+const revoke = Command.make(
+  "revoke",
+  {
+    workspace: Flag.string("workspace").pipe(Flag.withSchema(Slug)),
+    name: Flag.string("name").pipe(Flag.withDescription("The name it was created with")),
+  },
+  Effect.fn("toolreader backend token revoke")(function* ({ workspace, name }) {
+    const n = yield* Effect.flatMap(HistoryStore, (s) => s.revokeToken(workspace, name)).pipe(
+      Effect.provide(BackendApp),
+    );
+    yield* Console.log(`${n} token${n === 1 ? "" : "s"} named "${name}" revoked in ${workspace}`);
+  }),
+).pipe(Command.withDescription("Revoke a workspace's tokens by name: they stop working at once"));
+
+const deleteThread = Command.make(
+  "delete",
+  {
+    workspace: Flag.string("workspace").pipe(Flag.withSchema(Slug)),
+    id: Flag.string("id").pipe(Flag.withDescription("The thread, as its citations name it")),
+  },
+  Effect.fn("toolreader backend thread delete")(function* ({ workspace, id }) {
+    const had = yield* Effect.flatMap(HistoryStore, (s) => s.deleteThread(workspace, id)).pipe(
+      Effect.provide(BackendApp),
+    );
+    yield* Console.log(
+      `${id} ${had ? "deleted" : "wasn't stored; marked deleted"} in ${workspace}: citations of it read "deleted", and no sync stores it again`,
+    );
+  }),
+).pipe(
+  Command.withDescription(
+    "Delete a thread on request: its history, search hits and findings' citations of it",
+  ),
+);
+
+const removeMember = Command.make(
+  "remove",
+  {
+    workspace: Flag.string("workspace").pipe(Flag.withSchema(Slug)),
+    github: Flag.string("github").pipe(Flag.withDescription("Their GitHub login")),
+  },
+  Effect.fn("toolreader backend member remove")(function* ({ workspace, github }) {
+    const was = yield* Effect.flatMap(HistoryStore, (s) => s.removeMember(workspace, github)).pipe(
+      Effect.provide(BackendApp),
+    );
+    yield* Console.log(
+      was
+        ? `${github} can no longer sign in to ${workspace}`
+        : `${github} wasn't a member of ${workspace}`,
+    );
+  }),
+).pipe(Command.withDescription("Stop a GitHub login signing in to the workspace"));
+
 export const backendCommand = Command.make("backend").pipe(
   Command.withDescription("The history backend, on Postgres (TOOLREADER_DATABASE_URL)"),
   Command.withSubcommands([
     serve,
     Command.make("token").pipe(
       Command.withDescription("API tokens"),
-      Command.withSubcommands([create]),
+      Command.withSubcommands([create, revoke]),
     ),
     Command.make("member").pipe(
       Command.withDescription("Who may sign in with GitHub"),
-      Command.withSubcommands([addMember]),
+      Command.withSubcommands([addMember, removeMember]),
+    ),
+    Command.make("thread").pipe(
+      Command.withDescription("Stored threads"),
+      Command.withSubcommands([deleteThread]),
     ),
   ]),
 );

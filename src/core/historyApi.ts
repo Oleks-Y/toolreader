@@ -10,6 +10,7 @@ import * as HttpApiMiddleware from "effect/unstable/httpapi/HttpApiMiddleware";
 import * as HttpApiSecurity from "effect/unstable/httpapi/HttpApiSecurity";
 
 import { CommitRecordV1, REJECT_REASONS, REPO_MAX, ThreadRecordV1 } from "./historyRecord.ts";
+import { Entry } from "./domain.ts";
 
 export const API_VERSION = 1;
 /** Every request names the client's version (package.json's) in this header. */
@@ -144,6 +145,27 @@ const ws = { ws: Text };
 const Sha = Schema.String.check(Schema.isPattern(/^[0-9a-f]{4,64}$/));
 const Ids = Schema.Array(Text).check(Schema.isMaxLength(LIMITS.ids));
 
+/**
+ * What a citation reads now: its entry, or why not. `version-unavailable`: the thread was
+ * replaced since (the entry may say something else now); `withheld`: not this caller's to read;
+ * `deleted` / `expired`: removed on request, or past the retention period; `missing`: never here.
+ */
+export const EVIDENCE_STATUSES = [
+  "ok",
+  "version-unavailable",
+  "withheld",
+  "deleted",
+  "expired",
+  "missing",
+] as const;
+export const Evidence = Schema.Struct({
+  status: Schema.Literals(EVIDENCE_STATUSES),
+  entry: Schema.optional(Entry),
+  /** The version stored now, when there is one. */
+  version: Schema.optional(Schema.String),
+});
+export type Evidence = typeof Evidence.Type;
+
 export class HistoryApi extends HttpApiGroup.make("history")
   .add(
     // Which of these threads the workspace holds, by content hash: the client sends only the ones
@@ -178,6 +200,19 @@ export class HistoryApi extends HttpApiGroup.make("history")
       payload: Schema.Unknown,
       success: PutResult,
       error: [Rejected, Forbidden, BackendFailed],
+    }),
+    // A citation (thread, entry, version) read back: the entry when that version is stored,
+    // else why not. A GitHub sign-in names the repo, and reads only threads linked to it.
+    HttpApiEndpoint.post("evidence", "/workspaces/:ws/evidence", {
+      params: ws,
+      payload: Schema.Struct({
+        threadId: Text,
+        entryId: Text,
+        version: Schema.optional(Text),
+        repo: Schema.optional(Repo),
+      }),
+      success: Evidence,
+      error: [Forbidden, BackendFailed],
     }),
     HttpApiEndpoint.post("commits", "/workspaces/:ws/repos/:repo/commits/query", {
       params: { ...ws, repo: Repo },

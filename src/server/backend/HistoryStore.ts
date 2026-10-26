@@ -12,6 +12,7 @@ import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as SqlError from "effect/unstable/sql/SqlError";
+import type { Fragment as SqlFragment } from "effect/unstable/sql/Statement";
 import { PgClient } from "@effect/sql-pg/PgClient";
 
 import {
@@ -22,6 +23,8 @@ import {
   type CommitRecord,
   type ThreadRecord,
 } from "../../core/historyRecord.ts";
+import { Entry } from "../../core/domain.ts";
+import type { Evidence } from "../../core/historyApi.ts";
 import { forJsonb, sha256, threadSha } from "../recordHash.ts";
 
 export class HistoryStoreFailed extends Schema.TaggedErrorClass<HistoryStoreFailed>()(
@@ -70,6 +73,20 @@ const CallerRow = Schema.Struct({
   workspace: Schema.String,
 });
 const decodeCallerRows = Schema.decodeUnknownEffect(Schema.Array(CallerRow));
+const RemovedRow = Schema.Struct({
+  version: Schema.String,
+  reason: Schema.Literals(["deleted", "expired"]),
+});
+const decodeRemovedRows = Schema.decodeUnknownEffect(Schema.Array(RemovedRow));
+const EvidenceRow = Schema.Struct({
+  version: Schema.String,
+  linked: Schema.Boolean,
+  entry: Schema.NullOr(Schema.Unknown),
+});
+const decodeEvidenceRows = Schema.decodeUnknownEffect(Schema.Array(EvidenceRow));
+const decodeEntry = Schema.decodeUnknownOption(Entry);
+const CountRow = Schema.Struct({ n: Schema.Number });
+const decodeCountRows = Schema.decodeUnknownEffect(Schema.Array(CountRow));
 const encodeThreadJson = Schema.encodeSync(Schema.fromJsonString(ThreadRecordV1));
 const encodeCommitJson = Schema.encodeSync(Schema.fromJsonString(CommitRecordV1));
 
@@ -136,6 +153,13 @@ export type WorkspaceStore = {
   readonly putCommit: (
     record: CommitRecord,
   ) => Effect.Effect<PutResult, HistoryStoreFailed | HistoryRefused>;
+  /** A citation read back, or why not (`Evidence`); `repo` keeps it to threads linked there. */
+  readonly evidence: (cite: {
+    readonly threadId: string;
+    readonly entryId: string;
+    readonly version?: string | undefined;
+    readonly repo?: string | undefined;
+  }) => Effect.Effect<Evidence, HistoryStoreFailed>;
   /** The commits of `shas` this workspace has links for, in no particular order. */
   readonly commits: (
     repo: string,
@@ -160,11 +184,28 @@ export class HistoryStore extends Context.Service<
       workspace: string,
       login: string,
     ) => Effect.Effect<void, HistoryStoreFailed>;
+    /** Stops a GitHub login signing in to the workspace; whether it was a member. */
+    readonly removeMember: (
+      workspace: string,
+      login: string,
+    ) => Effect.Effect<boolean, HistoryStoreFailed>;
     /** The workspace, when the GitHub login is one of its members. */
     readonly member: (
       workspace: string,
       login: string,
     ) => Effect.Effect<Option.Option<{ readonly workspaceId: string }>, HistoryStoreFailed>;
+    /** Removes a thread on request: its body, search hits and findings' citations; a marker stays. */
+    readonly deleteThread: (
+      workspace: string,
+      id: string,
+    ) => Effect.Effect<boolean, HistoryStoreFailed>;
+    /** Removes every thread stored more than `days` ago, in every workspace; how many went. */
+    readonly expire: (days: number) => Effect.Effect<number, HistoryStoreFailed>;
+    /** Revokes the workspace's tokens by that name; how many. */
+    readonly revokeToken: (
+      workspace: string,
+      name: string,
+    ) => Effect.Effect<number, HistoryStoreFailed>;
     /** The live token's owner; marks it used. */
     readonly authenticate: (
       token: string,
@@ -208,6 +249,18 @@ export class HistoryStore extends Context.Service<
 
       const putThread = Effect.fn("HistoryStore.putThread")(
         function* (writer: Writer, record: ThreadRecord) {
+          // Deleted on request: never stored again. Expired: not this version again.
+          const [gone] = yield* sql`
+            SELECT version, reason FROM removed
+            WHERE workspace_id = ${writer.workspaceId} AND thread_id = ${record.thread.id}`.pipe(
+            Effect.flatMap(decodeRemovedRows),
+          );
+          if (gone && (gone.reason === "deleted" || gone.version === threadSha(record)))
+            return "same" as const;
+          if (gone)
+            yield* sql`
+              DELETE FROM removed
+              WHERE workspace_id = ${writer.workspaceId} AND thread_id = ${record.thread.id}`;
           const payload = forJsonb(encodeThreadJson(record));
           return yield* upsert(
             "threads",
@@ -291,6 +344,101 @@ export class HistoryStore extends Context.Service<
         );
       }, bounded);
 
+      const evidence = Effect.fn("HistoryStore.evidence")(function* (
+        ws: string,
+        cite: {
+          readonly threadId: string;
+          readonly entryId: string;
+          readonly version?: string | undefined;
+          readonly repo?: string | undefined;
+        },
+      ) {
+        const [gone] = yield* sql`
+          SELECT version, reason FROM removed
+          WHERE workspace_id = ${ws} AND thread_id = ${cite.threadId}`.pipe(
+          Effect.flatMap(decodeRemovedRows),
+          Effect.mapError(failed),
+        );
+        if (gone) return { status: gone.reason } satisfies Evidence;
+        const linked = cite.repo ? sql`t.id IN (${linkedTo(ws, cite.repo)})` : sql`true`;
+        const [row] = yield* sql`
+          SELECT t.content_sha AS version, ${linked} AS linked,
+                 (SELECT e FROM jsonb_array_elements(t.payload->'entries') e
+                  WHERE e->>'id' = ${cite.entryId} LIMIT 1) AS entry
+          FROM threads t WHERE t.workspace_id = ${ws} AND t.id = ${cite.threadId}`.pipe(
+          Effect.flatMap(decodeEvidenceRows),
+          Effect.mapError(failed),
+        );
+        if (!row) return { status: "missing" } satisfies Evidence;
+        if (!row.linked) return { status: "withheld" } satisfies Evidence;
+        if (cite.version && !row.version.startsWith(cite.version))
+          return { status: "version-unavailable", version: row.version } satisfies Evidence;
+        const entry = Option.getOrUndefined(decodeEntry(row.entry));
+        return entry
+          ? ({ status: "ok", entry, version: row.version } satisfies Evidence)
+          : ({ status: "missing", version: row.version } satisfies Evidence);
+      }, bounded);
+
+      /**
+       * Removes threads (`ids`, or every one stored before `before`) from a workspace, or from all
+       * of them: bodies; a marker per thread stays.
+       */
+      const remove = (reason: "deleted" | "expired", where: SqlFragment) =>
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const gone = yield* sql`
+              WITH gone AS (DELETE FROM threads WHERE ${where} RETURNING workspace_id, id, content_sha),
+              marked AS (
+                INSERT INTO removed (workspace_id, thread_id, version, reason)
+                SELECT workspace_id, id, content_sha, ${reason} FROM gone
+                ON CONFLICT (workspace_id, thread_id) DO UPDATE
+                  SET version = excluded.version, reason = excluded.reason, removed_at = now()
+              )
+              SELECT count(*)::int AS n FROM gone`.pipe(Effect.flatMap(decodeCountRows));
+              return gone[0]?.n ?? 0;
+            }),
+          )
+          .pipe(Effect.mapError(failed), bounded);
+
+      const deleteThread = Effect.fn("HistoryStore.deleteThread")(function* (
+        slug: string,
+        id: string,
+      ) {
+        const ws = yield* workspace(slug);
+        const n = yield* remove("deleted", sql`workspace_id = ${ws} AND id = ${id}`);
+        // Deleted before it was ever stored here: marked anyway, so no sync stores it later.
+        if (n === 0)
+          yield* sql`
+            INSERT INTO removed (workspace_id, thread_id, version, reason)
+            VALUES (${ws}, ${id}, '', 'deleted')
+            ON CONFLICT (workspace_id, thread_id) DO UPDATE SET reason = 'deleted', removed_at = now()`.pipe(
+            Effect.mapError(failed),
+          );
+        return n > 0;
+      });
+
+      const expire = (days: number) =>
+        remove("expired", sql`uploaded_at < now() - make_interval(days => ${days})`);
+
+      const revokeToken = Effect.fn("HistoryStore.revokeToken")(function* (
+        slug: string,
+        name: string,
+      ) {
+        const rows = yield* sql`
+          WITH revoked AS (
+            UPDATE api_tokens SET revoked_at = now()
+            WHERE workspace_id = (SELECT id FROM workspaces WHERE slug = ${slug})
+              AND name = ${name} AND revoked_at IS NULL
+            RETURNING id
+          )
+          SELECT count(*)::int AS n FROM revoked`.pipe(
+          Effect.flatMap(decodeCountRows),
+          Effect.mapError(failed),
+        );
+        return rows[0]?.n ?? 0;
+      }, bounded);
+
       const workspace = Effect.fn("HistoryStore.workspace")(function* (slug: string) {
         // The no-op update makes RETURNING give the row that was already there.
         const [row] = yield* sql`
@@ -320,6 +468,24 @@ export class HistoryStore extends Context.Service<
         yield* sql`
           INSERT INTO members (workspace_id, github_login) VALUES (${ws}, ${login.toLowerCase()})
           ON CONFLICT DO NOTHING`.pipe(Effect.mapError(failed));
+      }, bounded);
+
+      const removeMember = Effect.fn("HistoryStore.removeMember")(function* (
+        slug: string,
+        login: string,
+      ) {
+        const rows = yield* sql`
+          WITH gone AS (
+            DELETE FROM members
+            WHERE workspace_id = (SELECT id FROM workspaces WHERE slug = ${slug})
+              AND github_login = ${login.toLowerCase()}
+            RETURNING 1
+          )
+          SELECT count(*)::int AS n FROM gone`.pipe(
+          Effect.flatMap(decodeCountRows),
+          Effect.mapError(failed),
+        );
+        return (rows[0]?.n ?? 0) > 0;
       }, bounded);
 
       const member = Effect.fn("HistoryStore.member")(function* (slug: string, login: string) {
@@ -361,11 +527,23 @@ export class HistoryStore extends Context.Service<
           putThread: (record) => putThread(writer, record),
           threads: (ids, repo) => threads(ws, ids, repo),
           putCommit: (record) => putCommit(writer, record),
+          evidence: (cite) => evidence(ws, cite),
           commits: (repo, shas) => commits(ws, repo, shas),
         };
       };
 
-      return HistoryStore.of({ at, workspace, createToken, addMember, member, authenticate });
+      return HistoryStore.of({
+        at,
+        workspace,
+        createToken,
+        addMember,
+        removeMember,
+        member,
+        deleteThread,
+        expire,
+        revokeToken,
+        authenticate,
+      });
     }),
   );
 }
