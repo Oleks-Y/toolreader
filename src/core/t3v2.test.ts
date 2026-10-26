@@ -122,3 +122,21 @@ describe("turnItemsToRows", () => {
     ]);
   });
 });
+
+describe("a screenshot a tool returned", () => {
+  // As T3 keeps a Claude `Read` of a PNG: Claude's own content blocks.
+  const shot = item("img1", "dynamic_tool", {
+    toolName: "Read",
+    input: { file_path: "/tmp/shot.png" },
+    output: [
+      { type: "image", source: { type: "base64", data: btoa("pixels"), media_type: "image/png" } },
+    ],
+  });
+
+  it("is not output text: its base64 never lands in the action", () => {
+    const { activities, messages } = turnItemsToRows([shot]);
+    const [read] = normalize(activities, messages, { root: "/repo" }) as Action[];
+    assert.strictEqual(read?.title, "read /tmp/shot.png");
+    assert.isUndefined(read?.output);
+  });
+});
