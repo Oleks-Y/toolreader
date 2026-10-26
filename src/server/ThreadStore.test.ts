@@ -230,3 +230,41 @@ describe("ThreadStore on orchestration V2", () => {
     );
   });
 });
+
+// Newer T3: the V1 activity table is gone; threads read from V2 alone.
+const TestV2OnlyLive = ThreadStore.layer.pipe(
+  Layer.provideMerge(
+    Layer.effectDiscard(
+      Effect.andThen(
+        seedV2,
+        Effect.flatMap(SqlClient.SqlClient, (sql) => sql`drop table projection_thread_activities`),
+      ),
+    ).pipe(Layer.provideMerge(NodeSqliteClient.layerMemory())),
+  ),
+  Layer.provide(ConfigLive),
+  Layer.provide(NodeServices.layer),
+);
+
+describe("ThreadStore without V1 activities", () => {
+  it.layer(TestV2OnlyLive)((it) => {
+    it.effect("lists and reads V2 threads", () =>
+      Effect.gen(function* () {
+        const store = yield* ThreadStore;
+        const threads = yield* store.list;
+        assert.deepStrictEqual(
+          threads.map((t) => [t.id, t.actionCount]),
+          [
+            ["n1", 1],
+            ["t1", 1],
+          ],
+        );
+        const n1 = yield* store.get("n1", {});
+        assert.deepStrictEqual(
+          n1.entries.map((e) => (e.type === "action" ? e.title : e.type)),
+          ["message", "read src/b.ts"],
+        );
+        yield* store.head("n1");
+      }),
+    );
+  });
+});

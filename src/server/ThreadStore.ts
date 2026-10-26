@@ -174,6 +174,17 @@ export class ThreadStore extends Context.Service<
         Effect.orDie,
       );
       const v2 = (v2Table?.n ?? 0) > 0;
+      // Newer T3 drops the V1 activity table; its threads then live in V2 alone.
+      const [v1Table] = yield* sql`
+        select count(*) n from sqlite_master where name = 'projection_thread_activities'`.pipe(
+        Effect.flatMap(decodeCountRows),
+        Effect.orDie,
+      );
+      const v1Activities = (v1Table?.n ?? 0) > 0;
+      const activitiesHead = (id: string) =>
+        v1Activities
+          ? sql`(select max(rowid) from projection_thread_activities where thread_id = ${id})`
+          : sql`null`;
 
       const threadRows = (id: string | null) =>
         (v2
@@ -202,10 +213,11 @@ export class ThreadStore extends Context.Service<
       const countCache = new Map<string, { head: number; n: number }>();
 
       const list = Effect.gen(function* () {
-        const heads =
-          yield* sql`select thread_id id, max(rowid) head, max(created_at) last from projection_thread_activities group by thread_id`.pipe(
-            Effect.flatMap(decodeHeadRows),
-          );
+        const heads = v1Activities
+          ? yield* sql`select thread_id id, max(rowid) head, max(created_at) last from projection_thread_activities group by thread_id`.pipe(
+              Effect.flatMap(decodeHeadRows),
+            )
+          : [];
         const info = new Map<string, { n: number; last: string | null }>();
         for (const h of heads) {
           let cached = countCache.get(h.id);
@@ -245,7 +257,7 @@ export class ThreadStore extends Context.Service<
           v2
             ? sql`
           select (select 1 from orchestration_v2_projection_threads where thread_id = ${id} and deleted_at is null) "exists",
-                 (select max(rowid) from projection_thread_activities where thread_id = ${id}) a,
+                 ${activitiesHead(id)} a,
                  (select max(updated_at) from projection_thread_messages where thread_id = ${id}) m,
                  (select status from orchestration_v2_projection_runs where thread_id = ${id} order by ordinal desc limit 1) s,
                  (select max(updated_at) || '/' || count(*) || '/' || total(length(payload_json)) from orchestration_v2_projection_turn_items where thread_id = ${id}) v`
@@ -268,11 +280,13 @@ export class ThreadStore extends Context.Service<
         if (!row) return yield* new ThreadNotFound({ threadId: id });
         // Marker before content: a write landing mid-read then shows up as a newer marker on the next poll.
         const { head: marker } = yield* head(id);
-        const activityRows = yield* sql`
+        const activityRows = v1Activities
+          ? yield* sql`
           select activity_id id, created_at at, kind, tone, summary, payload_json payload
           from projection_thread_activities
           where thread_id = ${id} and kind in ${sql.in(ACTIVITY_KINDS)}
-          order by created_at, rowid`.pipe(Effect.flatMap(decodeActivityRows), Effect.orDie);
+          order by created_at, rowid`.pipe(Effect.flatMap(decodeActivityRows), Effect.orDie)
+          : [];
         const messages = yield* sql`
           select message_id id, created_at at, role, text from projection_thread_messages
           where thread_id = ${id} order by created_at, rowid`.pipe(

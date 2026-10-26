@@ -105,8 +105,16 @@ const toolStatus = (s: string) =>
       : "inProgress";
 
 /** A result in the Claude tool_result shape `normalize` reads output and errors from. */
+/** Claude's own tool_result blocks (`text`, `image`), which T3 keeps as they are. */
+const isClaudeBlocks = (v: unknown): v is ReadonlyArray<unknown> =>
+  Array.isArray(v) &&
+  v.length > 0 &&
+  v.every((b) => Predicate.isObject(b) && (b.type === "text" || b.type === "image"));
+
 const result = (content: unknown, failed: boolean) =>
-  content === undefined && !failed ? undefined : { content: text(content), is_error: failed };
+  content === undefined && !failed
+    ? undefined
+    : { content: isClaudeBlocks(content) ? content : text(content), is_error: failed };
 
 function toolData(type: string, item: TurnItem, failed: boolean): ToolPayload["data"] {
   switch (type) {
