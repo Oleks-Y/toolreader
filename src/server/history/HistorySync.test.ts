@@ -1,5 +1,7 @@
 // `history sync` end to end: a real git repo, a Codex session's rollout file, and the real backend
 // (a test server on 127.0.0.1 over Docker Postgres).
+import * as NodeCrypto from "node:crypto";
+
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
@@ -7,8 +9,10 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServer from "effect/unstable/http/HttpServer";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -30,7 +34,8 @@ import { RepoSessions } from "../RepoSessions.ts";
 import { ServerConfig } from "../ServerConfig.ts";
 import { ThreadStore } from "../ThreadStore.ts";
 import { HistorySync } from "./HistorySync.ts";
-import { evidenceLines, hitLines, reportLines } from "./historyCli.ts";
+import { connect } from "./HistoryClient.ts";
+import { evidenceLines, hitLines, reportLines, saveMedia } from "./historyCli.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -596,6 +601,60 @@ describe("history sync", () => {
         ).pipe(Effect.provide(services(home, codexHome)));
         assert.include(missing.message, "No session codex:nope");
       }).pipe(Effect.scoped),
+    );
+
+    it.effect("writes a stored image to a file, only when its bytes hash to its name", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* tempDir("toolreader-media-");
+        const server = yield* HttpServer.HttpServer;
+        const port = server.address._tag === "TcpAddress" ? server.address.port : 0;
+        const token = yield* Effect.flatMap(HistoryStore, (s) => s.createToken("shots", "test"));
+        yield* Effect.flatMap(HistoryStore, (s) => s.setMedia("shots", true));
+        const settings = { url: `http://127.0.0.1:${port}`, token, workspace: "shots" };
+        yield* fs.makeDirectory(`${home}/.toolreader`, { recursive: true });
+        yield* fs.writeFileString(
+          `${home}/.toolreader/config.json`,
+          encodeJson({ backend: settings }),
+        );
+        const bytes = Buffer.from("a screenshot for the CLI");
+        const sha256 = NodeCrypto.createHash("sha256").update(bytes).digest("hex");
+        const api = yield* connect({ ...settings, token: Redacted.make(token) });
+        yield* api.history.putMedia({
+          params: { ws: "shots" },
+          payload: { sha256, mime: "image/jpeg", data: bytes.toString("base64") },
+        });
+        const config = Layer.succeed(
+          ServerConfig,
+          ServerConfig.of({
+            port: 0,
+            home,
+            dbPath: "/nonexistent/state.sqlite",
+            codexBin: "codex",
+            codexHome: "/nonexistent",
+            claudeHome: "/nonexistent",
+            labelsPath: "",
+            userConfigPath: `${home}/.toolreader/config.json`,
+            distDir: `${home}/dist`,
+          }),
+        );
+        const save = (sha: string, out?: string) =>
+          saveMedia(sha, out).pipe(Effect.provide(config));
+
+        const saved = yield* save(sha256, `${home}/shot.jpeg`);
+        assert.deepStrictEqual(saved, {
+          path: `${home}/shot.jpeg`,
+          mime: "image/jpeg",
+          bytes: bytes.length,
+        });
+        assert.deepStrictEqual(Buffer.from(yield* fs.readFile(saved.path)), bytes);
+
+        assert.include((yield* Effect.flip(save("nope"))).message, "64 hex characters");
+        assert.include((yield* Effect.flip(save("1".repeat(64)))).message, "NotFound");
+        const key = [...objects.keys()].find((k) => k.endsWith(sha256))!;
+        objects.set(key, Buffer.from("something else"));
+        assert.include((yield* Effect.flip(save(sha256))).message, "don't hash to");
+      }).pipe(Effect.provide(FetchHttpClient.layer), Effect.scoped),
     );
 
     it.effect("finds a failure two sessions hit, and keeps the decision on it", () =>

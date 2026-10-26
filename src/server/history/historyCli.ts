@@ -12,6 +12,7 @@
 //   toolreader history search TEXT [--repo PATH] [--all] [--limit N]
 //   toolreader history show THREAD#ENTRY@VERSION [--repo PATH]
 //   toolreader history sql QUERY                                 (backend/AgentSql.ts)
+//   toolreader history media SHA256 [-o FILE]
 //   toolreader history insights [--repo PATH] [--no-detect] [--status S]… [--limit N]
 //   toolreader history insight propose|accept|reject|modify|implemented|monitor|evaluate ID --why TEXT
 //   toolreader history insight sample --out FILE [--per-detector N]   (core/insightsEval.ts)
@@ -19,6 +20,8 @@
 //   toolreader history turns|link|unlink …                       (declareCli.ts)
 //   toolreader history skill install|uninstall [--repo PATH] [--commit]   (historySkill.ts)
 //   toolreader history hook install|uninstall [--repo PATH]    (historyHooks.ts)
+import * as NodeCrypto from "node:crypto";
+
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -39,7 +42,7 @@ import { CliApp } from "../app.ts";
 import { RepoSessions, SESSION_SOURCES } from "../RepoSessions.ts";
 import { ServerConfig } from "../ServerConfig.ts";
 import { declareCommands } from "./declareCli.ts";
-import { BackendApi } from "../../core/historyApi.ts";
+import { BackendApi, MEDIA_TYPES, Sha256 } from "../../core/historyApi.ts";
 import { backendSettings, backendUrl, call, connect, HistoryFailed } from "./HistoryClient.ts";
 import { deviceLogin, saveGithubToken } from "./githubLogin.ts";
 import { commitSkill, dirtyPaths, INSTALLED_PATHS, installSkill } from "./historySkill.ts";
@@ -429,6 +432,65 @@ const sql = Command.make(
 ).pipe(
   Command.withDescription(
     "Query every conversation in the workspace with read-only SQL, whoever's machine it came from",
+  ),
+);
+
+const decodeSha256 = Schema.decodeUnknownEffect(Sha256);
+// The backend's mime names the file's extension, so only the types it keeps get through.
+const decodeMediaType = Schema.decodeUnknownEffect(Schema.Literals(MEDIA_TYPES));
+
+/**
+ * One stored image written to `out` (default `<sha256>.<ext>` here), its bytes checked against
+ * the hash first: what `history media` hands a person.
+ */
+export const saveMedia = Effect.fn("toolreader history media.save")(function* (
+  sha: string,
+  out: string | undefined,
+) {
+  const sha256 = yield* decodeSha256(sha).pipe(
+    Effect.mapError(() => new HistoryFailed({ message: `${sha}: a SHA-256 is 64 hex characters` })),
+  );
+  const settings = yield* backendSettings("reader");
+  const api = yield* connect(settings);
+  const image = yield* call(
+    api.history.media({ params: { ws: settings.workspace }, payload: { sha256 } }),
+  );
+  const mime = yield* decodeMediaType(image.mime).pipe(
+    Effect.mapError(() => new HistoryFailed({ message: `Not an image type: ${image.mime}` })),
+  );
+  const bytes = Buffer.from(image.data, "base64");
+  if (NodeCrypto.createHash("sha256").update(bytes).digest("hex") !== sha256)
+    return yield* new HistoryFailed({ message: `The backend's bytes don't hash to ${sha256}` });
+  const path = (yield* Path.Path).resolve(out ?? `${sha256}.${mime.slice("image/".length)}`);
+  yield* (yield* FileSystem.FileSystem)
+    .writeFile(path, bytes)
+    .pipe(Effect.mapError((e) => new HistoryFailed({ message: e.message })));
+  return { path, mime, bytes: bytes.length };
+});
+
+const media = Command.make(
+  "media",
+  {
+    sha256: Argument.string("sha256").pipe(
+      Argument.withDescription("The image's SHA-256, as agent_entries.media lists it"),
+    ),
+    out: Flag.string("out").pipe(
+      Flag.withAlias("o"),
+      Flag.withDescription("Where to write it (default: <sha256>.<ext> here)"),
+      Flag.optional,
+    ),
+  },
+  Effect.fn("toolreader history media")(
+    function* ({ sha256, out }) {
+      const saved = yield* saveMedia(sha256, Option.getOrUndefined(out));
+      yield* Console.log(saved.path);
+      yield* Console.error(`${saved.mime}, ${saved.bytes} bytes`);
+    },
+    Effect.provide([FetchHttpClient.layer, ServerConfig.layer]),
+  ),
+).pipe(
+  Command.withDescription(
+    "Write a screenshot an agent looked at to a file, by its SHA-256, to hand it to a person",
   ),
 );
 
@@ -972,6 +1034,7 @@ export const historyCommand = Command.make("history").pipe(
     search,
     show,
     sql,
+    media,
     Command.make("review").pipe(
       Command.withDescription("Frozen reviews: their whole decision context, reopened as it was"),
       Command.withSubcommands([freeze, reopen]),
