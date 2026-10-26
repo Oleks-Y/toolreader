@@ -36,7 +36,8 @@ import { ServerConfig } from "../ServerConfig.ts";
 import { ThreadStore } from "../ThreadStore.ts";
 import { HistorySync } from "./HistorySync.ts";
 import { connect } from "./HistoryClient.ts";
-import { evidenceLines, hitLines, reportLines, saveMedia } from "./historyCli.ts";
+import { pending } from "./historyHooks.ts";
+import { capture, evidenceLines, hitLines, reportLines, saveMedia } from "./historyCli.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -675,6 +676,107 @@ describe("history sync", () => {
         );
         assert.include(reportLines(deleted, false).join("\n"), "deleted on request");
       }).pipe(Effect.scoped),
+    );
+
+    it.effect(
+      "captures a stopped session: retries what was pending, pushes it, sends what it declared",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const { repo, home, codexHome } = yield* scenario;
+          const [client, store] = (yield* git(repo, ["rev-list", "main~2..main"])).split("\n");
+          // A later session that changed no file, ran a check, and declared it tested the store.
+          yield* writeRollout(codexHome, "checker", repo, [
+            {
+              at: "2026-01-01T13:00:00.000Z",
+              item: {
+                type: "UserMessage",
+                id: "c1",
+                content: [{ type: "text", text: "Check the store" }],
+              },
+            },
+            {
+              at: "2026-01-01T13:01:00.000Z",
+              item: {
+                type: "CommandExecution",
+                id: "c2",
+                command: ["/bin/zsh", "-lc", `toolreader history link --sha ${store!.slice(0, 8)}`],
+                cwd: repo,
+                status: "completed",
+                aggregated_output: `history link: ${store} for ${store!.slice(0, 8)}`,
+                exit_code: 0,
+              },
+            },
+          ]);
+          const server = yield* HttpServer.HttpServer;
+          const port = server.address._tag === "TcpAddress" ? server.address.port : 0;
+          const token = yield* Effect.flatMap(HistoryStore, (s) => s.createToken("stops", "test"));
+          yield* fs.makeDirectory(`${home}/.toolreader/pending`, { recursive: true });
+          yield* fs.writeFileString(
+            `${home}/.toolreader/config.json`,
+            encodeJson({ backend: { url: `http://127.0.0.1:${port}`, token, workspace: "stops" } }),
+          );
+          // A push whose sync failed before: waiting for the next hook.
+          const common = yield* git(repo, [
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+          ]);
+          const config = Layer.succeed(
+            ServerConfig,
+            ServerConfig.of({
+              port: 0,
+              home,
+              dbPath: "/nonexistent/state.sqlite",
+              codexBin: "codex",
+              codexHome,
+              claudeHome: "/nonexistent",
+              labelsPath: "",
+              userConfigPath: `${home}/.toolreader/config.json`,
+              distDir: `${home}/dist`,
+            }),
+          );
+          yield* Effect.flatMap(pending(common), (p) =>
+            p.failed(`-1 ${client}`, "CONNECTION_REFUSED"),
+          ).pipe(Effect.provide(config));
+          assert.lengthOf(yield* fs.readDirectory(path.join(home, ".toolreader", "pending")), 1);
+          const lines = yield* capture(repo, "codex:checker").pipe(
+            Effect.provide([services(home, codexHome), config]),
+          );
+          assert.isFalse(
+            lines.some((l) => l.startsWith("✗")),
+            lines.join("\n"),
+          );
+          // A session this repo doesn't know (a Codex subagent's own id): nothing, quietly.
+          assert.deepStrictEqual(
+            yield* capture(repo, "codex:unknown").pipe(
+              Effect.provide([services(home, codexHome), config]),
+            ),
+            [],
+          );
+          assert.deepStrictEqual(
+            yield* fs.readDirectory(path.join(home, ".toolreader", "pending")),
+            [],
+          );
+          const ws = yield* inWorkspace("stops");
+          assert.deepStrictEqual(
+            (yield* ws.threads(["codex:checker", "codex:coder"])).map((t) => t.thread.id).sort(),
+            ["codex:checker", "codex:coder"],
+          );
+          // The retried push's commit, and the one the session declared.
+          const linked = new Map(
+            (yield* ws.commits("acme/app", [client!, store!])).map((c) => [
+              c.sha,
+              c.links.map((l) => [l.threadId, l.via]),
+            ]),
+          );
+          assert.deepStrictEqual(linked.get(client!), [["codex:coder", "trailer"]]);
+          assert.deepStrictEqual(linked.get(store!), [
+            ["codex:checker", "asserted"],
+            ["codex:coder", "trailer"],
+          ]);
+        }).pipe(Effect.scoped),
     );
 
     it.effect("pushes a session by id with its subagents, linked to no commit", () =>

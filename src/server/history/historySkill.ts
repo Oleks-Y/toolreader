@@ -68,8 +68,9 @@ toolreader history unlink --sha <commit> [--session <id>]
 - A command that fails declares nothing: read its error, fix it, run it again.
 - The note is published with the history (redacted, but don't rely on that): no secrets, no names
   of clients or people.
-- Don't run \`history sync\` or push for this: the pre-push hook attempts delivery. A successful
-  \`git push\` doesn't confirm it; \`toolreader history status\` shows what's still pending.
+- Don't run \`history sync\` or push for this: the hooks attempt delivery (when you stop, and on
+  push). Neither a successful \`git push\` nor stopping confirms it; \`toolreader history status\`
+  shows what's still pending.
 `;
 
 const SEAL = "<!-- toolreader skill sha256 ";
@@ -178,22 +179,40 @@ const ruleFile = Effect.fn("historySkill.rule")(function* (
 /** What Claude Code runs after each Bash command: a reminder when it was a `git commit`. */
 export const REMIND_COMMAND =
   "command -v toolreader >/dev/null 2>&1 && toolreader history remind || true";
+/**
+ * What an agent runs when it (or a subagent) stops: the session's history sent in the
+ * background, so work that made no commit and no push still reaches the backend.
+ */
+export const CAPTURE_COMMAND =
+  "command -v toolreader >/dev/null 2>&1 && toolreader history capture || true";
+
+/** Our hooks, by event: each recognized by the command it runs. */
+const AGENT_HOOKS = [
+  {
+    event: "PostToolUse",
+    matcher: "Bash",
+    command: REMIND_COMMAND,
+    marker: "toolreader history remind",
+  },
+  { event: "Stop", command: CAPTURE_COMMAND, marker: "toolreader history capture" },
+  { event: "SubagentStop", command: CAPTURE_COMMAND, marker: "toolreader history capture" },
+] as const;
+
 const Settings = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown), { space: 2 });
 const decodeSettings = Schema.decodeUnknownEffect(Settings);
 const encodeSettings = Schema.encodeEffect(Settings);
 type Entry = { matcher?: unknown; hooks?: Array<{ command?: unknown }> };
-const isOurs = (e: Entry) =>
+const isOurs = (marker: string) => (e: Entry) =>
   Array.isArray(e.hooks) &&
   e.hooks.length > 0 &&
-  e.hooks.every(
-    (h) => typeof h.command === "string" && h.command.includes("toolreader history remind"),
-  );
+  e.hooks.every((h) => typeof h.command === "string" && h.command.includes(marker));
 
 /**
- * Adds or removes the `PostToolUse` hook in a hooks file, keeping everything else in it: Claude
- * Code's `.claude/settings.json` and Codex's `.codex/hooks.json` take the same shape.
+ * Adds or removes our hooks in a hooks file (the commit reminder after Bash, the capture on Stop
+ * and SubagentStop), keeping everything else in it: Claude Code's `.claude/settings.json` and
+ * Codex's `.codex/hooks.json` take the same shape, and the same events.
  */
-const reminderHook = Effect.fn("historySkill.reminderHook")(function* (
+const agentHooks = Effect.fn("historySkill.agentHooks")(function* (
   file: string,
   action: "install" | "uninstall",
   agent: "Claude Code" | "Codex",
@@ -214,21 +233,26 @@ const reminderHook = Effect.fn("historySkill.reminderHook")(function* (
   const hooks = (
     settings.hooks && typeof settings.hooks === "object" ? { ...(settings.hooks as object) } : {}
   ) as Record<string, unknown>;
-  const entries = (Array.isArray(hooks.PostToolUse) ? hooks.PostToolUse : []) as Entry[];
-  const others = entries.filter((e) => !isOurs(e));
-  const mine = { matcher: "Bash", hooks: [{ type: "command", command: REMIND_COMMAND }] };
-  const had = entries.find(isOurs);
-  if (
-    action === "install" &&
-    had &&
-    had.hooks?.[0]?.command === REMIND_COMMAND &&
-    had.hooks.length === 1
-  )
-    return `Already in ${file}.`;
-  if (action === "uninstall" && !had) return `No reminder hook in ${file}.`;
-  const next = action === "install" ? [...others, mine] : others;
-  if (next.length > 0) hooks.PostToolUse = next;
-  else delete hooks.PostToolUse;
+  let had = 0;
+  let same = 0;
+  for (const h of AGENT_HOOKS) {
+    const entries = (Array.isArray(hooks[h.event]) ? hooks[h.event] : []) as Entry[];
+    const ours = entries.find(isOurs(h.marker));
+    const mine = {
+      ...("matcher" in h ? { matcher: h.matcher } : {}),
+      hooks: [{ type: "command", command: h.command }],
+    };
+    if (ours) had++;
+    if (ours && ours.hooks?.length === 1 && ours.hooks[0]?.command === h.command) same++;
+    const next = [
+      ...entries.filter((e) => !isOurs(h.marker)(e)),
+      ...(action === "install" ? [mine] : []),
+    ];
+    if (next.length > 0) hooks[h.event] = next;
+    else delete hooks[h.event];
+  }
+  if (action === "install" && same === AGENT_HOOKS.length) return `Already in ${file}.`;
+  if (action === "uninstall" && had === 0) return `No toolreader hooks in ${file}.`;
   if (Object.keys(hooks).length > 0) settings.hooks = hooks;
   else delete settings.hooks;
   if (Object.keys(settings).length === 0) {
@@ -238,15 +262,14 @@ const reminderHook = Effect.fn("historySkill.reminderHook")(function* (
     yield* fs.writeFileString(file, `${yield* encodeSettings(settings).pipe(Effect.orDie)}\n`);
   }
   return action === "install"
-    ? `${had ? "Updated" : "Added"} the commit reminder hook in ${file} (${agent}${agent === "Codex" ? ": approve it once with /hooks" : ""}).`
-    : `Removed the commit reminder hook from ${file}.`;
+    ? `${had ? "Updated" : "Added"} the commit reminder and session capture hooks in ${file} (${agent}${agent === "Codex" ? ": approve them once with /hooks" : ""}).`
+    : `Removed the commit reminder and session capture hooks from ${file}.`;
 });
 
 /**
  * Everything \`history skill install\` puts in a repo: the skill, the rule in AGENTS.md and
- * CLAUDE.md (once, when CLAUDE.md is a link to AGENTS.md), and the reminder hook for Claude Code
- * and Codex. Each
- * part reports on its own; one left alone (edited) doesn't stop the others. Returns the lines to
+ * CLAUDE.md (once, when CLAUDE.md is a link to AGENTS.md), and the agent hooks for Claude Code
+ * and Codex (the commit reminder, the capture on stop). Each part reports on its own; one left alone (edited) doesn't stop the others. Returns the lines to
  * print and the paths it changed, for \`--commit\`.
  */
 export const installSkill = Effect.fn("historySkill.install")(function* (
@@ -270,8 +293,8 @@ export const installSkill = Effect.fn("historySkill.install")(function* (
     (yield* fs.realPath(claude).pipe(Effect.orElseSucceed(() => ""))) ===
     (yield* fs.realPath(agents).pipe(Effect.orElseSucceed(() => "-")));
   if (!sameFile) yield* part(ruleFile(claude, action));
-  yield* part(reminderHook(path.join(repo, ".claude", "settings.json"), action, "Claude Code"));
-  yield* part(reminderHook(path.join(repo, ".codex", "hooks.json"), action, "Codex"));
+  yield* part(agentHooks(path.join(repo, ".claude", "settings.json"), action, "Claude Code"));
+  yield* part(agentHooks(path.join(repo, ".codex", "hooks.json"), action, "Codex"));
   return { lines, failed };
 });
 

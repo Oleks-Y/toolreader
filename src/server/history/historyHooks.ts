@@ -330,6 +330,56 @@ export const pending = (repo: string) =>
     return { list, failed, done };
   });
 
+/** Whether a process is alive: one that exists but isn't ours to signal counts. */
+const alive = (pid: number) =>
+  Effect.sync(() => {
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (e) {
+      return (e as { readonly code?: string }).code === "EPERM";
+    }
+  });
+
+/**
+ * One capture job per repository (its common git dir) at a time: a lock file in ~/.toolreader/
+ * holding the job's pid, made with O_EXCL. A lock whose process is gone is free. `held` is what
+ * the hook checks before starting a job; `acquire` takes it for the job's scope, or says no.
+ */
+export const captureLock = (repo: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const { home } = yield* ServerConfig;
+    const dir = path.join(home, ".toolreader");
+    const file = path.join(dir, `capture-${sha256(repo).slice(0, 16)}.lock`);
+    const owner = fs.readFileString(file).pipe(
+      Effect.map((s) => Number(s.trim())),
+      Effect.orElseSucceed(() => 0),
+    );
+    const held = Effect.flatMap(owner, alive);
+    const take = fs
+      .writeFileString(file, `${process.pid}\n`, { flag: "wx", mode: 0o600 })
+      .pipe(Effect.isSuccess);
+    const acquire = Effect.gen(function* () {
+      yield* fs.makeDirectory(dir, { recursive: true, mode: 0o700 }).pipe(Effect.ignore);
+      if (!(yield* take)) {
+        if (yield* held) return false;
+        // Left by a job that died: free.
+        yield* fs.remove(file).pipe(Effect.ignore);
+        if (!(yield* take)) return false;
+      }
+      yield* Effect.addFinalizer(() =>
+        Effect.flatMap(owner, (pid) =>
+          pid === process.pid ? fs.remove(file).pipe(Effect.ignore) : Effect.void,
+        ),
+      );
+      return true;
+    });
+    return { file, held, acquire };
+  });
+
 /** The repository a path is in, as pending files key it: its common git directory. */
 export const commonGitDir = (repo: string) =>
   git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).pipe(
