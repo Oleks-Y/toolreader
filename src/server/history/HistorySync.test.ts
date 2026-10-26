@@ -622,6 +622,61 @@ describe("history sync", () => {
         }).pipe(Effect.scoped),
     );
 
+    it.effect("skips a thread the backend holds a newer copy of, or deleted, and says so", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { repo, home, codexHome } = yield* scenario;
+        const server = yield* HttpServer.HttpServer;
+        const port = server.address._tag === "TcpAddress" ? server.address.port : 0;
+        const token = yield* Effect.flatMap(HistoryStore, (s) => s.createToken("newer", "test"));
+        yield* fs.makeDirectory(`${home}/.toolreader`, { recursive: true });
+        yield* fs.writeFileString(
+          `${home}/.toolreader/config.json`,
+          encodeJson({ backend: { url: `http://127.0.0.1:${port}`, token, workspace: "newer" } }),
+        );
+        const sync = Effect.flatMap(HistorySync, (h) =>
+          h.sync(repo, "main~2..main", { source: "codex-rollouts", dryRun: false }),
+        ).pipe(Effect.provide(services(home, codexHome)));
+        const first = yield* sync;
+        const store = yield* inWorkspace("newer");
+        const [ours] = yield* store.threads(["codex:coder"]);
+        // Another machine read the session later: one more entry, a later last one.
+        yield* store.putThread({
+          ...ours!,
+          entries: [
+            ...ours!.entries,
+            {
+              type: "message",
+              id: "later",
+              at: "2026-01-02T09:00:00.000Z",
+              role: "user",
+              text: "and later",
+            },
+          ],
+          lastEntryAt: "2026-01-02T09:00:00.000Z",
+        });
+        assert.deepStrictEqual(first.skipped, []);
+        const stale = yield* sync;
+        assert.deepStrictEqual(
+          [stale.sent, stale.unchanged, stale.skipped.map((k) => [k.id, k.why])],
+          [0, 0, [["codex:coder", "newer"]]],
+        );
+        assert.include(
+          reportLines(stale, false).join("\n"),
+          "! skipped Add the store and client (codex:coder): backend has a newer copy",
+        );
+        // Still the newer copy.
+        assert.strictEqual((yield* store.threads(["codex:coder"]))[0]?.entries.at(-1)?.id, "later");
+        yield* Effect.flatMap(HistoryStore, (s) => s.deleteThread("newer", "codex:coder"));
+        const deleted = yield* sync;
+        assert.deepStrictEqual(
+          deleted.skipped.map((k) => [k.id, k.why]),
+          [["codex:coder", "deleted"]],
+        );
+        assert.include(reportLines(deleted, false).join("\n"), "deleted on request");
+      }).pipe(Effect.scoped),
+    );
+
     it.effect("pushes a session by id with its subagents, linked to no commit", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;

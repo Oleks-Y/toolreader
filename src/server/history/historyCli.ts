@@ -146,6 +146,16 @@ const checkLines = (checks: ReadonlyArray<Check>): string[] => {
   ];
 };
 
+const SKIPPED_TEXT = {
+  newer: "backend has a newer copy",
+  deleted: "deleted on request, not stored again",
+  expired: "this version expired, not stored again",
+} as const;
+
+/** Threads the backend didn't take, and why: reported, never retried or counted as failures. */
+export const skippedLines = (skipped: SyncReport["skipped"]): string[] =>
+  skipped.map((k) => `! skipped ${title(k.title || k.id)} (${k.id}): ${SKIPPED_TEXT[k.why]}`);
+
 /** What `sync` did, a line each. */
 export const reportLines = (report: SyncReport, dryRun: boolean): string[] => {
   const lines: string[] = [];
@@ -168,6 +178,7 @@ export const reportLines = (report: SyncReport, dryRun: boolean): string[] => {
     if (c.links.length === 0) lines.push("  · no explicit agent history link");
   }
   for (const why of report.ignored) lines.push(`! ignored ${title(why)}`);
+  lines.push(...skippedLines(report.skipped));
   for (const u of report.unread) lines.push(`! couldn't read ${u.id} (${title(u.title)})`);
   lines.push(
     dryRun
@@ -414,6 +425,7 @@ const push = Command.make(
       yield* Console.log(
         `${t.id}${t.parent ? ` (subagent of ${t.parent})` : ""} · ${short(title(t.title))}`,
       );
+    for (const line of skippedLines(report.skipped)) yield* Console.log(line);
     yield* Console.log(
       `${report.sent} sent, ${report.unchanged} unchanged${report.images ? `; ${report.imagesSent} of ${report.images} images sent` : ""}`,
     );
@@ -1045,6 +1057,7 @@ const reopen = Command.make(
         commits: m.commits.map((record) => ({ record, titles: new Map() })),
         sent: 0,
         unchanged: 0,
+        skipped: [],
         ignored: [],
         unread: [],
       },

@@ -74,13 +74,25 @@ export type SyncReport = {
     readonly record: CommitRecord;
     readonly titles: ReadonlyMap<string, string>;
   }>;
-  /** Threads sent, and threads the backend had as they are. */
+  /** Threads sent, threads the backend had as they are, and threads it didn't take. */
   readonly sent: number;
   readonly unchanged: number;
+  readonly skipped: ReadonlyArray<Skipped>;
   /** Declarations about this range that couldn't be applied, and why. */
   readonly ignored: ReadonlyArray<string>;
   /** Sessions in this repo that couldn't be read, so weren't linked (titles redacted). */
   readonly unread: ReadonlyArray<{ readonly id: string; readonly title: string }>;
+};
+
+/**
+ * A thread the backend didn't take from us: it holds a newer copy, or the thread was deleted on
+ * request or this version expired. Not a failure: sending it again changes nothing.
+ */
+export type Skipped = {
+  readonly id: string;
+  /** Redacted, as its record has it. */
+  readonly title: string;
+  readonly why: "newer" | "deleted" | "expired";
 };
 
 export type PushReport = {
@@ -91,6 +103,7 @@ export type PushReport = {
   }>;
   readonly sent: number;
   readonly unchanged: number;
+  readonly skipped: ReadonlyArray<Skipped>;
   /** Images the sessions hold, and how many the backend took (none when it doesn't keep them). */
   readonly images: number;
   readonly imagesSent: number;
@@ -478,15 +491,24 @@ export class HistorySync extends Context.Service<
               },
             }),
           ).pipe(Effect.ignore);
+        const skipped: Skipped[] = [];
         for (const thread of threads) {
           if (stored.get(thread.thread.id) === threadSha(thread)) continue;
-          // `same`: the backend had it, or won't keep it (deleted on request): not sent as new.
-          const { result } = yield* call(
-            api.history.putThread({ params, payload: threadJson(thread) }),
+          // A newer copy there (read later, or elsewhere): ours is stale, not worth retrying.
+          const put = yield* call(
+            api.history
+              .putThread({ params, payload: threadJson(thread) })
+              .pipe(
+                Effect.catchTag("NewerCopyStored", () =>
+                  Effect.succeed({ result: "newer" as const, removed: undefined }),
+                ),
+              ),
           );
-          if (result !== "same") sent++;
+          const why = put.result === "newer" ? "newer" : put.removed;
+          if (why) skipped.push({ id: thread.thread.id, title: thread.thread.title, why });
+          else if (put.result !== "same") sent++;
         }
-        return { api, params, sent, media };
+        return { api, params, sent, media, skipped };
       });
 
       const push = Effect.fn("HistorySync.push")(function* (
@@ -512,7 +534,7 @@ export class HistorySync extends Context.Service<
         const now = DateTime.formatIso(yield* DateTime.now);
         const blobs = new Map<string, Blob>();
         const threads = family.map((s) => threadRecordOf(s, now, blobs));
-        const { sent, media } = yield* sendThreads(threads, blobs);
+        const { sent, media, skipped } = yield* sendThreads(threads, blobs);
         const { clean } = redactor(config.home);
         return {
           threads: threads.map((t) => ({
@@ -521,7 +543,8 @@ export class HistorySync extends Context.Service<
             parent: t.thread.parent,
           })),
           sent,
-          unchanged: threads.length - sent,
+          unchanged: threads.length - sent - skipped.length,
+          skipped,
           images: blobs.size,
           imagesSent: media,
         };
@@ -628,11 +651,16 @@ export class HistorySync extends Context.Service<
         // Titles are first prompt lines: reports go to logs, so redacted, home as `~`.
         const { clean } = redactor(config.home);
         const titles = new Map(linked.map((id) => [id, clean(byId.get(id)?.thread.title ?? id)]));
-        const report = (sent: number, unchanged: number): SyncReport => ({
+        const report = (
+          sent: number,
+          unchanged: number,
+          skipped: ReadonlyArray<Skipped> = [],
+        ): SyncReport => ({
           repo: repoName,
           commits: records.map((record) => ({ record, titles })),
           sent,
           unchanged,
+          skipped,
           ignored,
           unread: loaded.unread.map((u) => ({ id: u.id, title: clean(u.title) })),
         });
@@ -642,11 +670,11 @@ export class HistorySync extends Context.Service<
         // With their subagents, wherever those ran and whatever they did (a QA pass that changed
         // nothing): context for the linked work, not its authors, so no commit links them.
         const threads = (yield* loaded.family(linked)).map((s) => threadRecordOf(s, now, blobs));
-        const { api, params, sent } = yield* sendThreads(threads, blobs);
+        const { api, params, sent, skipped } = yield* sendThreads(threads, blobs);
         // Links last: a commit names only threads the backend has.
         for (const record of records)
           yield* call(api.history.putCommit({ params, payload: commitJson(record) }));
-        return report(sent, threads.length - sent);
+        return report(sent, threads.length - sent - skipped.length, skipped);
       }, Effect.provide(FetchHttpClient.layer));
 
       /** The repo's worktrees: where a session's absolute paths count as the commit's files. */
