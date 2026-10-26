@@ -166,9 +166,22 @@ const admit =
 const SHA = /^[0-9a-f]{4,64}$/;
 /** `owner/name`, as long as the API's `:repo` takes it: a longer one would be stored, never read. */
 export const REPO_MAX = 512;
-export const admitThread = admit("thread", Schema.toStandardSchemaV1(ThreadRecordV1), (t) => [
+const admitThreadRecord = admit("thread", Schema.toStandardSchemaV1(ThreadRecordV1), (t) => [
   t.thread.id,
 ]);
+const SHA256 = /^[0-9a-f]{64}$/;
+/** A thread record, as `admit` checks it; its images by hash only, never their bytes. */
+export const admitThread = (record: unknown): Result.Result<ThreadRecord, Rejection> =>
+  Result.flatMap(admitThreadRecord(record), (t) => {
+    const at = t.entries.findIndex(
+      (e) =>
+        e.type === "action" &&
+        (e.media ?? []).some((m) => m.data !== undefined || !SHA256.test(m.sha256 ?? "")),
+    );
+    return at < 0
+      ? Result.succeed(t)
+      : Result.fail({ reason: "invalid", detail: `image bytes or no hash at entries.${at}.media` });
+  });
 export const admitCommit = admit("commit", Schema.toStandardSchemaV1(CommitRecordV1), (c) => [
   c.repo.length <= REPO_MAX ? c.repo : "",
   SHA.test(c.sha) ? c.sha : "",

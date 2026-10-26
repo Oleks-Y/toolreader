@@ -286,7 +286,9 @@ const push = Command.make(
       yield* Console.log(
         `${t.id}${t.parent ? ` (subagent of ${t.parent})` : ""} · ${short(title(t.title))}`,
       );
-    yield* Console.log(`${report.sent} sent, ${report.unchanged} unchanged`);
+    yield* Console.log(
+      `${report.sent} sent, ${report.unchanged} unchanged${report.images ? `; ${report.imagesSent} of ${report.images} images sent` : ""}`,
+    );
   }),
 ).pipe(
   Command.withDescription(

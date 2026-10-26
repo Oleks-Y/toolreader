@@ -5,7 +5,10 @@
 //   toolreader backend token revoke --workspace SLUG --name NAME
 //   toolreader backend member add|remove --workspace SLUG --github LOGIN
 //   toolreader backend thread delete --workspace SLUG --id THREAD
+//   toolreader backend media enable|disable --workspace SLUG
 // TOOLREADER_RETENTION_DAYS, when set, removes threads stored longer ago than that, hourly.
+// Images are kept in the S3-compatible bucket TOOLREADER_MEDIA_* names (MediaBucket.ts), for the
+// workspaces that enable media; the hourly sweep removes those no thread cites.
 // GitHub sign-in is on when TOOLREADER_GITHUB_CLIENT_ID names the OAuth or GitHub App people sign
 // in through (TOOLREADER_GITHUB_API and TOOLREADER_GITHUB_WEB for GitHub Enterprise).
 import * as Config from "effect/Config";
@@ -21,6 +24,7 @@ import { pgLayer } from "./pg.ts";
 import { BackendServerLive } from "./Backend.ts";
 import { GitHub } from "./GitHub.ts";
 import { HistoryStore } from "./HistoryStore.ts";
+import { MediaBucket, mediaKey } from "./MediaBucket.ts";
 import { PgMigrationsLive } from "./PgMigrations.ts";
 
 /** A workspace's slug is its `:ws` in every path: kept to what needs no escaping. */
@@ -48,7 +52,7 @@ const GitHubLive = Layer.unwrap(
 );
 
 /** The store on a migrated database; the backend's pool serves concurrent requests. */
-const BackendApp = HistoryStore.layer.pipe(
+const BackendApp = Layer.merge(HistoryStore.layer, MediaBucket.layerConfig).pipe(
   Layer.provideMerge(PgMigrationsLive),
   Layer.provideMerge(pgLayer(10)),
 );
@@ -66,11 +70,29 @@ const serve = Command.make(
       yield* Effect.log(`toolreader backend → http://127.0.0.1:${port}/v1`);
       const days = yield* Config.int("TOOLREADER_RETENTION_DAYS").pipe(Config.option);
       const server = Layer.launch(BackendServerLive(port).pipe(Layer.provide(GitHubLive)));
-      if (days._tag === "None") return yield* server.pipe(Effect.provide(BackendApp));
-      // Retention: hourly, and once at start. A failed sweep is logged and tried again next hour.
-      const sweep = Effect.flatMap(HistoryStore, (s) => s.expire(days.value)).pipe(
-        Effect.tap((n) => (n > 0 ? Effect.log(`retention: ${n} threads expired`) : Effect.void)),
-        Effect.catchTag("HistoryStoreFailed", (e) => Effect.logWarning(`retention: ${e.message}`)),
+      // Hourly, and once at start; a failed sweep is logged and tried again next hour. Retention
+      // first, so the images of threads it removed go in the same pass.
+      const expire = Effect.gen(function* () {
+        if (days._tag === "None") return;
+        const n = yield* Effect.flatMap(HistoryStore, (s) => s.expire(days.value));
+        if (n > 0) yield* Effect.log(`retention: ${n} threads expired`);
+      });
+      const sweepMedia = Effect.gen(function* () {
+        const store = yield* HistoryStore;
+        const bucket = yield* MediaBucket;
+        if (!bucket.config) return;
+        const orphans = yield* store.orphanMedia;
+        for (const { workspaceId, sha256 } of orphans) {
+          yield* bucket.remove(mediaKey(workspaceId, sha256));
+          yield* store.dropMedia(workspaceId, sha256);
+        }
+        if (orphans.length > 0) yield* Effect.log(`media: ${orphans.length} images removed`);
+      });
+      const sweep = Effect.andThen(expire, sweepMedia).pipe(
+        Effect.catchTags({
+          HistoryStoreFailed: (e) => Effect.logWarning(`sweep: ${e.message}`),
+          MediaBucketFailed: (e) => Effect.logWarning(`sweep: ${e.message}`),
+        }),
         Effect.repeat(Schedule.spaced("1 hour")),
       );
       return yield* Effect.all([server, sweep], { concurrency: 2, discard: true }).pipe(
@@ -168,6 +190,34 @@ const removeMember = Command.make(
   }),
 ).pipe(Command.withDescription("Stop a GitHub login signing in to the workspace"));
 
+const mediaSwitch = (on: boolean) =>
+  Command.make(
+    on ? "enable" : "disable",
+    {
+      workspace: Flag.string("workspace").pipe(
+        Flag.withSchema(Slug),
+        Flag.withDescription("The workspace's slug (created if new)"),
+      ),
+    },
+    Effect.fn(`toolreader backend media ${on ? "enable" : "disable"}`)(function* ({ workspace }) {
+      const configured = yield* Effect.gen(function* () {
+        yield* Effect.flatMap(HistoryStore, (s) => s.setMedia(workspace, on));
+        return (yield* MediaBucket).config !== null;
+      }).pipe(Effect.provide(BackendApp));
+      yield* Console.log(
+        on
+          ? `${workspace} keeps the images its sessions' tools returned${configured ? "" : " (once TOOLREADER_MEDIA_* names a bucket)"}.`
+          : `${workspace} no longer keeps images; the next sweep removes those it holds.`,
+      );
+    }),
+  ).pipe(
+    Command.withDescription(
+      on
+        ? "Keep screenshots agents looked at: sync and push send them, agents read them over MCP. Pixels can't be redacted"
+        : "Stop keeping images, and remove those held at the next sweep",
+    ),
+  );
+
 export const backendCommand = Command.make("backend").pipe(
   Command.withDescription("The history backend, on Postgres (TOOLREADER_DATABASE_URL)"),
   Command.withSubcommands([
@@ -183,6 +233,10 @@ export const backendCommand = Command.make("backend").pipe(
     Command.make("thread").pipe(
       Command.withDescription("Stored threads"),
       Command.withSubcommands([deleteThread]),
+    ),
+    Command.make("media").pipe(
+      Command.withDescription("Whether a workspace keeps images (off by default)"),
+      Command.withSubcommands([mediaSwitch(true), mediaSwitch(false)]),
     ),
   ]),
 );

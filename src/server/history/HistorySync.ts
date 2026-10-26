@@ -24,7 +24,7 @@ import {
 import { checksFor } from "../../core/checks.ts";
 import { readsFor } from "../../core/coverage.ts";
 import { addedLines, lineKey, type CommitHistory, type CommitLines } from "../../core/history.ts";
-import { LIMITS, type Evidence, type SearchHit } from "../../core/historyApi.ts";
+import { LIMITS, type Evidence, type MediaType, type SearchHit } from "../../core/historyApi.ts";
 import type { Finding, FindingStatus, Submission } from "../../core/insights.ts";
 import type { EvidenceNow, ReviewManifest } from "../../core/review.ts";
 import {
@@ -42,6 +42,7 @@ import type { ActionKind } from "../../core/domain.ts";
 import { redactor } from "../../core/proof.ts";
 import { threadSha } from "../recordHash.ts";
 import { RepoSessions, type RepoSession, type SessionSource } from "../RepoSessions.ts";
+import { type Blob, extractMedia } from "./media.ts";
 import { ServerConfig } from "../ServerConfig.ts";
 import { backendSettings, call, connect, HistoryFailed } from "./HistoryClient.ts";
 
@@ -90,6 +91,9 @@ export type PushReport = {
   }>;
   readonly sent: number;
   readonly unchanged: number;
+  /** Images the sessions hold, and how many the backend took (none when it doesn't keep them). */
+  readonly images: number;
+  readonly imagesSent: number;
 };
 
 export type SearchOptions = {
@@ -397,10 +401,17 @@ export class HistorySync extends Context.Service<
         return { resolved, ignored };
       });
 
-      const threadRecordOf = (s: RepoSession, takenAt: string): ThreadRecord =>
-        buildThreadRecord({
+      /** The session's record, its images as hashes; their bytes into `blobs`, to send apart. */
+      const threadRecordOf = (
+        s: RepoSession,
+        takenAt: string,
+        blobs: Map<string, Blob>,
+      ): ThreadRecord => {
+        const extracted = extractMedia(s.entries);
+        for (const [sha, blob] of extracted.blobs) blobs.set(sha, blob);
+        return buildThreadRecord({
           thread: s.thread,
-          entries: s.entries,
+          entries: extracted.entries,
           labels: s.labels,
           takenAt,
           toolreaderVersion: packageJson.version,
@@ -409,10 +420,15 @@ export class HistorySync extends Context.Service<
           snapshot: s.snapshot,
           origin: s.origin,
         });
+      };
 
-      /** Sends each thread the backend lacks or holds otherwise; how many it took as new. */
+      /**
+       * Sends the images the backend lacks (when the workspace keeps images), then each thread
+       * it lacks or holds otherwise: images first, so a thread cites only what is there.
+       */
       const sendThreads = Effect.fn("HistorySync.sendThreads")(function* (
         threads: ReadonlyArray<ThreadRecord>,
+        blobs: ReadonlyMap<string, Blob>,
       ) {
         const settings = yield* backendSettings().pipe(
           Effect.provideService(ServerConfig, config),
@@ -420,6 +436,25 @@ export class HistorySync extends Context.Service<
         );
         const api = yield* connect(settings).pipe(Effect.provide(FetchHttpClient.layer));
         const params = { ws: settings.workspace };
+        let media = 0;
+        const shas = [...blobs.keys()];
+        for (let i = 0; i < shas.length; i += LIMITS.ids) {
+          const batch = shas.slice(i, i + LIMITS.ids);
+          const { enabled, missing } = yield* call(
+            api.history.mediaMissing({ params, payload: { shas: batch } }),
+          );
+          if (!enabled) break;
+          for (const sha of missing) {
+            const blob = blobs.get(sha)!;
+            yield* call(
+              api.history.putMedia({
+                params,
+                payload: { sha256: sha, mime: blob.mime as MediaType, data: blob.data },
+              }),
+            );
+            media++;
+          }
+        }
         const stored = new Map<string, string>();
         for (let i = 0; i < threads.length; i += LIMITS.ids) {
           const ids = threads.slice(i, i + LIMITS.ids).map((t) => t.thread.id);
@@ -435,7 +470,7 @@ export class HistorySync extends Context.Service<
           );
           if (result !== "same") sent++;
         }
-        return { api, params, sent };
+        return { api, params, sent, media };
       });
 
       const push = Effect.fn("HistorySync.push")(function* (
@@ -466,8 +501,9 @@ export class HistorySync extends Context.Service<
             }
         }
         const now = DateTime.formatIso(yield* DateTime.now);
-        const threads = [...chosen.values()].map((s) => threadRecordOf(s, now));
-        const { sent } = yield* sendThreads(threads);
+        const blobs = new Map<string, Blob>();
+        const threads = [...chosen.values()].map((s) => threadRecordOf(s, now, blobs));
+        const { sent, media } = yield* sendThreads(threads, blobs);
         const { clean } = redactor(config.home);
         return {
           threads: threads.map((t) => ({
@@ -477,6 +513,8 @@ export class HistorySync extends Context.Service<
           })),
           sent,
           unchanged: threads.length - sent,
+          images: blobs.size,
+          imagesSent: media,
         };
       }, Effect.provide(FetchHttpClient.layer));
 
@@ -591,11 +629,12 @@ export class HistorySync extends Context.Service<
         });
         if (options.dryRun) return report(0, 0);
 
+        const blobs = new Map<string, Blob>();
         const threads = linked.flatMap((id) => {
           const s = byId.get(id);
-          return s ? [threadRecordOf(s, now)] : [];
+          return s ? [threadRecordOf(s, now, blobs)] : [];
         });
-        const { api, params, sent } = yield* sendThreads(threads);
+        const { api, params, sent } = yield* sendThreads(threads, blobs);
         // Links last: a commit names only threads the backend has.
         for (const record of records)
           yield* call(api.history.putCommit({ params, payload: commitJson(record) }));

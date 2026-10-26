@@ -113,6 +113,14 @@ const CallerRow = Schema.Struct({
 });
 const decodeCallerRows = Schema.decodeUnknownEffect(Schema.Array(CallerRow));
 const LoginRow = Schema.Struct({ role: Schema.String, password: Schema.String });
+const ShaRow = Schema.Struct({ sha256: Schema.String });
+const decodeShaRows = Schema.decodeUnknownEffect(Schema.Array(ShaRow));
+const MimeRow = Schema.Struct({ mime: Schema.String });
+const decodeMimeRows = Schema.decodeUnknownEffect(Schema.Array(MimeRow));
+const OrphanRow = Schema.Struct({ workspaceId: Schema.String, sha256: Schema.String });
+const decodeOrphanRows = Schema.decodeUnknownEffect(Schema.Array(OrphanRow));
+const FlagRow = Schema.Struct({ media: Schema.Boolean });
+const decodeFlagRows = Schema.decodeUnknownEffect(Schema.Array(FlagRow));
 const decodeLoginRows = Schema.decodeUnknownEffect(Schema.Array(LoginRow));
 const opt = Schema.optional(Schema.NullOr(Schema.String));
 const SearchRow = Schema.Struct({
@@ -270,6 +278,22 @@ const bounded = <A, E, R>(self: Effect.Effect<A, E, R>) =>
 
 /** One workspace's history: what `HistoryStore.at` gives. */
 export type WorkspaceStore = {
+  /** Whether the workspace keeps images (`backend media enable`). */
+  readonly mediaEnabled: Effect.Effect<boolean, HistoryStoreFailed>;
+  /** Which of these image hashes the workspace doesn't hold yet. */
+  readonly missingMedia: (
+    shas: ReadonlyArray<string>,
+  ) => Effect.Effect<ReadonlyArray<string>, HistoryStoreFailed>;
+  /** Records an image the bucket now holds. */
+  readonly putMedia: (
+    sha256: string,
+    mime: string,
+    bytes: number,
+  ) => Effect.Effect<void, HistoryStoreFailed>;
+  /** A held image's type. */
+  readonly media: (
+    sha256: string,
+  ) => Effect.Effect<Option.Option<{ readonly mime: string }>, HistoryStoreFailed>;
   /** The stored content hash (`threadSha`) of each of `ids` this workspace holds. */
   readonly hashes: (
     ids: ReadonlyArray<string>,
@@ -432,6 +456,20 @@ export class HistoryStore extends Context.Service<
      * CREATEROLE. It reads the `agent_*` views, only its workspace's rows.
      */
     readonly agentLogin: (workspaceId: string) => Effect.Effect<AgentLogin, HistoryStoreFailed>;
+    /** Lets the workspace keep images, or stops it (those it holds stay until swept). */
+    readonly setMedia: (workspace: string, on: boolean) => Effect.Effect<void, HistoryStoreFailed>;
+    /**
+     * Images no thread of their workspace cites any more, held over an hour (an upload lands
+     * before the thread citing it), or in a workspace that stopped keeping media.
+     */
+    readonly orphanMedia: Effect.Effect<
+      ReadonlyArray<{ readonly workspaceId: string; readonly sha256: string }>,
+      HistoryStoreFailed
+    >;
+    readonly dropMedia: (
+      workspaceId: string,
+      sha256: string,
+    ) => Effect.Effect<void, HistoryStoreFailed>;
     /** The live token's owner; marks it used. */
     readonly authenticate: (
       token: string,
@@ -1310,9 +1348,72 @@ export class HistoryStore extends Context.Service<
         bounded,
       );
 
+      const mediaEnabled = (ws: string) =>
+        sql`SELECT media FROM workspaces WHERE id = ${ws}`.pipe(
+          Effect.flatMap(decodeFlagRows),
+          Effect.map(([r]) => r?.media ?? false),
+          Effect.mapError(failed),
+        );
+
+      const missingMedia = (ws: string, shas: ReadonlyArray<string>) =>
+        shas.length === 0
+          ? Effect.succeed([])
+          : sql`
+              SELECT sha256 FROM media WHERE workspace_id = ${ws} AND sha256 IN ${sql.in(shas)}`.pipe(
+              Effect.flatMap(decodeShaRows),
+              Effect.map((held) => {
+                const have = new Set(held.map((r) => r.sha256));
+                return [...new Set(shas)].filter((sha) => !have.has(sha));
+              }),
+              Effect.mapError(failed),
+            );
+
+      const putMedia = (ws: string, sha256: string, mime: string, bytes: number) =>
+        sql`
+          INSERT INTO media (workspace_id, sha256, mime, bytes) VALUES (${ws}, ${sha256}, ${mime}, ${bytes})
+          ON CONFLICT DO NOTHING`.pipe(Effect.asVoid, Effect.mapError(failed));
+
+      const media = (ws: string, sha256: string) =>
+        sql`SELECT mime FROM media WHERE workspace_id = ${ws} AND sha256 = ${sha256}`.pipe(
+          Effect.flatMap(decodeMimeRows),
+          Effect.map((rows) => Option.fromNullishOr(rows[0])),
+          Effect.mapError(failed),
+        );
+
+      const setMedia = Effect.fn("HistoryStore.setMedia")(function* (slug: string, on: boolean) {
+        const ws = yield* workspace(slug);
+        yield* sql`UPDATE workspaces SET media = ${on} WHERE id = ${ws}`.pipe(
+          Effect.mapError(failed),
+        );
+      }, bounded);
+
+      // ponytail: scans every cited hash; index the citations if workspaces grow past ~1e5 images.
+      const orphanMedia = sql`
+        SELECT m.workspace_id::text AS "workspaceId", m.sha256 FROM media m
+        JOIN workspaces w ON w.id = m.workspace_id
+        WHERE NOT w.media OR (m.uploaded_at < now() - interval '1 hour' AND NOT EXISTS (
+          SELECT 1 FROM threads t,
+               jsonb_array_elements(t.payload->'entries') e,
+               jsonb_array_elements(coalesce(e->'media', '[]'::jsonb)) x
+          WHERE t.workspace_id = m.workspace_id AND x->>'sha256' = m.sha256))`.pipe(
+        Effect.flatMap(decodeOrphanRows),
+        Effect.mapError(failed),
+        bounded,
+      );
+
+      const dropMedia = (workspaceId: string, sha256: string) =>
+        sql`DELETE FROM media WHERE workspace_id = ${workspaceId} AND sha256 = ${sha256}`.pipe(
+          Effect.asVoid,
+          Effect.mapError(failed),
+        );
+
       const at = (writer: Writer): WorkspaceStore => {
         const ws = writer.workspaceId;
         return {
+          mediaEnabled: mediaEnabled(ws),
+          missingMedia: (shas) => missingMedia(ws, shas),
+          putMedia: (sha256, mime, bytes) => putMedia(ws, sha256, mime, bytes),
+          media: (sha256) => media(ws, sha256),
           hashes: (ids) => hashes(ws, ids),
           putThread: (record) => putThread(writer, record),
           threads: (ids, repo) => threads(ws, ids, repo),
@@ -1346,6 +1447,9 @@ export class HistoryStore extends Context.Service<
         expire,
         revokeToken,
         agentLogin,
+        setMedia,
+        orphanMedia,
+        dropMedia,
         authenticate,
       });
     }),

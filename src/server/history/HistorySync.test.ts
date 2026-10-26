@@ -19,6 +19,7 @@ import { SITE_DATA_MARKER } from "../../core/ledgerSite.ts";
 import { BackendRoutes } from "../backend/Backend.ts";
 import { GitHub } from "../backend/GitHub.ts";
 import { HistoryStore } from "../backend/HistoryStore.ts";
+import { MediaBucket } from "../backend/MediaBucket.ts";
 import { PgMigrationsLive } from "../backend/PgMigrations.ts";
 import { inWorkspace, PgTestLive } from "../backend/testPostgres.ts";
 import { ClaudeTranscripts } from "../ClaudeTranscripts.ts";
@@ -33,6 +34,9 @@ import { evidenceLines, hitLines, reportLines } from "./historyCli.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
+/** The media bucket's objects, by key. */
+const objects = new Map<string, Uint8Array>();
+
 const ServerLive = HttpRouter.serve(BackendRoutes, {
   disableListenLog: true,
   disableLogger: true,
@@ -40,6 +44,7 @@ const ServerLive = HttpRouter.serve(BackendRoutes, {
 }).pipe(
   Layer.provideMerge(NodeHttpServer.layerTest),
   Layer.provideMerge(GitHub.disabled),
+  Layer.provideMerge(MediaBucket.memory(objects)),
   Layer.provideMerge(HistoryStore.layer),
   Layer.provideMerge(PgMigrationsLive),
   Layer.provideMerge(PgTestLive),

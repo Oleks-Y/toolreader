@@ -1,5 +1,7 @@
 // The backend over real HTTP (a test server on 127.0.0.1) and a real Postgres (testPostgres.ts),
 // called through the typed client a CLI would use.
+import * as NodeCrypto from "node:crypto";
+
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
@@ -16,9 +18,13 @@ import { BackendApi, CLIENT_HEADER, LIMITS } from "../../core/historyApi.ts";
 import { BackendRoutes, MIN_CLIENT } from "./Backend.ts";
 import { GitHub } from "./GitHub.ts";
 import { HistoryStore } from "./HistoryStore.ts";
+import { MediaBucket } from "./MediaBucket.ts";
 import { PgMigrationsLive } from "./PgMigrations.ts";
 import { PgTestLive } from "./testPostgres.ts";
 import { commitRecord, threadRecord } from "./testRecords.ts";
+
+/** The media bucket's objects, by key. */
+const objects = new Map<string, Uint8Array>();
 
 const TestLive = HttpRouter.serve(BackendRoutes, {
   disableListenLog: true,
@@ -44,6 +50,7 @@ const TestLive = HttpRouter.serve(BackendRoutes, {
       }),
     ),
   ),
+  Layer.provideMerge(MediaBucket.memory(objects)),
   Layer.provideMerge(HistoryStore.layer),
   Layer.provideMerge(PgMigrationsLive),
   Layer.provideMerge(PgTestLive),
@@ -207,6 +214,95 @@ describe("Backend", () => {
           machine.history.sql({ params: { ws: "else" }, payload: { query } }),
         );
         assert.strictEqual(other._tag, "Forbidden");
+      }),
+    );
+
+    it.effect("keeps a workspace's images once it opts in, checked by hash, read by members", () =>
+      Effect.gen(function* () {
+        const machine = yield* clientWith(headers(yield* token("pics")));
+        const params = { ws: "pics" };
+        const bytes = Buffer.from("a screenshot");
+        const sha256 = NodeCrypto.createHash("sha256").update(bytes).digest("hex");
+        const data = bytes.toString("base64");
+        // Off until the workspace opts in: nothing to send, and a put is refused.
+        assert.deepStrictEqual(
+          yield* machine.history.mediaMissing({ params, payload: { shas: [sha256] } }),
+          { enabled: false, missing: [] },
+        );
+        const off = yield* Effect.flip(
+          machine.history.putMedia({ params, payload: { sha256, mime: "image/png", data } }),
+        );
+        assert.strictEqual(off._tag, "Forbidden");
+
+        yield* Effect.flatMap(HistoryStore, (s) => s.setMedia("pics", true));
+        assert.deepStrictEqual(
+          yield* machine.history.mediaMissing({ params, payload: { shas: [sha256] } }),
+          { enabled: true, missing: [sha256] },
+        );
+        const lie = yield* Effect.flip(
+          machine.history.putMedia({
+            params,
+            payload: { sha256: "0".repeat(64), mime: "image/png", data },
+          }),
+        );
+        assert.strictEqual((lie as { detail?: string }).detail, "sha256 isn't the image's");
+        assert.deepStrictEqual(
+          yield* machine.history.putMedia({ params, payload: { sha256, mime: "image/png", data } }),
+          { result: "inserted" },
+        );
+        assert.deepStrictEqual(
+          yield* machine.history.putMedia({ params, payload: { sha256, mime: "image/png", data } }),
+          { result: "same" },
+        );
+        assert.strictEqual(objects.size, 1);
+
+        // A member reads it, and agents find it on its entry.
+        yield* Effect.flatMap(HistoryStore, (s) => s.addMember("pics", "sam"));
+        const sam = yield* clientWith(headers("gho_sam"));
+        assert.deepStrictEqual(yield* sam.history.media({ params, payload: { sha256 } }), {
+          mime: "image/png",
+          data,
+        });
+        const missing = yield* Effect.flip(
+          sam.history.media({ params, payload: { sha256: "1".repeat(64) } }),
+        );
+        assert.strictEqual(missing._tag, "NotFound");
+        yield* machine.history.putThread({
+          params,
+          payload: threadRecord("t1", [
+            {
+              type: "action",
+              id: "a1",
+              at: "2026-01-01T10:00:00.000Z",
+              kind: "read",
+              status: "ok",
+              title: "read /tmp/shot.png",
+              media: [{ mime: "image/png", sha256, bytes: bytes.length }],
+            },
+          ]),
+        });
+        const { rows } = yield* machine.history.sql({
+          params,
+          payload: {
+            query: "SELECT media->0->>'sha256' AS sha FROM agent_entries WHERE thread_id = 't1'",
+          },
+        });
+        assert.deepStrictEqual(rows, [{ sha: sha256 }]);
+        // Another workspace can't read it, even with the hash.
+        const other = yield* clientWith(headers(yield* token("elsewhere")));
+        const theirs = yield* Effect.flip(
+          other.history.media({ params: { ws: "elsewhere" }, payload: { sha256 } }),
+        );
+        assert.strictEqual(theirs._tag, "NotFound");
+
+        // Cited images stay through the sweep; turning media off sweeps them all.
+        const orphans = () => Effect.flatMap(HistoryStore, (s) => s.orphanMedia);
+        assert.deepStrictEqual(
+          (yield* orphans()).filter((o) => o.sha256 === sha256),
+          [],
+        );
+        yield* Effect.flatMap(HistoryStore, (s) => s.setMedia("pics", false));
+        assert.deepStrictEqual((yield* orphans()).filter((o) => o.sha256 === sha256).length, 1);
       }),
     );
 
