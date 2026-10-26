@@ -2,9 +2,11 @@
 // of its turns produced a commit (core/declare.ts). `link` and `unlink` store nothing: the command
 // and what it prints stay in the session's history, where `history sync` reads them. They check
 // what they are told and fail when it's wrong, so a failed declaration is never applied.
-//   toolreader history turns [--session ID]
-//   toolreader history link --sha REV [--turns 3-5,9] [--session ID] [--note TEXT]
-//   toolreader history unlink --sha REV [--session ID]
+//   toolreader history turns [--session ID] [--entries]
+//   toolreader history link --sha REV [--role implemented|tested|reviewed|deployed]
+//                           [--turns 3-5,9 | --entry ID…] [--session ID] [--environment NAME]
+//                           [--tested-sha REV] [--note TEXT]
+//   toolreader history unlink --sha REV [--role R] [--session ID]
 // The session is the one the agent runs in (CODEX_THREAD_ID, CLAUDE_CODE_SESSION_ID) unless
 // `--session` names another.
 import * as Config from "effect/Config";
@@ -18,7 +20,13 @@ import * as Stream from "effect/Stream";
 import { Command, Flag } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { declaredLine, declarationsIn, isGitCommit, parseTurns } from "../../core/declare.ts";
+import {
+  declaredLine,
+  declarationsIn,
+  EVIDENCE_ROLES,
+  isGitCommit,
+  parseTurns,
+} from "../../core/declare.ts";
 import { redactText } from "../../core/proof.ts";
 import { splitTurns } from "../../core/tree.ts";
 import { CliApp } from "../app.ts";
@@ -98,7 +106,15 @@ const ranges = (turns: ReadonlyArray<number>) => {
 
 const turns = Command.make(
   "turns",
-  { repo: repoFlag, session: sessionFlag },
+  {
+    repo: repoFlag,
+    session: sessionFlag,
+    entries: Flag.boolean("entries").pipe(
+      Flag.withDescription(
+        "Also list each turn's actions by id, as `history link --entry` takes them",
+      ),
+    ),
+  },
   Effect.fn("toolreader history turns")(function* (flags) {
     const repo = (yield* Path.Path).resolve(flags.repo);
     const { name, found } = yield* session(repo, flags.session).pipe(
@@ -119,21 +135,49 @@ const turns = Command.make(
       const text = t.prompt ? firstLine(t.prompt.text) : "(no prompt)";
       const linked = declared.get(i + 1);
       yield* Console.log(`T${i + 1}  ${at}  ${text}${linked ? `  → ${linked}` : ""}`);
+      if (flags.entries)
+        for (const e of t.entries)
+          if (e.type === "action")
+            yield* Console.log(`    ${e.id}  ${e.kind} ${e.status}  ${firstLine(e.title)}`);
     }
   }),
 ).pipe(
   Command.withDescription("List a session's turns, numbered as `history link --turns` takes them"),
 );
 
+const roleFlag = (description: string) =>
+  Flag.choice("role", EVIDENCE_ROLES).pipe(Flag.withDescription(description), Flag.optional);
+
+/** When what a declaration says reaches the backend: it is read back from the session. */
+const DELIVERY =
+  "  Delivered with this session's history: when it stops (its Stop hook) or at the next push; `history status` shows what's pending.";
+
 const link = Command.make(
   "link",
   {
     repo: repoFlag,
     sha: Flag.string("sha").pipe(Flag.withDescription("The commit (any revision: HEAD, a SHA)")),
+    role: roleFlag(
+      "What these turns did for it: implemented (the default), tested, reviewed or deployed. A claim of relevance, not of success; testing can be attached to an older commit",
+    ),
     turns: Flag.string("turns").pipe(
       Flag.withDescription(
         "The turns that produced it, e.g. 3-5,9 (`history turns` lists them); default: the turns since this session's previous declaration, through this one",
       ),
+      Flag.optional,
+    ),
+    entry: Flag.string("entry").pipe(
+      Flag.withDescription(
+        "Instead of turns: an entry that shows it, by id (agent_entries.entry_id; repeatable)",
+      ),
+      Flag.atLeast(0),
+    ),
+    environment: Flag.string("environment").pipe(
+      Flag.withDescription("Where it ran: staging, sandbox, production…"),
+      Flag.optional,
+    ),
+    testedSha: Flag.string("tested-sha").pipe(
+      Flag.withDescription("The commit it ran on, when that isn't --sha"),
       Flag.optional,
     ),
     session: sessionFlag,
@@ -148,8 +192,18 @@ const link = Command.make(
       return yield* new HistoryFailed({
         message: `--turns must look like 3 or 3-5,9, got "${spec}"`,
       });
-    if (spec === null && Option.isSome(flags.session))
-      return yield* new HistoryFailed({ message: "With --session, name its turns with --turns" });
+    if (spec !== null && flags.entry.length > 0)
+      return yield* new HistoryFailed({ message: "Name turns or entries, not both" });
+    if (spec === null && flags.entry.length === 0 && Option.isSome(flags.session))
+      return yield* new HistoryFailed({
+        message: "With --session, name its turns with --turns (or its entries with --entry)",
+      });
+    // A SHA, not a revision: HEAD will mean another commit by the time sync reads this.
+    if (Option.isSome(flags.testedSha) && !/^[0-9a-f]{7,64}$/.test(flags.testedSha.value))
+      return yield* new HistoryFailed({
+        message: `--tested-sha takes a commit SHA (git rev-parse HEAD), got "${flags.testedSha.value}"`,
+      });
+    if (Option.isSome(flags.testedSha)) yield* commitSha(repo, flags.testedSha.value);
     const { name, found, own } = yield* session(repo, flags.session).pipe(
       Effect.provide(CliApp({ appServer: false, codexHome: null })),
     );
@@ -161,25 +215,34 @@ const link = Command.make(
       return yield* new HistoryFailed({
         message: `${name} has ${count} turns; there is no T${beyond}`,
       });
+    const ids = found ? new Set(found.entries.map((e) => e.id)) : null;
+    const unknown = flags.entry.find((id) => ids !== null && !ids.has(id));
+    if (unknown !== undefined)
+      return yield* new HistoryFailed({ message: `${name} has no entry ${unknown}` });
     // Without --turns: what `history sync` will take, from where this session last declared.
     const previous = found ? (declarationsIn(found.thread.id, found.entries).at(-1)?.turn ?? 0) : 0;
     const shown =
-      numbers !== null
-        ? ranges(numbers)
-        : count !== null
-          ? `T${previous + 1} through the current turn`
-          : "this session's turns since its last declaration";
+      flags.entry.length > 0
+        ? `entr${flags.entry.length === 1 ? "y" : "ies"} ${flags.entry.join(", ")}`
+        : numbers !== null
+          ? ranges(numbers)
+          : count !== null
+            ? `T${previous + 1} through the current turn`
+            : "this session's turns since its last declaration";
+    const role = Option.getOrElse(flags.role, () => "implemented" as const);
+    const where = Option.isSome(flags.environment) ? ` on ${flags.environment.value}` : "";
     yield* Console.log(
-      `${declaredLine("link", sha, flags.sha)} (${shown} of ${found ? `"${title(found)}"` : name})`,
+      `${declaredLine("link", sha, flags.sha)} (${role}${where}: ${shown} of ${found ? `"${title(found)}"` : name})`,
     );
     if (!found)
       yield* Console.log(
         `  ${name} isn't in its session store yet; \`history sync\` resolves it once it is`,
       );
+    yield* Console.log(DELIVERY);
   }),
 ).pipe(
   Command.withDescription(
-    "Declare which turns of this session (or another) produced a commit; history sync applies it",
+    "Declare which turns of this session (or another) produced, tested, reviewed or deployed a commit; history sync applies it",
   ),
 );
 
@@ -188,6 +251,7 @@ const unlink = Command.make(
   {
     repo: repoFlag,
     sha: Flag.string("sha").pipe(Flag.withDescription("The commit (any revision: HEAD, a SHA)")),
+    role: roleFlag("Only this role's link; default: every role the session has on the commit"),
     session: sessionFlag,
   },
   Effect.fn("toolreader history unlink")(function* (flags) {
@@ -199,10 +263,15 @@ const unlink = Command.make(
     if (!found && !own)
       return yield* new HistoryFailed({ message: `No session ${name} has worked in ${repo}` });
     yield* Console.log(
-      `${declaredLine("unlink", sha, flags.sha)} (${found ? `"${title(found)}"` : name} didn't produce it)`,
+      `${declaredLine("unlink", sha, flags.sha)} (${found ? `"${title(found)}"` : name} ${Option.isSome(flags.role) ? `didn't ${flags.role.value.replace(/ed$/, "")} it` : "has nothing to do with it"})`,
     );
+    yield* Console.log(DELIVERY);
   }),
-).pipe(Command.withDescription("Declare that a session didn't produce a commit"));
+).pipe(
+  Command.withDescription(
+    "Declare that a session didn't produce a commit (or, with --role, didn't test, review or deploy it)",
+  ),
+);
 
 const ToolUse = Schema.Struct({
   tool_name: Schema.optional(Schema.String),

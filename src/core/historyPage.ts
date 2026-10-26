@@ -57,15 +57,23 @@ export function historyRange(input: {
         return [
           {
             thread: thread.thread,
-            role: "coder",
+            // Testing, reviewing or deploying it: its edits aren't the commit's.
+            role: l.role ? "reviewer" : "coder",
             via: l.via,
             reviewedSha: null,
-            // A trailer alone names the thread: all of it, as far as the backend has it.
-            segment:
-              l.turns.length > 0 ? episode(thread.entries, new Set(l.turns)) : thread.entries,
+            // Named entries alone; a trailer alone names the thread: all of it, as far as the
+            // backend has it.
+            segment: l.entries?.length
+              ? thread.entries.filter((e) => l.entries!.includes(e.id))
+              : l.turns.length > 0
+                ? episode(thread.entries, new Set(l.turns))
+                : thread.entries,
             labels: thread.labels,
             checks: l.checks,
             reads: l.reads,
+            claim: l.role ?? "implemented",
+            environment: l.environment,
+            testedSha: l.testedSha,
           },
         ];
       });

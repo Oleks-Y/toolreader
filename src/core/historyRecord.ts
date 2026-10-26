@@ -6,6 +6,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 import { Check } from "./checks.ts";
+import { EVIDENCE_ROLES } from "./declare.ts";
 import { Reads } from "./coverage.ts";
 import { Entry, Labels, SessionOrigin, SessionSnapshot, snapshotValues } from "./domain.ts";
 import type { CommitHistory } from "./history.ts";
@@ -69,7 +70,28 @@ export const CommitRecordV1 = Schema.Struct({
       checks: Schema.optional(Schema.Array(Check)),
       /** Files the thread was seen reading for the commit; absent from older clients. */
       reads: Schema.optional(Reads),
+      /** What it claims; absent: implemented. A thread holds each role once per commit. */
+      role: Schema.optional(Schema.Literals(["tested", "reviewed", "deployed"])),
+      /** Entry ids that show it, when declared by entry rather than by turn. */
+      entries: Schema.optional(Schema.Array(Schema.String)),
+      /** The thread's content hash when the link was resolved. */
+      version: Schema.optional(Schema.String),
+      /** Where it ran, as declared (redacted), and the commit it ran on. */
+      environment: Schema.optional(Schema.String),
+      testedSha: Schema.optional(Schema.String),
     }),
+  ),
+  /**
+   * Links this client's agents declared away (absent `role`: every role of the thread). The
+   * backend keeps links per (thread, role) across machines, so a removal has to be said.
+   */
+  unlinked: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        threadId: Schema.String,
+        role: Schema.optional(Schema.Literals(EVIDENCE_ROLES)),
+      }),
+    ),
   ),
   linkedAt: Schema.String,
   toolreaderVersion: Schema.String,
@@ -196,6 +218,7 @@ export const admitCommit = admit("commit", Schema.toStandardSchemaV1(CommitRecor
   c.repo.length <= REPO_MAX ? c.repo : "",
   SHA.test(c.sha) ? c.sha : "",
   ...c.links.map((l) => l.threadId),
+  ...(c.unlinked ?? []).map((u) => u.threadId),
 ]);
 
 /**
@@ -308,6 +331,7 @@ export function buildCommitRecord(input: {
     links: input.history.links.map((l) => ({
       ...l,
       ...(l.note ? { note: clean(l.note) } : {}),
+      ...(l.environment ? { environment: clean(l.environment) } : {}),
       ...(l.checks
         ? {
             checks: l.checks.map((c) => ({
@@ -320,7 +344,41 @@ export function buildCommitRecord(input: {
         : {}),
       ...(l.reads ? { reads: { ...l.reads, paths: l.reads.paths.map(clean) } } : {}),
     })),
+    ...(input.history.unlinked?.length ? { unlinked: input.history.unlinked } : {}),
     linkedAt: input.linkedAt,
     toolreaderVersion: input.toolreaderVersion,
   };
+}
+
+const roleKey = (l: { readonly threadId: string; readonly role?: string | undefined }) =>
+  `${l.threadId}\u0000${l.role ?? "implemented"}`;
+
+/**
+ * What the backend keeps for a commit linked again: `incoming`'s commit fields, and its links
+ * merged per (thread, role) into what was `stored`, in the stored order, new ones last; its
+ * commit fields only when it carries an implemented link (else the stored ones stay). A link
+ * another machine sent stays (a second machine syncing the same commit doesn't drop the first
+ * one's tested link); `incoming.unlinked` removes, unless incoming links it again. Pure.
+ */
+export function mergeCommit(stored: CommitRecord | null, incoming: CommitRecord): CommitRecord {
+  const { unlinked = [], ...record } = incoming;
+  const fresh = new Map(incoming.links.map((l) => [roleKey(l), l]));
+  const removed = (l: CommitRecord["links"][number]) =>
+    unlinked.some(
+      (u) => u.threadId === l.threadId && (!u.role || u.role === (l.role ?? "implemented")),
+    );
+  const links: Array<CommitRecord["links"][number]> = [];
+  for (const l of stored?.links ?? []) {
+    const replaced = fresh.get(roleKey(l));
+    fresh.delete(roleKey(l));
+    if (replaced) links.push(replaced);
+    else if (!removed(l)) links.push(l);
+  }
+  // What the commit is (subject, its lines, how many its implementers wrote) comes from a record
+  // that says who implemented it; one that only adds testing or review keeps what was stored.
+  const fields =
+    incoming.links.some((l) => !l.role) || !stored
+      ? record
+      : (({ links: _, unlinked: __, ...kept }: CommitRecord) => kept)(stored);
+  return { ...fields, links: [...links, ...fresh.values()] };
 }

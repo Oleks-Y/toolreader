@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 
-import { checksFor } from "./checks.ts";
+import { checksFor, checksForEvidence } from "./checks.ts";
 import type { Action, Entry } from "./domain.ts";
 
 const prompt = (id: string, at: string): Entry => ({
@@ -92,6 +92,29 @@ describe("checksFor", () => {
       checks.map((c) => c.linesAfter),
       [1, 0, 0, 0],
     );
+  });
+
+  it("takes a link's named entries whenever they ran, and a tested link's turns past the commit", () => {
+    const input = {
+      entries,
+      turns: ["u1"],
+      novel: [STORE, RETRY],
+      committedAt: "2026-01-01T11:00:00Z",
+    };
+    // Named entries: those, the one after the commit included.
+    assert.deepStrictEqual(
+      checksForEvidence({ ...input, turns: [], entryIds: ["t5", "t1"], role: "tested" }).map(
+        (c) => c.actionId,
+      ),
+      ["t1", "t5"],
+    );
+    // A tested link by turns: those turns' checks, whenever they ran.
+    assert.deepStrictEqual(
+      checksForEvidence({ ...input, turns: ["u2"], role: "tested" }).map((c) => c.actionId),
+      ["t3", "t4", "t5"],
+    );
+    // An implemented link: as checksFor, cut off at the commit.
+    assert.deepStrictEqual(checksForEvidence(input), checks);
   });
 
   it("finds nothing when no linked turn is in the session", () => {

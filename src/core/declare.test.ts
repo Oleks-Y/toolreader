@@ -167,6 +167,97 @@ describe("declare", () => {
       { threadId: "t2", turns: ["v1"], via: "content", lines: 2 },
     ]);
   });
+  it("reads a role, entries, where it ran and on what", () => {
+    const B = "b".repeat(40);
+    assert.deepStrictEqual(
+      parseDeclaration(
+        "toolreader history link --sha abc1234 --role tested --entry e1 --entry=e2 --environment staging --tested-sha bbbbbbb --note 'checkout works'",
+        `history link: ${SHA} for abc1234 (tested on staging: entries e1, e2 of "QA")`,
+      ),
+      {
+        kind: "link",
+        sha: SHA,
+        turns: null,
+        session: null,
+        note: "checkout works",
+        role: "tested",
+        entries: ["e1", "e2"],
+        environment: "staging",
+        testedSha: "bbbbbbb",
+      },
+    );
+    assert.deepStrictEqual(
+      parseDeclaration(
+        "toolreader history unlink --sha HEAD --role tested",
+        `history unlink: ${B} for HEAD`,
+      ),
+      { kind: "unlink", sha: B, turns: null, session: null, note: null, role: "tested" },
+    );
+    // A role the CLI doesn't take declares nothing.
+    assert.isNull(
+      parseDeclaration(
+        "toolreader history link --sha HEAD --role vibes",
+        `history link: ${SHA} for HEAD`,
+      ),
+    );
+    // Declared by entries: no turns taken by default.
+    const [d] = declarationsIn("t1", [
+      prompt(1),
+      run(
+        "c1",
+        3,
+        "toolreader history link --sha HEAD --role tested --entry x1",
+        `history link: ${SHA} for HEAD`,
+      ),
+    ]);
+    assert.deepStrictEqual([d?.turns, d?.entries, d?.role], [null, ["x1"], "tested"]);
+  });
+
+  it("keys links by thread and role: one thread implements and tests a commit; unlink by role", () => {
+    const history: CommitHistory = {
+      sha: SHA,
+      novel: 4,
+      explained: 0,
+      links: [{ threadId: "t1", turns: [], via: "trailer", lines: 0 }],
+    };
+    const base = { sha: SHA, note: null, by: "t1", threadId: "t1" } as const;
+    const both = applyDeclarations(history, [
+      { ...base, kind: "link", turns: ["u1"], at: at(1) },
+      {
+        ...base,
+        kind: "link",
+        turns: [],
+        entries: ["e9"],
+        role: "tested",
+        environment: "sandbox",
+        at: at(2),
+      },
+    ]);
+    assert.deepStrictEqual(both.links, [
+      { threadId: "t1", turns: ["u1"], via: "asserted", lines: 0 },
+      {
+        threadId: "t1",
+        turns: [],
+        via: "asserted",
+        lines: 0,
+        role: "tested",
+        entries: ["e9"],
+        environment: "sandbox",
+      },
+    ]);
+    const untested = applyDeclarations(both, [
+      { ...base, kind: "unlink", turns: [], role: "tested", at: at(3) },
+    ]);
+    assert.deepStrictEqual(
+      untested.links.map((l) => [l.threadId, l.role]),
+      [["t1", undefined]],
+    );
+    assert.deepStrictEqual(untested.unlinked, [{ threadId: "t1", role: "tested" }]);
+    // Without a role: every role the thread has.
+    const gone = applyDeclarations(both, [{ ...base, kind: "unlink", turns: [], at: at(3) }]);
+    assert.deepStrictEqual([gone.links, gone.unlinked], [[], [{ threadId: "t1" }]]);
+  });
+
   it("tells a git commit from other commands", () => {
     for (const yes of [
       'git commit -m "x"',

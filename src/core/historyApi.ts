@@ -246,7 +246,7 @@ export const Evidence = Schema.Struct({
 export type Evidence = typeof Evidence.Type;
 
 /** What an agent's SQL can read: the `sql` endpoint's views, as agents are told about them. */
-export const AGENT_SCHEMA = `Read-only Postgres SQL over the latest imported copy of every agent conversation in the workspace, whoever's machine it ran on. A copy can be behind its live session (taken_at says when it was read), so a row you don't find means "not found in the imported history as of taken_at", never "it never happened". One statement; at most 1000 rows, 1 MB and 10 s. Two views:
+export const AGENT_SCHEMA = `Read-only Postgres SQL over the latest imported copy of every agent conversation in the workspace, whoever's machine it ran on. A copy can be behind its live session (taken_at says when it was read), so a row you don't find means "not found in the imported history as of taken_at", never "it never happened". One statement; at most 1000 rows, 1 MB and 10 s. Three views:
 
 agent_threads: one row per conversation.
   id (T3 thread ids are bare; codex:<id>, claude:<id>), title (its first prompt), source (t3|codex|claude), provider, origin (the client that ran it), parent (the conversation that delegated this one, for a subagent; null otherwise), snapshot (jsonb: how it started, e.g. startCommit, branch), taken_at, uploaded_at, version, entry_count, last_entry_at (its newest step when read), source_state (running|idle|error|unknown: what its source said when last checked; nothing says a conversation ended), checked_at (when a client last confirmed this copy matched its source).
@@ -254,12 +254,16 @@ agent_threads: one row per conversation.
 agent_entries: one row per step, in order.
   thread_id, seq (order in the conversation), turn (user messages so far: a turn's steps share it), entry_id, at (ISO time, text), type (action|message|event), kind (an action's kind: read|search|edit|git|docker|setup|build|run|test|web|tool|agent; a message's role: user|assistant|reasoning; an event's tone: error|info), status (ok|failed|running|unknown), title (one-line summary), hint (the agent's stated intent), command, exit_code, output (clipped to 8 KB), text (a message's or event's text), files (jsonb: [{path, added, removed, isNew, isDeleted, diff}]), media (jsonb: [{mime, sha256, bytes}], images the tool returned, such as a screenshot the agent read; view one with the media tool).
 
+agent_commit_links: one row per link a commit holds to a conversation.
+  repo (owner/name), sha, subject, committed_at, thread_id, role (implemented|tested|reviewed|deployed: what the declaring agent claims the conversation did for the commit; a claim of relevance, not proof of success: read the linked steps for how it went), via (asserted: an agent declared it; trailer: the commit names its session), turns (jsonb: turn entry ids), entries (jsonb: entry ids, when declared by entry), version (the conversation's version when linked), environment (where it ran, e.g. staging), tested_sha (the commit it ran on), note, declared_by.
+
 Every result carries coverage: the workspace's conversation count and up to 20 that may be behind their live session (running, or not checked in the last hour), as of the server's time; say "as of" with it, not "never".
 
 Examples:
   SELECT id, title FROM agent_threads WHERE parent = '<id>'                      -- what a conversation delegated
   SELECT turn, seq, kind, status, title FROM agent_entries WHERE thread_id = '<id>' AND type = 'action' ORDER BY seq
-  SELECT thread_id, title, output FROM agent_entries WHERE status = 'failed' ORDER BY at DESC LIMIT 20`;
+  SELECT thread_id, title, output FROM agent_entries WHERE status = 'failed' ORDER BY at DESC LIMIT 20
+  SELECT thread_id, role, environment, entries FROM agent_commit_links WHERE sha LIKE '<sha>%'   -- who did what for a commit`;
 
 /** Conversations the workspace holds that may be behind their live session: how many to list. */
 export const COVERAGE_LISTED = 20;
@@ -473,7 +477,8 @@ export class HistoryApi extends HttpApiGroup.make("history")
       error: [NotFound, Forbidden, BackendFailed],
     }),
     // An agent's read-only SQL over the workspace's conversations: every member reads every one.
-    // It sees the `agent_threads` and `agent_entries` views and nothing else (AgentSql.ts).
+    // It sees the `agent_threads`, `agent_entries` and `agent_commit_links` views and nothing
+    // else (AgentSql.ts).
     HttpApiEndpoint.post("sql", "/workspaces/:ws/sql", {
       params: ws,
       payload: Schema.Struct({

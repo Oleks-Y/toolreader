@@ -12,7 +12,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 /** Everything an agent login may read. */
-export const AGENT_VIEWS = ["agent_threads", "agent_entries"] as const;
+export const AGENT_VIEWS = ["agent_threads", "agent_entries", "agent_commit_links"] as const;
 
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;

@@ -166,9 +166,15 @@ export const reportLines = (report: SyncReport, dryRun: boolean): string[] => {
   for (const { record: c, titles } of report.commits) {
     lines.push(`${c.sha.slice(0, 8)} ${c.subject}`);
     for (const l of c.links) {
+      const by = l.entries?.length
+        ? `${l.entries.length} entr${l.entries.length === 1 ? "y" : "ies"}`
+        : `${l.turns.length} turn${l.turns.length === 1 ? "" : "s"}`;
+      const claim = l.role
+        ? `${l.role}${l.environment ? ` on ${title(l.environment)}` : ""}${l.testedSha ? ` at ${l.testedSha.slice(0, 8)}` : ""}, `
+        : "";
       lines.push(
         l.via === "asserted"
-          ? `  ✓ ${title(titles.get(l.threadId) ?? l.threadId)} (declared: ${l.turns.length} turn${l.turns.length === 1 ? "" : "s"}${l.note ? `, "${title(l.note)}"` : ""})`
+          ? `  ✓ ${title(titles.get(l.threadId) ?? l.threadId)} (${claim}declared: ${by}${l.note ? `, "${title(l.note)}"` : ""})`
           : l.via === "trailer"
             ? `  ✓ ${title(titles.get(l.threadId) ?? l.threadId)} (named by its trailer)`
             : `  ✓ ${title(titles.get(l.threadId) ?? l.threadId)} (${l.turns.length} turn${l.turns.length === 1 ? "" : "s"}, ${l.lines} line${l.lines === 1 ? "" : "s"})`,
@@ -180,6 +186,10 @@ export const reportLines = (report: SyncReport, dryRun: boolean): string[] => {
         );
     }
     if (c.links.length === 0) lines.push("  · no explicit agent history link");
+    for (const u of c.unlinked ?? [])
+      lines.push(
+        `  ✗ ${title(titles.get(u.threadId) ?? u.threadId)} unlinked${u.role ? ` as ${u.role}` : ""}`,
+      );
   }
   for (const why of report.ignored) lines.push(`! ignored ${title(why)}`);
   lines.push(...skippedLines(report.skipped));
@@ -729,7 +739,7 @@ const sql = Command.make(
   {
     query: Argument.string("query").pipe(
       Argument.withDescription(
-        "Read-only SQL over agent_threads (id, title, source, provider, parent, taken_at, version, entry_count, last_entry_at, source_state, checked_at) and agent_entries (thread_id, seq, turn, entry_id, at, type, kind, status, title, hint, command, exit_code, output, text, files)",
+        "Read-only SQL over agent_threads (id, title, source, provider, parent, taken_at, version, entry_count, last_entry_at, source_state, checked_at), agent_entries (thread_id, seq, turn, entry_id, at, type, kind, status, title, hint, command, exit_code, output, text, files) and agent_commit_links (repo, sha, thread_id, role, via, turns, entries, environment, tested_sha, note)",
       ),
     ),
   },

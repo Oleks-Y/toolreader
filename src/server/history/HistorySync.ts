@@ -21,7 +21,7 @@ import {
   type Declared,
   type ResolvedDeclaration,
 } from "../../core/declare.ts";
-import { checksFor } from "../../core/checks.ts";
+import { checksForEvidence } from "../../core/checks.ts";
 import { readsFor } from "../../core/coverage.ts";
 import { addedLines, lineKey, type CommitHistory, type CommitLines } from "../../core/history.ts";
 import { LIMITS, type Evidence, type MediaType, type SearchHit } from "../../core/historyApi.ts";
@@ -369,25 +369,35 @@ export class HistorySync extends Context.Service<
       ) {
         const resolved: ResolvedDeclaration[] = [];
         const ignored: string[] = [];
+        /** Commits outside the range that evidence was declared about: their records go too. */
+        const extra = new Set<string>();
         const shas = commits.map((c) => c.sha);
         let patchIds: Map<string, string> | null = null;
         for (const d of declared) {
           let sha = shas.find((s) => s.startsWith(d.sha)) ?? null;
           if (!sha) {
             // Not in the range as declared: rewritten since (same patch), or another range's.
-            const known = yield* git(
+            const known = (yield* git(
               repo,
               ["rev-parse", "--verify", "-q", `${d.sha}^{commit}`],
               [1],
-            );
-            const pid = known.trim() ? yield* patchId(repo, known.trim()) : null;
-            if (!pid) continue;
-            patchIds ??= new Map(
-              (yield* Effect.forEach(shas, (s) =>
-                Effect.map(patchId(repo, s), (p) => [p, s] as const),
-              )).flatMap(([p, s]) => (p ? [[p, s] as const] : [])),
-            );
-            sha = patchIds.get(pid) ?? null;
+            )).trim();
+            if (!known) continue;
+            const pid = yield* patchId(repo, known);
+            if (pid) {
+              patchIds ??= new Map(
+                (yield* Effect.forEach(shas, (s) =>
+                  Effect.map(patchId(repo, s), (p) => [p, s] as const),
+                )).flatMap(([p, s]) => (p ? [[p, s] as const] : [])),
+              );
+              sha = patchIds.get(pid) ?? null;
+            }
+            // Evidence about a commit already made (tested, reviewed, deployed) holds wherever
+            // that commit is: an older, already pushed one included.
+            if (!sha && d.role && d.role !== "implemented") {
+              sha = known;
+              extra.add(known);
+            }
             if (!sha) continue;
           }
           const target = d.session ? named(d.session)[0] : named(d.by)[0];
@@ -397,9 +407,13 @@ export class HistorySync extends Context.Service<
             continue;
           }
           const turns = turnIds(target.entries, d.turns ?? []);
-          if (d.kind === "link" && turns.length === 0) {
+          const ids = new Set(target.entries.map((e) => e.id));
+          const entries = (d.entries ?? []).filter((id) => ids.has(id));
+          if (d.kind === "link" && turns.length === 0 && entries.length === 0) {
             ignored.push(
-              `${where}: its turns ${d.turns?.join(",") ?? "(none named)"} aren't in that session`,
+              d.entries
+                ? `${where}: its entries ${d.entries.join(",")} aren't in that session`
+                : `${where}: its turns ${d.turns?.join(",") ?? "(none named)"} aren't in that session`,
             );
             continue;
           }
@@ -411,9 +425,20 @@ export class HistorySync extends Context.Service<
             note: d.note,
             by: named(d.by)[0]?.thread.id ?? d.by,
             at: d.at,
+            role: d.role,
+            ...(entries.length > 0 ? { entries } : {}),
+            environment: d.environment,
+            // Full, as this clone knows it; else as declared.
+            testedSha: d.testedSha
+              ? (yield* git(
+                  repo,
+                  ["rev-parse", "--verify", "-q", `${d.testedSha}^{commit}`],
+                  [1],
+                )).trim() || d.testedSha
+              : undefined,
           });
         }
-        return { resolved, ignored };
+        return { resolved, ignored, extra };
       });
 
       /** The session's record, its images as hashes; their bytes into `blobs`, to send apart. */
@@ -573,10 +598,23 @@ export class HistorySync extends Context.Service<
             message: `${repo} has no origin on a git host: the backend names repos owner/name`,
           });
         const repoName = repoKey(web);
-        const commits = yield* commitsIn(repo, range);
+        const inRange = yield* commitsIn(repo, range);
         const loaded = yield* sessions
           .load(repo, options.source)
           .pipe(Effect.mapError((e) => new HistoryFailed({ message: e.message })));
+        // Explicit turn declarations replace trailer links when both name the same session.
+        const declared = loaded.sessions.flatMap((s) => declarationsIn(s.thread.id, s.entries));
+        const { resolved, ignored, extra } = yield* resolveDeclarations(
+          repo,
+          inRange,
+          declared,
+          (name) => loaded.named(name),
+        );
+        // Commits outside the range that evidence was declared about, sent again with it.
+        const commits = [
+          ...inRange,
+          ...(extra.size > 0 ? yield* commitsIn(repo, `--no-walk ${[...extra].join(" ")}`) : []),
+        ];
         // Shared lines are not evidence of authorship. Only explicit session trailers seed links.
         const matched: CommitHistory[] = commits.map((c) => ({
           sha: c.sha,
@@ -591,11 +629,6 @@ export class HistorySync extends Context.Service<
             lines: 0,
           })),
         }));
-        // Explicit turn declarations replace trailer links when both name the same session.
-        const declared = loaded.sessions.flatMap((s) => declarationsIn(s.thread.id, s.entries));
-        const { resolved, ignored } = yield* resolveDeclarations(repo, commits, declared, (name) =>
-          loaded.named(name),
-        );
         const byId = new Map(loaded.sessions.map((s) => [s.thread.id, s]));
         // Each link with the tests and builds its session ran for that commit.
         const histories = matched.map((h, i) => {
@@ -624,7 +657,7 @@ export class HistorySync extends Context.Service<
                 .filter((o) => o.threadId !== l.threadId)
                 .flatMap((o) => wrote.get(o.threadId) ?? []);
               const checks = s
-                ? checksFor({
+                ? checksForEvidence({
                     entries: s.entries,
                     turns: l.turns,
                     novel,
@@ -632,6 +665,8 @@ export class HistorySync extends Context.Service<
                     sha,
                     base: s.snapshot?.startCommit,
                     others,
+                    entryIds: l.entries,
+                    role: l.role,
                   })
                 : [];
               const reads = s
@@ -646,18 +681,29 @@ export class HistorySync extends Context.Service<
           };
         });
         const now = DateTime.formatIso(yield* DateTime.now);
+        const linked = [...new Set(histories.flatMap((h) => h.links.map((l) => l.threadId)))];
+        const blobs = new Map<string, Blob>();
+        // With their subagents, wherever those ran and whatever they did (a QA pass that changed
+        // nothing): context for the linked work, not its authors, so no commit links them.
+        const threads = (yield* loaded.family(linked)).map((s) => threadRecordOf(s, now, blobs));
+        // Each link cites the version of its thread its turns and entries are in.
+        const versions = new Map(threads.map((t) => [t.thread.id, threadSha(t)]));
         const records = histories.map((history, i) =>
           buildCommitRecord({
             repo: repoName,
             subject: commits[i]!.subject,
             committedAt: commits[i]!.committedAt,
-            history,
+            history: {
+              ...history,
+              links: history.links.map((l) =>
+                versions.has(l.threadId) ? { ...l, version: versions.get(l.threadId)! } : l,
+              ),
+            },
             linkedAt: now,
             toolreaderVersion: packageJson.version,
             home: config.home,
           }),
         );
-        const linked = [...new Set(records.flatMap((r) => r.links.map((l) => l.threadId)))];
         // Titles are first prompt lines: reports go to logs, so redacted, home as `~`.
         const { clean } = redactor(config.home);
         const titles = new Map(linked.map((id) => [id, clean(byId.get(id)?.thread.title ?? id)]));
@@ -676,10 +722,6 @@ export class HistorySync extends Context.Service<
         });
         if (options.dryRun) return report(0, 0);
 
-        const blobs = new Map<string, Blob>();
-        // With their subagents, wherever those ran and whatever they did (a QA pass that changed
-        // nothing): context for the linked work, not its authors, so no commit links them.
-        const threads = (yield* loaded.family(linked)).map((s) => threadRecordOf(s, now, blobs));
         const { api, params, sent, skipped } = yield* sendThreads(threads, blobs);
         // Links last: a commit names only threads the backend has.
         for (const record of records)

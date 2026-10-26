@@ -8,6 +8,7 @@ import { Entry, Labels, ThreadSource } from "./domain.ts";
 import { redactEntries, redactLabels, redactor } from "./proof.ts";
 import { humanizeCommand } from "./shell.ts";
 import { Check } from "./checks.ts";
+import { EVIDENCE_ROLES } from "./declare.ts";
 import { Reads } from "./coverage.ts";
 
 export const LEDGER_FORMAT_VERSION = 2;
@@ -68,6 +69,10 @@ export const LedgerLink = Schema.Struct({
   checks: Schema.optional(Schema.Array(Check)),
   /** The files it was seen reading for this commit (coverage.ts). */
   reads: Schema.optional(Reads),
+  /** What its agent declared it did for the commit (`history link --role`), where, and on what. */
+  claim: Schema.optional(Schema.Literals(EVIDENCE_ROLES)),
+  environment: Schema.optional(Schema.String),
+  testedSha: Schema.optional(Schema.String),
 });
 export type LedgerLink = typeof LedgerLink.Type;
 
@@ -206,6 +211,9 @@ export type FoundLink = {
   readonly labels: Labels;
   readonly checks?: ReadonlyArray<Check> | undefined;
   readonly reads?: Reads | undefined;
+  readonly claim?: (typeof EVIDENCE_ROLES)[number] | undefined;
+  readonly environment?: string | undefined;
+  readonly testedSha?: string | undefined;
 };
 
 /**
@@ -262,6 +270,9 @@ export function buildEntry(input: {
       ...(found.reads?.paths.length
         ? { reads: { ...found.reads, paths: found.reads.paths.map(clean) } }
         : {}),
+      ...(found.claim ? { claim: found.claim } : {}),
+      ...(found.environment ? { environment: clean(found.environment) } : {}),
+      ...(found.testedSha ? { testedSha: found.testedSha } : {}),
     };
   });
   const notes = (input.notes ?? []).map((n) => ({ ...n, text: clean(n.text) }));

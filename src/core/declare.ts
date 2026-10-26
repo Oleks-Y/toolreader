@@ -1,5 +1,6 @@
-// Links an agent declares itself: `toolreader history link --sha X [--turns 3-5,9] [--session ID]
-// [--note TEXT]` (or `unlink`), run as a command inside its session. The declaration needs no
+// Links an agent declares itself: `toolreader history link --sha X [--role R] [--turns 3-5,9 |
+// --entry ID…] [--session ID] [--environment E] [--tested-sha S] [--note TEXT]` (or `unlink`), run
+// as a command inside its session. The declaration needs no
 // storage of its own: the command and its output are part of the session's history, so a sync
 // finds them there, with the turn they ran in. The output names the full SHA (`history link:
 // <sha> …`), so `--sha HEAD` still means the commit it meant then. Pure.
@@ -8,6 +9,16 @@ import type { CommitHistory, ThreadLink } from "./history.ts";
 import { turnId } from "./history.ts";
 import { splitCommand, unwrapShell } from "./shell.ts";
 import { splitTurns } from "./tree.ts";
+
+/**
+ * What a link claims about the commit: its thread wrote it (`implemented`, the default), or
+ * tested, reviewed or deployed it. A claim of relevance, not proof of success: the linked entries
+ * say how it went. A thread can hold several roles on one commit.
+ */
+export const EVIDENCE_ROLES = ["implemented", "tested", "reviewed", "deployed"] as const;
+export type EvidenceRole = (typeof EVIDENCE_ROLES)[number];
+const isRole = (s: string): s is EvidenceRole =>
+  (EVIDENCE_ROLES as ReadonlyArray<string>).includes(s);
 
 export type Declaration = {
   readonly kind: "link" | "unlink";
@@ -18,6 +29,13 @@ export type Declaration = {
   /** Another session's name; null: the declaring session itself. */
   readonly session: string | null;
   readonly note: string | null;
+  /** A link's claim (absent: implemented); an unlink's (absent: every role the thread has). */
+  readonly role?: EvidenceRole;
+  /** The entries that show it (`--entry`, repeatable), instead of turns. */
+  readonly entries?: ReadonlyArray<string>;
+  /** Where it ran (`--environment staging`), and the commit it ran on (`--tested-sha`). */
+  readonly environment?: string;
+  readonly testedSha?: string;
 };
 
 /**
@@ -76,13 +94,14 @@ export function parseDeclarations(command: string, output?: string): Declaration
       const at = historyAt(words);
       if (at < 0) continue;
       const kind = words[at + 1] as "link" | "unlink";
-      const flags = new Map<string, string>();
+      const all = new Map<string, string[]>();
       const rest = words.slice(at + 2);
       for (let i = 0; i < rest.length; i++) {
         const m = /^--([a-z-]+)(?:=(.*))?$/.exec(rest[i]!);
         if (!m) continue;
-        flags.set(m[1]!, m[2] ?? rest[++i] ?? "");
+        all.set(m[1]!, [...(all.get(m[1]!) ?? []), m[2] ?? rest[++i] ?? ""]);
       }
+      const flags = { get: (name: string) => all.get(name)?.at(-1) };
       const rev = (flags.get("sha") ?? "").replace(/\s+/g, "");
       const said = printed.findIndex((m, k) => !used.has(k) && m[1] === kind && m[3] === rev);
       if (said < 0) continue;
@@ -91,12 +110,22 @@ export function parseDeclarations(command: string, output?: string): Declaration
       const spec = flags.get("turns");
       const turns = spec === undefined ? null : parseTurns(spec);
       if (spec !== undefined && turns === null) continue;
+      const role = flags.get("role");
+      // The CLI refuses another role, so it never printed its line; a hand-made one declares nothing.
+      if (role !== undefined && !isRole(role)) continue;
+      const entries = all.get("entry") ?? [];
+      const environment = flags.get("environment");
+      const testedSha = flags.get("tested-sha");
       found.push({
         kind,
         sha,
         turns,
         session: flags.get("session") ?? null,
         note: flags.get("note") ?? null,
+        ...(role ? { role } : {}),
+        ...(entries.length > 0 ? { entries } : {}),
+        ...(environment ? { environment } : {}),
+        ...(testedSha ? { testedSha } : {}),
       });
     }
   return found;
@@ -130,7 +159,10 @@ export function declarationsIn(threadId: string, entries: ReadonlyArray<Entry>):
         // turn as the first still covers that turn.
         const from = previous === i + 1 ? i + 1 : previous + 1;
         const turns =
-          d.turns ?? (d.session ? null : Array.from({ length: i + 2 - from }, (_, k) => from + k));
+          d.turns ??
+          (d.session || d.entries
+            ? null
+            : Array.from({ length: i + 2 - from }, (_, k) => from + k));
         found.push({ ...d, turns, by: threadId, at: e.at, turn: i + 1 });
         if (!d.session) previous = i + 1;
       }
@@ -150,14 +182,23 @@ export function turnIds(entries: ReadonlyArray<Entry>, numbers: ReadonlyArray<nu
 
 export type ResolvedDeclaration = {
   readonly kind: "link" | "unlink";
-  /** The commit of the range it is about. */
+  /** The commit it is about. */
   readonly sha: string;
   readonly threadId: string;
   readonly turns: ReadonlyArray<string>;
   readonly note: string | null;
   readonly by: string;
   readonly at: string;
+  readonly role?: EvidenceRole | undefined;
+  /** Entry ids of the thread, when it named entries instead of turns. */
+  readonly entries?: ReadonlyArray<string> | undefined;
+  readonly environment?: string | undefined;
+  readonly testedSha?: string | undefined;
 };
+
+/** A link's key on a commit: one thread can hold each role once. */
+export const linkKey = (threadId: string, role: EvidenceRole | undefined) =>
+  `${threadId}\u0000${role ?? "implemented"}`;
 
 /**
  * A commit's links with its agents' declarations applied, in the order they were made: a declared
@@ -168,38 +209,54 @@ export function applyDeclarations(
   history: CommitHistory,
   declarations: ReadonlyArray<ResolvedDeclaration>,
 ): CommitHistory {
-  const links = new Map<string, ThreadLink>(history.links.map((l) => [l.threadId, l]));
+  const links = new Map<string, ThreadLink>(
+    history.links.map((l) => [linkKey(l.threadId, l.role), l]),
+  );
   const declared = new Set<string>();
+  const unlinked: Array<{ threadId: string; role?: EvidenceRole }> = [];
   for (const d of [...declarations]
     .filter((d) => d.sha === history.sha)
     .sort((a, b) => (a.at < b.at ? -1 : 1))) {
     if (d.kind === "unlink") {
-      links.delete(d.threadId);
-      declared.delete(d.threadId);
+      for (const [key, l] of links)
+        if (l.threadId === d.threadId && (!d.role || (l.role ?? "implemented") === d.role)) {
+          links.delete(key);
+          declared.delete(key);
+        }
+      // Carried to the backend, which keeps links other machines sent: so it drops this one too.
+      unlinked.push({ threadId: d.threadId, ...(d.role ? { role: d.role } : {}) });
       continue;
     }
-    links.set(d.threadId, {
+    const key = linkKey(d.threadId, d.role);
+    const role = d.role && d.role !== "implemented" ? d.role : undefined;
+    links.set(key, {
       threadId: d.threadId,
       turns: d.turns,
       via: "asserted",
-      lines: links.get(d.threadId)?.lines ?? 0,
+      lines: links.get(key)?.lines ?? 0,
+      ...(role ? { role } : {}),
+      ...(d.entries?.length ? { entries: d.entries } : {}),
+      ...(d.environment ? { environment: d.environment } : {}),
+      ...(d.testedSha ? { testedSha: d.testedSha } : {}),
       ...(d.note ? { note: d.note } : {}),
       ...(d.by !== d.threadId ? { declaredBy: d.by } : {}),
     });
-    declared.add(d.threadId);
+    declared.add(key);
   }
-  const all = [...links.values()];
+  const all = [...links.entries()];
   // Lines only an unlinked thread wrote aren't explained anymore.
   const explained = history.hits
-    ? new Set(all.flatMap((l) => [...(history.hits!.get(l.threadId) ?? [])])).size
+    ? new Set(all.flatMap(([, l]) => (l.role ? [] : [...(history.hits!.get(l.threadId) ?? [])])))
+        .size
     : history.explained;
   return {
     ...history,
     explained,
     links: [
-      ...all.filter((l) => declared.has(l.threadId)),
-      ...all.filter((l) => !declared.has(l.threadId)),
+      ...all.filter(([k]) => declared.has(k)).map(([, l]) => l),
+      ...all.filter(([k]) => !declared.has(k)).map(([, l]) => l),
     ],
+    ...(unlinked.length > 0 ? { unlinked } : {}),
   };
 }
 
