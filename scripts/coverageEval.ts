@@ -171,7 +171,8 @@ const run = Effect.gen(function* () {
   );
   // The agent runs in a home of its own, holding only its login: no user config, MCP servers,
   // memories or session stores of this machine reach it, and its built-in tools are off, so the
-  // MCP server's sql over the eval's backend is all it can read.
+  // MCP server's sql over the eval's backend is all it can read. Its stdin is closed: `codex exec`
+  // reads a piped stdin to its end before starting.
   const realHome = yield* Config.string("HOME").pipe(
     Effect.mapError(() => new EvalFailed({ message: "HOME isn't set" })),
   );
@@ -211,7 +212,7 @@ const run = Effect.gen(function* () {
             "stream-json",
             "--verbose",
           ],
-          { cwd: out, env: agentEnv, extendEnv: true },
+          { cwd: out, env: agentEnv, extendEnv: true, stdin: "ignore" },
         )
       : ChildProcess.make(
           "codex",
@@ -237,7 +238,7 @@ const run = Effect.gen(function* () {
             `mcp_servers.toolreader.env={ HOME = ${toml(env.HOME)}, T3_DB = ${toml(env.T3_DB)} }`,
             prompt,
           ],
-          { cwd: out, env: agentEnv, extendEnv: true },
+          { cwd: out, env: agentEnv, extendEnv: true, stdin: "ignore" },
         );
   if (flag("--dry-run")) {
     yield* Console.log(
