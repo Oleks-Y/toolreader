@@ -81,6 +81,16 @@ export class FindingConflict extends Schema.TaggedErrorClass<FindingConflict>()(
 
 /** `same`: it was there with this content already. */
 export type PutResult = "inserted" | "updated" | "same";
+/** A thread's put: also refused because it was removed (deleted on request, or this version expired). */
+export type ThreadPutResult = PutResult | "deleted" | "expired";
+
+/**
+ * The stored copy of a thread is newer than the one sent (a later last entry, or as late with more
+ * entries): a client that read the session earlier, or on another machine, must not replace it.
+ */
+export class StaleThread extends Schema.TaggedErrorClass<StaleThread>()("StaleThread", {
+  reason: Schema.Literals(["older-last-entry", "fewer-entries"]),
+}) {}
 
 /** Who writes: the workspace, the token (null: tests, tools, GitHub sign-ins) and the client's version. */
 export type Writer = {
@@ -153,6 +163,11 @@ const decodeEvidenceRows = Schema.decodeUnknownEffect(Schema.Array(EvidenceRow))
 const decodeEntry = Schema.decodeUnknownOption(Entry);
 const CountRow = Schema.Struct({ n: Schema.Number });
 const decodeCountRows = Schema.decodeUnknownEffect(Schema.Array(CountRow));
+const decodeStoredRows = Schema.decodeUnknownEffect(
+  Schema.Array(
+    Schema.Struct({ lastEntryAt: Schema.NullOr(Schema.String), entries: Schema.Number }),
+  ),
+);
 const decodeCoverageCounts = Schema.decodeUnknownEffect(
   Schema.Array(
     Schema.Struct({ threads: Schema.Number, behind: Schema.Number, asOf: Schema.String }),
@@ -309,7 +324,7 @@ export type WorkspaceStore = {
   ) => Effect.Effect<ReadonlyMap<string, string>, HistoryStoreFailed>;
   readonly putThread: (
     record: ThreadRecord,
-  ) => Effect.Effect<PutResult, HistoryStoreFailed | HistoryRefused>;
+  ) => Effect.Effect<ThreadPutResult, HistoryStoreFailed | HistoryRefused | StaleThread>;
   /**
    * Marks the threads whose stored content hash is `version` checked now, with what their
    * source says; how many matched.
@@ -541,12 +556,28 @@ export class HistoryStore extends Context.Service<
             WHERE workspace_id = ${writer.workspaceId} AND thread_id = ${record.thread.id}`.pipe(
             Effect.flatMap(decodeRemovedRows),
           );
-          if (gone && (gone.reason === "deleted" || gone.version === threadSha(record)))
-            return "same" as const;
+          if (gone?.reason === "deleted") return "deleted" as const;
+          if (gone && gone.version === threadSha(record)) return "expired" as const;
           if (gone)
             yield* sql`
               DELETE FROM removed
               WHERE workspace_id = ${writer.workspaceId} AND thread_id = ${record.thread.id}`;
+          // An older read never replaces a newer one. Copies without `lastEntryAt` (older clients)
+          // can't say which is newer: as before, the last one sent wins.
+          const [stored] = yield* sql`
+            SELECT payload->>'lastEntryAt' AS "lastEntryAt",
+                   jsonb_array_length(payload->'entries')::int AS entries
+            FROM threads WHERE workspace_id = ${writer.workspaceId} AND id = ${record.thread.id}
+            FOR UPDATE`.pipe(Effect.flatMap(decodeStoredRows));
+          const [sent, kept] = [
+            Date.parse(record.lastEntryAt ?? ""),
+            Date.parse(stored?.lastEntryAt ?? ""),
+          ];
+          if (Number.isFinite(sent) && Number.isFinite(kept)) {
+            if (sent < kept) return yield* new StaleThread({ reason: "older-last-entry" });
+            if (sent === kept && record.entries.length < stored!.entries)
+              return yield* new StaleThread({ reason: "fewer-entries" });
+          }
           const payload = forJsonb(encodeThreadJson(record));
           const result = yield* upsert(
             "threads",
@@ -575,7 +606,7 @@ export class HistoryStore extends Context.Service<
           return result;
         },
         (self) => sql.withTransaction(self),
-        Effect.mapError(putFailed),
+        Effect.mapError((e) => (e._tag === "StaleThread" ? e : putFailed(e))),
         bounded,
       );
 

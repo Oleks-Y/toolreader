@@ -123,10 +123,24 @@ export const Meta = Schema.Struct({
 });
 export type Meta = typeof Meta.Type;
 
-/** `same`: stored with this content already. */
+/**
+ * `same`: stored with this content already. A thread removed from the history isn't stored again:
+ * `same`, with `removed` saying why (older clients read just `same`).
+ */
 export const PutResult = Schema.Struct({
   result: Schema.Literals(["inserted", "updated", "same"]),
+  removed: Schema.optional(Schema.Literals(["deleted", "expired"])),
 });
+
+/**
+ * The backend holds a newer copy of this thread than the one sent (a later last entry, or as
+ * late with more entries): 409, the copy not stored. Not a failure to retry.
+ */
+export class NewerCopyStored extends Schema.TaggedErrorClass<NewerCopyStored>()(
+  "NewerCopyStored",
+  { reason: Schema.Literals(["older-last-entry", "fewer-entries"]) },
+  { httpApiStatus: 409 },
+) {}
 
 /**
  * The caller, as its credential names it: what `Authorization` gives every handler behind it. A
@@ -313,7 +327,7 @@ export class HistoryApi extends HttpApiGroup.make("history")
       params: ws,
       payload: Schema.Unknown,
       success: PutResult,
-      error: [Rejected, Forbidden, BackendFailed],
+      error: [Rejected, NewerCopyStored, Forbidden, BackendFailed],
     }),
     HttpApiEndpoint.post("threads", "/workspaces/:ws/threads/query", {
       params: ws,

@@ -59,6 +59,38 @@ describe("HistoryStore", () => {
       }),
     );
 
+    it.effect("never replaces a newer copy with an older one", () =>
+      Effect.gen(function* () {
+        const store = yield* inWorkspace("stale");
+        const at = (n: number) => `2026-01-01T1${n}:00:00.000Z`;
+        const copy = (texts: ReadonlyArray<string>, last: string | undefined) => ({
+          ...threadRecord(
+            "t1",
+            texts.map((t, i) => message(`u${i}`, t)),
+          ),
+          ...(last ? { lastEntryAt: last } : {}),
+        });
+        assert.strictEqual(yield* store.putThread(copy(["a", "b"], at(2))), "inserted");
+        // Read before the stored copy's last entry: refused, by reason.
+        const older = yield* Effect.flip(store.putThread(copy(["a"], at(1))));
+        assert.deepStrictEqual(
+          [older._tag, (older as { reason?: string }).reason],
+          ["StaleThread", "older-last-entry"],
+        );
+        // As late, but missing an entry the stored copy has.
+        const fewer = yield* Effect.flip(store.putThread(copy(["a"], at(2))));
+        assert.strictEqual((fewer as { reason?: string }).reason, "fewer-entries");
+        assert.deepStrictEqual(
+          (yield* store.threads(["t1"]))[0]?.entries.map((e) => e.id),
+          ["u0", "u1"],
+        );
+        // Newer: replaces it.
+        assert.strictEqual(yield* store.putThread(copy(["a", "b", "c"], at(3))), "updated");
+        // Without a last entry time (an older client), last write wins as before.
+        assert.strictEqual(yield* store.putThread(copy(["z"], undefined)), "updated");
+      }),
+    );
+
     it.effect("stores text jsonb can't hold, as U+FFFD", () =>
       Effect.gen(function* () {
         const store = yield* inWorkspace("nul");
@@ -394,10 +426,10 @@ describe("HistoryStore", () => {
           finding!.occurrences.map((o) => o.threadId),
           ["t2"],
         );
-        // The next sync sends it again: not stored.
+        // The next sync sends it again: not stored, and not taken for "same" either.
         assert.strictEqual(
           yield* store.putThread(threadRecord("t1", [message("u1", "again")])),
-          "same",
+          "deleted",
         );
         assert.deepStrictEqual(yield* store.threads(["t1"]), []);
       }),
@@ -425,7 +457,7 @@ describe("HistoryStore", () => {
         // The same version sent again stays expired; a changed one is stored.
         assert.strictEqual(
           yield* store.putThread(threadRecord("old", [message("u1", "a")])),
-          "same",
+          "expired",
         );
         assert.strictEqual(
           yield* store.putThread(threadRecord("old", [message("u1", "a2")])),

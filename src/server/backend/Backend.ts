@@ -30,6 +30,7 @@ import {
   Forbidden,
   LengthRequired,
   LIMITS,
+  NewerCopyStored,
   NotFound,
   QueryRefused,
   Rejected,
@@ -263,7 +264,15 @@ const HistoryHandlers = HttpApiBuilder.group(
           yield* writer;
           const record = yield* admitted(admitThread(payload));
           const store = yield* scoped;
-          return { result: yield* store.putThread(record).pipe(Effect.mapError(putFailed)) };
+          const result = yield* store.putThread(record).pipe(
+            Effect.catchTag("StaleThread", (e) =>
+              Effect.fail(new NewerCopyStored({ reason: e.reason })),
+            ),
+            Effect.mapError((e) => (e._tag === "NewerCopyStored" ? e : putFailed(e))),
+          );
+          return result === "deleted" || result === "expired"
+            ? { result: "same" as const, removed: result }
+            : { result };
         }),
       )
       .handle("threads", ({ payload }) =>
