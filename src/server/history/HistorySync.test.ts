@@ -388,6 +388,35 @@ describe("history sync", () => {
             view.commits.map((c) => c.entry?.files.map((f) => [f.path, f.bucket])),
             [[["store.ts", "attributed"]], [["client.ts", "attributed"]]],
           );
+
+          // A review frozen: its commits' conclusions and the sessions they cite, at their versions.
+          const frozen = yield* history.freezeReview(repo, "main~2..main", {
+            verdict: "approved",
+            note: "both halves of the split are covered",
+          });
+          assert.deepStrictEqual(
+            [
+              frozen.by,
+              frozen.shas.length,
+              frozen.commits.length,
+              frozen.evidence.map((e) => e.threadId),
+            ],
+            ["test", 2, 2, ["codex:coder"]],
+          );
+          assert.strictEqual(frozen.methods.checks, "checks/2");
+          const reopened = yield* history.review(repo, frozen.id);
+          assert.deepStrictEqual(reopened.now, [{ threadId: "codex:coder", status: "same" }]);
+          assert.deepStrictEqual(reopened.manifest.commits, frozen.commits);
+          // The session deleted: the review reopens without what was drawn from it, and says so.
+          yield* Effect.flatMap(HistoryStore, (s) => s.deleteThread("acme", "codex:coder"));
+          const after = yield* history.review(repo, frozen.id);
+          assert.deepStrictEqual(after.now, [{ threadId: "codex:coder", status: "deleted" }]);
+          assert.deepStrictEqual(
+            after.manifest.commits.map((c) => c.links.length),
+            [0, 0],
+          );
+          assert.deepStrictEqual(after.manifest.removed, ["codex:coder"]);
+          assert.deepStrictEqual(after.manifest.decision, frozen.decision);
         }).pipe(Effect.provide(services(home, codexHome)));
       }).pipe(Effect.scoped),
     );

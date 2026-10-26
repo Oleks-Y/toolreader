@@ -40,6 +40,9 @@ import {
   type FindingStatus,
   type Submission,
 } from "../../core/insights.ts";
+import { CHECKS_METHOD } from "../../core/checks.ts";
+import { DETECTORS } from "../../core/insights.ts";
+import { ReviewManifest, type EvidenceNow } from "../../core/review.ts";
 import { hunkKey, StoredBlame } from "../../core/blame.ts";
 import { forJsonb, sha256, threadSha } from "../recordHash.ts";
 import { ENTRY_ROWS } from "./Migrations/005_Entries.ts";
@@ -133,6 +136,16 @@ const decodeEvidenceRows = Schema.decodeUnknownEffect(Schema.Array(EvidenceRow))
 const decodeEntry = Schema.decodeUnknownOption(Entry);
 const CountRow = Schema.Struct({ n: Schema.Number });
 const decodeCountRows = Schema.decodeUnknownEffect(Schema.Array(CountRow));
+const VersionRow = Schema.Struct({ id: Schema.String, version: Schema.String });
+const decodeVersionRows = Schema.decodeUnknownEffect(Schema.Array(VersionRow));
+const ManifestRow = Schema.Struct({ manifest: ReviewManifest });
+const decodeManifestRows = Schema.decodeUnknownEffect(Schema.Array(ManifestRow));
+const encodeManifestJson = Schema.encodeSync(Schema.fromJsonString(ReviewManifest));
+const RemovedReasonRow = Schema.Struct({
+  id: Schema.String,
+  reason: Schema.Literals(["deleted", "expired"]),
+});
+const decodeRemovedReasonRows = Schema.decodeUnknownEffect(Schema.Array(RemovedReasonRow));
 const FindingRow = Schema.Struct({
   id: Schema.String,
   corrections: Corrections,
@@ -326,6 +339,26 @@ export type WorkspaceStore = {
     to: FindingStatus,
     why: string,
   ) => Effect.Effect<Finding, HistoryStoreFailed | FindingMissing | FindingConflict>;
+  /** Freezes a review of `shas` (core/review.ts) as this writer; the manifest stored. */
+  readonly freezeReview: (input: {
+    readonly repo: string;
+    readonly range: string;
+    readonly shas: ReadonlyArray<string>;
+    readonly verdict: ReviewManifest["decision"]["verdict"];
+    readonly note: string;
+    readonly server: string;
+  }) => Effect.Effect<ReviewManifest, HistoryStoreFailed>;
+  /** A frozen review, as it was, with what each cited session is now. */
+  readonly review: (
+    repo: string,
+    id: string,
+  ) => Effect.Effect<
+    Option.Option<{
+      readonly manifest: ReviewManifest;
+      readonly now: ReadonlyArray<{ readonly threadId: string; readonly status: EvidenceNow }>;
+    }>,
+    HistoryStoreFailed
+  >;
   /** The commits of `shas` this workspace has links for, in no particular order. */
   readonly commits: (
     repo: string,
@@ -845,12 +878,126 @@ export class HistoryStore extends Context.Service<
                 ), '[]'::jsonb)), updated_at = now()
                 WHERE EXISTS (SELECT 1 FROM gone g, jsonb_array_elements(f.detection->'occurrences') o
                               WHERE g.workspace_id = f.workspace_id AND g.id = o->>'threadId')
+              ),
+              -- Frozen reviews keep no conclusions drawn from a removed session, and say so.
+              reviewed AS (
+                UPDATE reviews r SET manifest = jsonb_set(jsonb_set(r.manifest, '{commits}', coalesce((
+                  SELECT jsonb_agg(jsonb_set(c, '{links}', coalesce((
+                    SELECT jsonb_agg(l) FROM jsonb_array_elements(c->'links') l
+                    WHERE NOT EXISTS (SELECT 1 FROM gone g
+                                      WHERE g.workspace_id = r.workspace_id AND g.id = l->>'threadId')
+                  ), '[]'::jsonb)))
+                  FROM jsonb_array_elements(r.manifest->'commits') c), '[]'::jsonb)),
+                  '{removed}', coalesce(r.manifest->'removed', '[]'::jsonb) || coalesce((
+                    SELECT jsonb_agg(g.id) FROM gone g
+                    WHERE g.workspace_id = r.workspace_id
+                      AND EXISTS (SELECT 1 FROM jsonb_array_elements(r.manifest->'evidence') ev
+                                  WHERE ev->>'threadId' = g.id)), '[]'::jsonb))
+                WHERE EXISTS (SELECT 1 FROM gone g, jsonb_array_elements(r.manifest->'evidence') ev
+                              WHERE g.workspace_id = r.workspace_id AND ev->>'threadId' = g.id)
               )
               SELECT count(*)::int AS n FROM gone`.pipe(Effect.flatMap(decodeCountRows));
               return gone[0]?.n ?? 0;
             }),
           )
           .pipe(Effect.mapError(failed), bounded);
+
+      const freezeReview = Effect.fn("HistoryStore.freezeReview")(function* (
+        writer: Writer,
+        input: {
+          readonly repo: string;
+          readonly range: string;
+          readonly shas: ReadonlyArray<string>;
+          readonly verdict: ReviewManifest["decision"]["verdict"];
+          readonly note: string;
+          readonly server: string;
+        },
+      ) {
+        const ws = writer.workspaceId;
+        const records = yield* commits(ws, input.repo, input.shas);
+        const ids = [...new Set(records.flatMap((c) => c.links.map((l) => l.threadId)))];
+        const versions =
+          ids.length === 0
+            ? []
+            : yield* sql`
+                SELECT id, content_sha AS version FROM threads
+                WHERE workspace_id = ${ws} AND id IN ${sql.in(ids)}`.pipe(
+                Effect.flatMap(decodeVersionRows),
+                Effect.mapError(failed),
+              );
+        const open = yield* findings(ws, input.repo);
+        const [by] = writer.actor
+          ? [{ id: writer.actor }]
+          : writer.tokenId
+            ? yield* sql`SELECT name AS id FROM api_tokens WHERE id = ${writer.tokenId}`.pipe(
+                Effect.flatMap(decodeIdRows),
+                Effect.mapError(failed),
+              )
+            : [];
+        const createdAt = DateTime.formatIso(yield* DateTime.now);
+        const order = new Map(input.shas.map((s, i) => [s, i]));
+        const manifest: ReviewManifest = {
+          manifestVersion: 1,
+          id: sha256(`${input.repo}\u0000${input.range}\u0000${createdAt}`).slice(0, 10),
+          repo: input.repo,
+          range: input.range,
+          shas: [...input.shas],
+          createdAt,
+          by: by?.id ?? "unknown",
+          commits: [...records].sort((a, b) => (order.get(a.sha) ?? 0) - (order.get(b.sha) ?? 0)),
+          evidence: versions.map((v) => ({ threadId: v.id, version: v.version })),
+          methods: { checks: CHECKS_METHOD, detectors: DETECTORS.join(","), server: input.server },
+          findings: open.map((f) => ({ id: f.id, status: f.status })),
+          decision: { verdict: input.verdict, note: input.note },
+        };
+        yield* sql`
+          INSERT INTO reviews (workspace_id, repo, id, manifest)
+          VALUES (${ws}, ${input.repo}, ${manifest.id}, ${forJsonb(encodeManifestJson(manifest))}::jsonb)`.pipe(
+          Effect.mapError(failed),
+        );
+        return manifest;
+      }, bounded);
+
+      const review = Effect.fn("HistoryStore.review")(function* (
+        ws: string,
+        repo: string,
+        id: string,
+      ) {
+        const [row] = yield* sql`
+          SELECT manifest FROM reviews WHERE workspace_id = ${ws} AND repo = ${repo} AND id = ${id}`.pipe(
+          Effect.flatMap(decodeManifestRows),
+          Effect.mapError(failed),
+        );
+        if (!row) return Option.none();
+        const ids = row.manifest.evidence.map((e) => e.threadId);
+        const [stored, gone] =
+          ids.length === 0
+            ? [[], []]
+            : yield* Effect.all([
+                sql`SELECT id, content_sha AS version FROM threads
+                    WHERE workspace_id = ${ws} AND id IN ${sql.in(ids)}`.pipe(
+                  Effect.flatMap(decodeVersionRows),
+                ),
+                sql`SELECT thread_id AS id, reason FROM removed
+                    WHERE workspace_id = ${ws} AND thread_id IN ${sql.in(ids)}`.pipe(
+                  Effect.flatMap(decodeRemovedReasonRows),
+                ),
+              ]).pipe(Effect.mapError(failed));
+        const versionOf = new Map(stored.map((s) => [s.id, s.version]));
+        const reasonOf = new Map(gone.map((g) => [g.id, g.reason]));
+        return Option.some({
+          manifest: row.manifest,
+          now: row.manifest.evidence.map((e) => ({
+            threadId: e.threadId,
+            status: (reasonOf.get(e.threadId) ??
+              (!versionOf.has(e.threadId)
+                ? "missing"
+                : versionOf.get(e.threadId) === e.version
+                  ? "same"
+                  : "replaced")) as EvidenceNow,
+          })),
+        });
+      }, bounded);
 
       const deleteThread = Effect.fn("HistoryStore.deleteThread")(function* (
         slug: string,
@@ -1133,6 +1280,8 @@ export class HistoryStore extends Context.Service<
           ledger: (repo, before, limit) => ledger(ws, repo, before, limit),
           blame: (repo, sha, hunk, model) => blame(ws, repo, sha, hunk, model),
           putBlame: (record) => putBlame(ws, record),
+          freezeReview: (input) => freezeReview(writer, input),
+          review: (repo, id) => review(ws, repo, id),
         };
       };
 
