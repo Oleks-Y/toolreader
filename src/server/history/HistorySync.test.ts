@@ -15,6 +15,7 @@ import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServer from "effect/unstable/http/HttpServer";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { ThreadNotFound } from "../../core/api.ts";
@@ -546,6 +547,79 @@ describe("history sync", () => {
           [["codex:worker"]],
         );
       }).pipe(Effect.scoped),
+    );
+
+    it.effect(
+      "sends a linked thread's subagents that changed nothing and ran elsewhere, and marks unchanged threads checked",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const { repo, home, codexHome } = yield* scenario;
+          // A QA pass the coder delegated: it only talked, from outside the repo.
+          yield* writeRollout(
+            codexHome,
+            "qa",
+            home,
+            [
+              {
+                at: "2026-01-01T12:00:00.000Z",
+                item: {
+                  type: "UserMessage",
+                  id: "q1",
+                  content: [{ type: "text", text: "Check staging" }],
+                },
+              },
+              {
+                at: "2026-01-01T12:30:00.000Z",
+                item: {
+                  type: "AgentMessage",
+                  id: "q2",
+                  content: [{ type: "Text", text: "Staging checkout works" }],
+                },
+              },
+            ],
+            { source: { subagent: { other: "qa" } }, parent_thread_id: "coder" },
+          );
+          const server = yield* HttpServer.HttpServer;
+          const port = server.address._tag === "TcpAddress" ? server.address.port : 0;
+          const token = yield* Effect.flatMap(HistoryStore, (s) => s.createToken("family", "test"));
+          yield* fs.makeDirectory(`${home}/.toolreader`, { recursive: true });
+          yield* fs.writeFileString(
+            `${home}/.toolreader/config.json`,
+            encodeJson({
+              backend: { url: `http://127.0.0.1:${port}`, token, workspace: "family" },
+            }),
+          );
+          const sync = Effect.flatMap(HistorySync, (h) =>
+            h.sync(repo, "main~2..main", { source: "codex-rollouts", dryRun: false }),
+          ).pipe(Effect.provide(services(home, codexHome)));
+          const first = yield* sync;
+          assert.deepStrictEqual([first.sent, first.unchanged], [2, 0]);
+          // Context, not authorship: the commits still link only the coder.
+          assert.deepStrictEqual(
+            first.commits.map(({ record }) => record.links.map((l) => l.threadId)),
+            [["codex:coder"], ["codex:coder"]],
+          );
+          const store = yield* inWorkspace("family");
+          const [qa] = yield* store.threads(["codex:qa"]);
+          assert.strictEqual(qa?.thread.parent, "codex:coder");
+          assert.deepStrictEqual(
+            [qa?.lastEntryAt, qa?.sourceState],
+            ["2026-01-01T12:30:00.000Z", "unknown"],
+          );
+
+          const sql = yield* SqlClient.SqlClient;
+          const checkedAt = sql<{ readonly at: string }>`
+            SELECT checked_at::text AS at FROM threads WHERE id = 'codex:coder'
+              AND workspace_id = (SELECT id FROM workspaces WHERE slug = 'family')`.pipe(
+            Effect.map((rows) => rows[0]!.at),
+          );
+          const before = yield* checkedAt;
+          const again = yield* sync;
+          assert.deepStrictEqual([again.sent, again.unchanged], [0, 2]);
+          // Not resent, but confirmed as stored just now.
+          assert.isAbove(Date.parse(yield* checkedAt), Date.parse(before));
+        }).pipe(Effect.scoped),
     );
 
     it.effect("pushes a session by id with its subagents, linked to no commit", () =>

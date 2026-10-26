@@ -197,10 +197,13 @@ describe("Backend", () => {
         });
         // Linked to no commit, in no repo: still readable by id.
         const query = "SELECT thread_id, turn, text FROM agent_entries WHERE thread_id = 't1'";
-        assert.deepStrictEqual(yield* machine.history.sql({ params, payload: { query } }), {
-          rows: [{ thread_id: "t1", turn: 1, text: "Add a" }],
-          truncated: false,
-        });
+        const result = yield* machine.history.sql({ params, payload: { query } });
+        assert.deepStrictEqual(
+          [result.rows, result.truncated],
+          [[{ thread_id: "t1", turn: 1, text: "Add a" }], false],
+        );
+        // Beside the rows, how current the workspace's copies are: just checked, so none behind.
+        assert.deepStrictEqual([result.coverage?.threads, result.coverage?.mayBeBehind], [1, []]);
         // sam reads no repo of ours on GitHub, and still reads the workspace's conversations.
         yield* Effect.flatMap(HistoryStore, (s) => s.addMember("sql", "sam"));
         const sam = yield* clientWith(headers("gho_sam"));

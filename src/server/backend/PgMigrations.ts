@@ -19,6 +19,7 @@ import Migration0007 from "./Migrations/007_Corrections.ts";
 import Migration0008 from "./Migrations/008_Reviews.ts";
 import Migration0009 from "./Migrations/009_AgentSchema.ts";
 import Migration0010 from "./Migrations/010_Media.ts";
+import Migration0011 from "./Migrations/011_Coverage.ts";
 
 /** Every migration, in order. Append a new one here and add its case to the upgrade tests. */
 export const migrationEntries = [
@@ -32,6 +33,7 @@ export const migrationEntries = [
   [8, "Reviews", Migration0008],
   [9, "AgentSchema", Migration0009],
   [10, "Media", Migration0010],
+  [11, "Coverage", Migration0011],
 ] as const;
 
 const TABLE = "toolreader_migrations";

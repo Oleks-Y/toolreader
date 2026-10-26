@@ -19,13 +19,14 @@ import { PgClient } from "@effect/sql-pg/PgClient";
 import {
   CommitRecordV1,
   readCommit,
+  type SOURCE_STATES,
   readThread,
   ThreadRecordV1,
   type CommitRecord,
   type ThreadRecord,
 } from "../../core/historyRecord.ts";
 import { Entry } from "../../core/domain.ts";
-import type { Evidence, SearchHit } from "../../core/historyApi.ts";
+import { COVERAGE_LISTED, Coverage, type Evidence, type SearchHit } from "../../core/historyApi.ts";
 import {
   corrected,
   Corrections,
@@ -47,6 +48,8 @@ import { hunkKey, StoredBlame } from "../../core/blame.ts";
 import { forJsonb, sha256, threadSha } from "../recordHash.ts";
 import { ENTRY_ROWS } from "./Migrations/005_Entries.ts";
 import { AGENT_VIEWS } from "./Migrations/009_AgentSchema.ts";
+
+type SourceState = (typeof SOURCE_STATES)[number];
 
 export class HistoryStoreFailed extends Schema.TaggedErrorClass<HistoryStoreFailed>()(
   "HistoryStoreFailed",
@@ -150,6 +153,12 @@ const decodeEvidenceRows = Schema.decodeUnknownEffect(Schema.Array(EvidenceRow))
 const decodeEntry = Schema.decodeUnknownOption(Entry);
 const CountRow = Schema.Struct({ n: Schema.Number });
 const decodeCountRows = Schema.decodeUnknownEffect(Schema.Array(CountRow));
+const decodeCoverageCounts = Schema.decodeUnknownEffect(
+  Schema.Array(
+    Schema.Struct({ threads: Schema.Number, behind: Schema.Number, asOf: Schema.String }),
+  ),
+);
+const decodeCoverageRows = Schema.decodeUnknownEffect(Coverage.fields.mayBeBehind);
 const VersionRow = Schema.Struct({ id: Schema.String, version: Schema.String });
 const decodeVersionRows = Schema.decodeUnknownEffect(Schema.Array(VersionRow));
 const ManifestRow = Schema.Struct({ manifest: ReviewManifest });
@@ -301,6 +310,19 @@ export type WorkspaceStore = {
   readonly putThread: (
     record: ThreadRecord,
   ) => Effect.Effect<PutResult, HistoryStoreFailed | HistoryRefused>;
+  /**
+   * Marks the threads whose stored content hash is `version` checked now, with what their
+   * source says; how many matched.
+   */
+  readonly checked: (
+    threads: ReadonlyArray<{
+      readonly id: string;
+      readonly version: string;
+      readonly sourceState?: SourceState | undefined;
+    }>,
+  ) => Effect.Effect<number, HistoryStoreFailed>;
+  /** How current the workspace's copies are (`Coverage`), as of now. */
+  readonly coverage: Effect.Effect<Coverage, HistoryStoreFailed>;
   /** With `repo`, only those linked to its commits. */
   readonly threads: (
     ids: ReadonlyArray<string>,
@@ -533,6 +555,10 @@ export class HistoryStore extends Context.Service<
             threadSha(record),
             writer,
           );
+          // Checked now, whatever changed: this client read the session and sent what it found.
+          yield* sql`
+            UPDATE threads SET checked_at = now(), source_state = ${record.sourceState ?? null}
+            WHERE workspace_id = ${writer.workspaceId} AND id = ${record.thread.id}`;
           // Search's rows follow the thread, in the same transaction.
           if (result !== "same") {
             yield* sql`
@@ -581,6 +607,64 @@ export class HistoryStore extends Context.Service<
         );
         return new Map(rows.map((r) => [r.id, r.contentSha]));
       }, bounded);
+
+      const checked = Effect.fn("HistoryStore.checked")(
+        function* (
+          ws: string,
+          found: ReadonlyArray<{
+            readonly id: string;
+            readonly version: string;
+            readonly sourceState?: SourceState | undefined;
+          }>,
+        ) {
+          let n = 0;
+          // ponytail: one UPDATE per thread (at most LIMITS.ids); batch it if syncs get slow.
+          for (const t of found) {
+            const rows = yield* sql`
+              UPDATE threads SET checked_at = now(), source_state = ${t.sourceState ?? null}
+              WHERE workspace_id = ${ws} AND id = ${t.id} AND content_sha = ${t.version}
+              RETURNING id`.pipe(Effect.flatMap(decodeIdRows));
+            n += rows.length;
+          }
+          return n;
+        },
+        (self) => sql.withTransaction(self),
+        Effect.mapError(failed),
+        bounded,
+      );
+
+      const coverage = Effect.fn("HistoryStore.coverage")(
+        function* (ws: string) {
+          // Running when last checked, or not checked within the hour: may be behind its source.
+          const behind = sql`
+            workspace_id = ${ws}
+            AND (source_state = 'running' OR checked_at IS NULL
+                 OR checked_at < now() - interval '1 hour')`;
+          const [counts] = yield* sql`
+            SELECT count(*)::int AS threads, (count(*) FILTER (WHERE ${behind}))::int AS behind,
+                   to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "asOf"
+            FROM threads WHERE workspace_id = ${ws}`.pipe(Effect.flatMap(decodeCoverageCounts));
+          const rows = yield* sql`
+            SELECT id, coalesce(payload->'thread'->>'title', '') AS title,
+                   coalesce(source_state, 'unknown') AS state,
+                   coalesce(payload->>'lastEntryAt',
+                            (SELECT max(e->>'at') FROM jsonb_array_elements(payload->'entries') e))
+                     AS "lastEntryAt",
+                   to_char(checked_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+                     AS "checkedAt"
+            FROM threads WHERE ${behind}
+            ORDER BY (source_state = 'running') DESC NULLS LAST, checked_at DESC NULLS LAST, id
+            LIMIT ${COVERAGE_LISTED}`.pipe(Effect.flatMap(decodeCoverageRows));
+          return {
+            asOf: counts!.asOf,
+            threads: counts!.threads,
+            behind: counts!.behind,
+            mayBeBehind: rows,
+          } satisfies Coverage;
+        },
+        Effect.mapError(failed),
+        bounded,
+      );
 
       const threads = Effect.fn("HistoryStore.threads")(function* (
         ws: string,
@@ -1416,6 +1500,8 @@ export class HistoryStore extends Context.Service<
           media: (sha256) => media(ws, sha256),
           hashes: (ids) => hashes(ws, ids),
           putThread: (record) => putThread(writer, record),
+          checked: (threads) => checked(ws, threads),
+          coverage: coverage(ws),
           threads: (ids, repo) => threads(ws, ids, repo),
           putCommit: (record) => putCommit(writer, record),
           search: (query) => search(ws, query),
