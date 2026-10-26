@@ -82,6 +82,16 @@ export type SyncReport = {
   readonly unread: ReadonlyArray<{ readonly id: string; readonly title: string }>;
 };
 
+export type PushReport = {
+  readonly threads: ReadonlyArray<{
+    readonly id: string;
+    readonly title: string;
+    readonly parent: string | null;
+  }>;
+  readonly sent: number;
+  readonly unchanged: number;
+};
+
 export type SearchOptions = {
   readonly all: boolean;
   readonly limit: number;
@@ -159,6 +169,15 @@ export class HistorySync extends Context.Service<
       to: FindingStatus,
       why: string,
     ) => Effect.Effect<Finding, HistoryFailed>;
+    /**
+     * Sends the named sessions whole, with their subagents, whether or not a commit links them:
+     * a conversation shared by id. Titles in the report are redacted.
+     */
+    readonly push: (
+      repo: string,
+      names: ReadonlyArray<string>,
+      source: SessionSource,
+    ) => Effect.Effect<PushReport, HistoryFailed>;
     /** The range's page (the ledger viewer, inlined) from what the backend has; writes `out/index.html`. */
     readonly site: (
       repo: string,
@@ -378,6 +397,89 @@ export class HistorySync extends Context.Service<
         return { resolved, ignored };
       });
 
+      const threadRecordOf = (s: RepoSession, takenAt: string): ThreadRecord =>
+        buildThreadRecord({
+          thread: s.thread,
+          entries: s.entries,
+          labels: s.labels,
+          takenAt,
+          toolreaderVersion: packageJson.version,
+          maxOutput: MAX_OUTPUT,
+          home: config.home,
+          snapshot: s.snapshot,
+          origin: s.origin,
+        });
+
+      /** Sends each thread the backend lacks or holds otherwise; how many it took as new. */
+      const sendThreads = Effect.fn("HistorySync.sendThreads")(function* (
+        threads: ReadonlyArray<ThreadRecord>,
+      ) {
+        const settings = yield* backendSettings().pipe(
+          Effect.provideService(ServerConfig, config),
+          Effect.provideService(FileSystem.FileSystem, fs),
+        );
+        const api = yield* connect(settings).pipe(Effect.provide(FetchHttpClient.layer));
+        const params = { ws: settings.workspace };
+        const stored = new Map<string, string>();
+        for (let i = 0; i < threads.length; i += LIMITS.ids) {
+          const ids = threads.slice(i, i + LIMITS.ids).map((t) => t.thread.id);
+          const { hashes } = yield* call(api.history.hashes({ params, payload: { ids } }));
+          for (const [id, sha] of Object.entries(hashes)) stored.set(id, sha);
+        }
+        let sent = 0;
+        for (const thread of threads) {
+          if (stored.get(thread.thread.id) === threadSha(thread)) continue;
+          // `same`: the backend had it, or won't keep it (deleted on request): not sent as new.
+          const { result } = yield* call(
+            api.history.putThread({ params, payload: threadJson(thread) }),
+          );
+          if (result !== "same") sent++;
+        }
+        return { api, params, sent };
+      });
+
+      const push = Effect.fn("HistorySync.push")(function* (
+        repoArg: string,
+        names: ReadonlyArray<string>,
+        source: SessionSource,
+      ) {
+        const repo = (yield* git(repoArg, ["rev-parse", "--show-toplevel"])).trim();
+        const loaded = yield* sessions
+          .load(repo, source)
+          .pipe(Effect.mapError((e) => new HistoryFailed({ message: e.message })));
+        const chosen = new Map<string, RepoSession>();
+        for (const name of names) {
+          const found = loaded.named(name);
+          if (found.length === 0)
+            return yield* new HistoryFailed({
+              message: `No session ${name} worked in ${repo} (or it ran no actions)`,
+            });
+          for (const s of found) chosen.set(s.thread.id, s);
+        }
+        // Its subagents, and theirs: what it delegated is part of what it did.
+        for (let grew = true; grew; ) {
+          grew = false;
+          for (const s of loaded.sessions)
+            if (s.thread.parent && chosen.has(s.thread.parent) && !chosen.has(s.thread.id)) {
+              chosen.set(s.thread.id, s);
+              grew = true;
+            }
+        }
+        const now = DateTime.formatIso(yield* DateTime.now);
+        const threads = [...chosen.values()].map((s) => threadRecordOf(s, now));
+        const { sent } = yield* sendThreads(threads);
+        const { clean } = redactor(config.home);
+        return {
+          threads: threads.map((t) => ({
+            id: t.thread.id,
+            title: clean(t.thread.title),
+            parent: t.thread.parent,
+          })),
+          sent,
+          unchanged: threads.length - sent,
+        };
+      }, Effect.provide(FetchHttpClient.layer));
+
       const sync = Effect.fn("HistorySync.sync")(function* (
         repoArg: string,
         range: string,
@@ -489,45 +591,11 @@ export class HistorySync extends Context.Service<
         });
         if (options.dryRun) return report(0, 0);
 
-        const threads: ThreadRecord[] = linked.flatMap((id) => {
+        const threads = linked.flatMap((id) => {
           const s = byId.get(id);
-          return s
-            ? [
-                buildThreadRecord({
-                  thread: s.thread,
-                  entries: s.entries,
-                  labels: s.labels,
-                  takenAt: now,
-                  toolreaderVersion: packageJson.version,
-                  maxOutput: MAX_OUTPUT,
-                  home: config.home,
-                  snapshot: s.snapshot,
-                  origin: s.origin,
-                }),
-              ]
-            : [];
+          return s ? [threadRecordOf(s, now)] : [];
         });
-        const settings = yield* backendSettings().pipe(
-          Effect.provideService(ServerConfig, config),
-          Effect.provideService(FileSystem.FileSystem, fs),
-        );
-        const api = yield* connect(settings).pipe(Effect.provide(FetchHttpClient.layer));
-        const params = { ws: settings.workspace };
-        const stored = new Map<string, string>();
-        for (let i = 0; i < threads.length; i += LIMITS.ids) {
-          const ids = threads.slice(i, i + LIMITS.ids).map((t) => t.thread.id);
-          const { hashes } = yield* call(api.history.hashes({ params, payload: { ids } }));
-          for (const [id, sha] of Object.entries(hashes)) stored.set(id, sha);
-        }
-        let sent = 0;
-        for (const thread of threads) {
-          if (stored.get(thread.thread.id) === threadSha(thread)) continue;
-          // `same`: the backend had it, or won't keep it (deleted on request): not sent as new.
-          const { result } = yield* call(
-            api.history.putThread({ params, payload: threadJson(thread) }),
-          );
-          if (result !== "same") sent++;
-        }
+        const { api, params, sent } = yield* sendThreads(threads);
         // Links last: a commit names only threads the backend has.
         for (const record of records)
           yield* call(api.history.putCommit({ params, payload: commitJson(record) }));
@@ -808,6 +876,7 @@ export class HistorySync extends Context.Service<
 
       return HistorySync.of({
         sync,
+        push,
         site,
         search,
         show,

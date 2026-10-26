@@ -538,6 +538,61 @@ describe("history sync", () => {
       }).pipe(Effect.scoped),
     );
 
+    it.effect("pushes a session by id with its subagents, linked to no commit", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { repo, home, codexHome } = yield* scenario;
+        yield* writeRollout(
+          codexHome,
+          "worker",
+          repo,
+          [
+            {
+              at: "2026-01-01T10:50:00.000Z",
+              item: {
+                type: "CommandExecution",
+                id: "w1",
+                command: ["/bin/zsh", "-lc", "open http://localhost:3111/withdrawals"],
+                cwd: repo,
+                status: "completed",
+                aggregated_output: "",
+                exit_code: 0,
+              },
+            },
+          ],
+          { source: { subagent: { other: "worker" } }, parent_thread_id: "coder" },
+        );
+        const server = yield* HttpServer.HttpServer;
+        const port = server.address._tag === "TcpAddress" ? server.address.port : 0;
+        const token = yield* Effect.flatMap(HistoryStore, (s) => s.createToken("pushed", "test"));
+        yield* fs.makeDirectory(`${home}/.toolreader`, { recursive: true });
+        yield* fs.writeFileString(
+          `${home}/.toolreader/config.json`,
+          encodeJson({
+            backend: { url: `http://127.0.0.1:${port}`, token, workspace: "pushed" },
+          }),
+        );
+        const report = yield* Effect.flatMap(HistorySync, (h) =>
+          h.push(repo, ["codex:coder"], "codex-rollouts"),
+        ).pipe(Effect.provide(services(home, codexHome)));
+        assert.deepStrictEqual(
+          report.threads.map((t) => [t.id, t.parent]),
+          [
+            ["codex:coder", null],
+            ["codex:worker", "codex:coder"],
+          ],
+        );
+        assert.deepStrictEqual([report.sent, report.unchanged], [2, 0]);
+        const store = yield* inWorkspace("pushed");
+        const [worker] = yield* store.threads(["codex:worker"]);
+        assert.strictEqual(worker?.thread.parent, "codex:coder");
+        const missing = yield* Effect.flip(
+          Effect.flatMap(HistorySync, (h) => h.push(repo, ["codex:nope"], "codex-rollouts")),
+        ).pipe(Effect.provide(services(home, codexHome)));
+        assert.include(missing.message, "No session codex:nope");
+      }).pipe(Effect.scoped),
+    );
+
     it.effect("finds a failure two sessions hit, and keeps the decision on it", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
