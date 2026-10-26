@@ -12,7 +12,7 @@ import { AGENT_LIMITS, AgentSql } from "./AgentSql.ts";
 import { HistoryStore } from "./HistoryStore.ts";
 import { PgMigrationsLive } from "./PgMigrations.ts";
 import { inWorkspace, PgTestLive } from "./testPostgres.ts";
-import { threadRecord } from "./testRecords.ts";
+import { commitRecord, threadRecord } from "./testRecords.ts";
 
 const TestLive = AgentSql.layer({ ...AGENT_LIMITS, timeout: Duration.seconds(1) }).pipe(
   Layer.provideMerge(HistoryStore.layer),
@@ -168,6 +168,73 @@ describe("AgentSql", () => {
         );
         assert.strictEqual(yield* live.checked([{ id: "codex:live", version: "other" }]), 0);
         assert.deepStrictEqual((yield* live.coverage).mayBeBehind, []);
+      }),
+    );
+
+    it.effect("reads each commit's links by role, its own workspace's only", () =>
+      Effect.gen(function* () {
+        const ws = yield* seeded("links", "codex:ours");
+        const store = yield* inWorkspace("links");
+        yield* store.putThread(threadRecord("codex:qa", steps));
+        yield* store.putCommit({
+          ...commitRecord("abc1234", ["codex:ours"]),
+          links: [
+            { threadId: "codex:ours", turns: ["u1"], via: "asserted", lines: 2, note: "wrote it" },
+            {
+              threadId: "codex:qa",
+              turns: [],
+              via: "asserted",
+              lines: 0,
+              role: "tested",
+              entries: ["a3"],
+              environment: "staging",
+              testedSha: "abc1234",
+              declaredBy: "codex:ours",
+            },
+          ],
+        });
+        yield* Effect.flatMap(inWorkspace("rival"), (s) =>
+          s.putCommit(commitRecord("def5678", ["codex:theirs"])),
+        );
+        const { rows } = yield* query(
+          ws,
+          `SELECT repo, sha, thread_id, role, via, turns, entries, environment, tested_sha, note, declared_by
+           FROM agent_commit_links ORDER BY role`,
+        );
+        assert.deepStrictEqual(rows, [
+          {
+            repo: "acme/app",
+            sha: "abc1234",
+            thread_id: "codex:ours",
+            role: "implemented",
+            via: "asserted",
+            turns: ["u1"],
+            entries: null,
+            environment: null,
+            tested_sha: null,
+            note: "wrote it",
+            declared_by: null,
+          },
+          {
+            repo: "acme/app",
+            sha: "abc1234",
+            thread_id: "codex:qa",
+            role: "tested",
+            via: "asserted",
+            turns: [],
+            entries: ["a3"],
+            environment: "staging",
+            tested_sha: "abc1234",
+            note: null,
+            declared_by: "codex:ours",
+          },
+        ]);
+        // Its thread deleted: its link goes from what agents read.
+        yield* Effect.flatMap(HistoryStore, (s) => s.deleteThread("links", "codex:qa"));
+        assert.deepStrictEqual(
+          (yield* query(ws, "SELECT thread_id FROM agent_commit_links")).rows,
+          [{ thread_id: "codex:ours" }],
+        );
       }),
     );
 

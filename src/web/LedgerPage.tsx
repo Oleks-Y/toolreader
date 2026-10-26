@@ -170,9 +170,11 @@ function LinkRow({
   return (
     <details className="ledger-link" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
       <summary>
-        <span className={`role ${link.role}`}>{link.role}</span> {link.thread.title}{" "}
+        <span className={`role ${link.role}`}>{link.claim ?? link.role}</span> {link.thread.title}{" "}
         <span className="dim" title={VIA_TEXT[link.via]}>
           by {link.via}
+          {link.environment && ` · on ${link.environment}`}
+          {link.testedSha && ` · ran on ${link.testedSha.slice(0, 8)}`}
           {link.thread.parent && " · subagent"}
           {stale && (
             <span className="stale"> · stale: reviewed {link.reviewedSha!.slice(0, 8)}</span>

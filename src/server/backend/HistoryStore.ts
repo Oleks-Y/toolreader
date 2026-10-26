@@ -1,6 +1,6 @@
 // Agent history in Postgres (TOOLREADER_DATABASE_URL), per workspace: threads (each one's whole
-// history, replaced when it grew) and commits (each one's links to those threads, replaced when
-// it is linked again). Workspaces and their API tokens live here too: this is the only module
+// history, replaced when it grew, never by an older read) and commits (each one's links to those
+// threads, merged per thread and role when it is linked again). Workspaces and their API tokens live here too: this is the only module
 // that knows the tables (Migrations/).
 import * as NodeCrypto from "node:crypto";
 
@@ -19,6 +19,7 @@ import { PgClient } from "@effect/sql-pg/PgClient";
 import {
   CommitRecordV1,
   lastAt,
+  mergeCommit,
   readCommit,
   staleCopy,
   type SOURCE_STATES,
@@ -350,7 +351,10 @@ export type WorkspaceStore = {
     ids: ReadonlyArray<string>,
     repo?: string | undefined,
   ) => Effect.Effect<ReadonlyArray<ThreadRecord>, HistoryStoreFailed>;
-  /** Replaces the commit's links: a commit linked again says everything about it again. */
+  /**
+   * Keeps the commit's links, merged per (thread, role) into what's stored (`mergeCommit`): a
+   * link another machine sent stays until a record unlinks it.
+   */
   readonly putCommit: (
     record: CommitRecord,
   ) => Effect.Effect<PutResult, HistoryStoreFailed | HistoryRefused>;
@@ -620,16 +624,40 @@ export class HistoryStore extends Context.Service<
       );
 
       const putCommit = Effect.fn("HistoryStore.putCommit")(
-        function* (writer: Writer, record: CommitRecord) {
-          const payload = forJsonb(encodeCommitJson(record));
+        function* (writer: Writer, incoming: CommitRecord) {
+          // The first put inserts; any other merges into what's there per (thread, role), under
+          // its row lock: machines that sync the same commit, at once too, each keep their links.
+          const first = mergeCommit(null, incoming);
+          const inserted = yield* sql`
+            INSERT INTO commits ${sql.insert({
+              workspace_id: writer.workspaceId,
+              repo: first.repo,
+              sha: first.sha,
+              payload: forJsonb(encodeCommitJson(first)),
+              content_sha: commitSha(first),
+              uploaded_by: writer.tokenId,
+              client: writer.client,
+            })}
+            ON CONFLICT (workspace_id, repo, sha) DO NOTHING
+            RETURNING sha`;
+          if (inserted.length > 0) return "inserted" as const;
+          const [row] = yield* sql`
+            SELECT payload FROM commits
+            WHERE workspace_id = ${writer.workspaceId} AND repo = ${incoming.repo}
+              AND sha = ${incoming.sha}
+            FOR UPDATE`.pipe(Effect.flatMap(decodePayloadRows));
+          // One a newer toolreader wrote can't be merged into: replaced, as before merging.
+          const stored = row ? Result.getOrNull(readCommit(row.payload)) : null;
+          const record = mergeCommit(stored, incoming);
           return yield* upsert(
             "commits",
             { repo: record.repo, sha: record.sha },
-            payload,
+            forJsonb(encodeCommitJson(record)),
             commitSha(record),
             writer,
           );
         },
+        (self) => sql.withTransaction(self),
         Effect.mapError(putFailed),
         bounded,
       );

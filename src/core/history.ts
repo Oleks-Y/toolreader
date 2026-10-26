@@ -43,6 +43,15 @@ export type ThreadLink = {
   readonly checks?: ReadonlyArray<Check>;
   /** The files its session was seen reading for this commit (coverage.ts), added by `history sync`. */
   readonly reads?: Reads;
+  /** What it claims (declare.ts `EVIDENCE_ROLES`); absent: it implemented the commit. */
+  readonly role?: "tested" | "reviewed" | "deployed";
+  /** The entries that show it, when the declaration named entries instead of turns. */
+  readonly entries?: ReadonlyArray<string>;
+  /** The thread's content hash when the link was resolved: the version its turns and entries cite. */
+  readonly version?: string;
+  /** Where it ran (`staging`), and the commit it ran on, as the declaration said. */
+  readonly environment?: string;
+  readonly testedSha?: string;
 };
 
 export type CommitHistory = {
@@ -52,6 +61,11 @@ export type CommitHistory = {
   readonly explained: number;
   /** Most lines first. */
   readonly links: ReadonlyArray<ThreadLink>;
+  /** Links declared away: the backend drops them from what other machines sent. */
+  readonly unlinked?: ReadonlyArray<{
+    readonly threadId: string;
+    readonly role?: "implemented" | "tested" | "reviewed" | "deployed";
+  }>;
   /** Each matched thread's novel lines, to recount `explained` when links change; never stored. */
   readonly hits?: ReadonlyMap<string, ReadonlySet<string>>;
 };

@@ -779,6 +779,92 @@ describe("history sync", () => {
         }).pipe(Effect.scoped),
     );
 
+    it.effect("attaches testing to a commit pushed before, beside what's already linked", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { repo, home, codexHome } = yield* scenario;
+        const server = yield* HttpServer.HttpServer;
+        const port = server.address._tag === "TcpAddress" ? server.address.port : 0;
+        const token = yield* Effect.flatMap(HistoryStore, (s) => s.createToken("tested", "test"));
+        yield* fs.makeDirectory(`${home}/.toolreader`, { recursive: true });
+        yield* fs.writeFileString(
+          `${home}/.toolreader/config.json`,
+          encodeJson({ backend: { url: `http://127.0.0.1:${port}`, token, workspace: "tested" } }),
+        );
+        const sync = (range: string) =>
+          Effect.flatMap(HistorySync, (h) =>
+            h.sync(repo, range, { source: "codex-rollouts", dryRun: false }),
+          ).pipe(Effect.provide(services(home, codexHome)));
+        yield* sync("main~2..main");
+        const [, store] = (yield* git(repo, ["rev-list", "main~2..main"])).split("\n");
+        // Hours later, a QA session tests the store on staging and says so.
+        yield* writeRollout(codexHome, "qa", repo, [
+          {
+            at: "2026-01-01T15:00:00.000Z",
+            item: { type: "UserMessage", id: "q1", content: [{ type: "text", text: "QA it" }] },
+          },
+          {
+            at: "2026-01-01T15:01:00.000Z",
+            item: {
+              type: "CommandExecution",
+              id: "q2",
+              command: ["/bin/zsh", "-lc", "vitest run --project staging"],
+              cwd: repo,
+              status: "completed",
+              aggregated_output: "3 passed",
+              exit_code: 0,
+            },
+          },
+          {
+            at: "2026-01-01T15:02:00.000Z",
+            item: {
+              type: "CommandExecution",
+              id: "q3",
+              command: [
+                "/bin/zsh",
+                "-lc",
+                `toolreader history link --sha ${store!.slice(0, 8)} --role tested --entry q2 --environment staging`,
+              ],
+              cwd: repo,
+              status: "completed",
+              aggregated_output: `history link: ${store} for ${store!.slice(0, 8)}`,
+              exit_code: 0,
+            },
+          },
+        ]);
+        // A later push: the store isn't in its range, and still gets the testing.
+        yield* fs.writeFileString(`${repo}/later.ts`, "export const later = 'a later change';\n");
+        yield* git(repo, ["add", "later.ts"]);
+        yield* git(repo, ["commit", "-q", "-m", "chore: later"], "2026-01-01T16:00:00Z");
+        const report = yield* sync("main~1..main");
+        assert.deepStrictEqual(
+          report.commits.map(({ record }) => record.subject),
+          ["chore: later", "feat: store.ts"],
+        );
+        const [stored] = yield* Effect.flatMap(inWorkspace("tested"), (s) =>
+          s.commits("acme/app", [store!]),
+        );
+        assert.deepStrictEqual(
+          stored?.links.map((l) => [l.threadId, l.role, l.via, l.entries, l.environment]),
+          [
+            ["codex:coder", undefined, "trailer", undefined, undefined],
+            ["codex:qa", "tested", "asserted", ["q2"], "staging"],
+          ],
+        );
+        const qa = stored!.links[1]!;
+        // Its check, though it ran hours after the commit; cited at the version linked.
+        assert.deepStrictEqual(
+          qa.checks?.map((c) => [c.actionId, c.outcome]),
+          [["q2", "passed"]],
+        );
+        assert.match(qa.version ?? "", /^[0-9a-f]{64}$/);
+        assert.include(
+          reportLines(report, false).join("\n"),
+          "(tested on staging, declared: 1 entry)",
+        );
+      }).pipe(Effect.scoped),
+    );
+
     it.effect("pushes a session by id with its subagents, linked to no commit", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;

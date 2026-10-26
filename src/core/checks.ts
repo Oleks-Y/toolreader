@@ -275,3 +275,25 @@ export function checksFor(input: {
     ];
   });
 }
+
+/**
+ * The checks behind one link. One that names its entries (`entryIds`: `history link --entry`) gets those
+ * entries' checks, and evidence linked by turns (a `tested` link to a commit made before) the
+ * checks of those turns, whenever they ran; an implemented link gets `checksFor`, cut off at the
+ * commit.
+ */
+export function checksForEvidence(
+  input: Parameters<typeof checksFor>[0] & {
+    readonly entryIds?: ReadonlyArray<string> | undefined;
+    readonly role?: string | undefined;
+  },
+): Check[] {
+  const evidence = !!input.role && input.role !== "implemented";
+  if (!input.entryIds?.length && !(evidence && input.turns.length > 0)) return checksFor(input);
+  const named = new Set(input.entryIds?.length ? input.entryIds : input.turns);
+  return checksFor({
+    ...input,
+    turns: input.entryIds?.length ? [] : input.turns,
+    committedAt: "9999-12-31T23:59:59.999Z",
+  }).filter((c) => named.has(input.entryIds?.length ? c.actionId : c.turn));
+}

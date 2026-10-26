@@ -116,24 +116,94 @@ describe("HistoryStore", () => {
       }),
     );
 
-    it.effect("replaces a commit's links, and keeps workspaces apart", () =>
+    it.effect("merges a commit's links per thread and role, and keeps workspaces apart", () =>
       Effect.gen(function* () {
         const ours = yield* inWorkspace("ours");
         const theirs = yield* inWorkspace("theirs");
+        const links = (sha: string) =>
+          Effect.map(ours.commits("acme/app", [sha]), ([c]) =>
+            (c?.links ?? []).map((l) => [l.threadId, l.role ?? "implemented"]),
+          );
         assert.strictEqual(yield* ours.putCommit(commitRecord("abc1234", ["t1"])), "inserted");
         assert.strictEqual(yield* ours.putCommit(commitRecord("abc1234", ["t1"])), "same");
-        // Linked again after a split: what it says now is what holds.
-        assert.strictEqual(yield* ours.putCommit(commitRecord("abc1234", ["t2"])), "updated");
-        assert.deepStrictEqual(
-          (yield* ours.commits("acme/app", ["abc1234", "other"])).map((c) =>
-            c.links.map((l) => l.threadId),
-          ),
-          [["t2"]],
+        // Another machine's sync of the same commit: its tester's link joins the implementer's.
+        const tested = commitRecord("abc1234", []);
+        assert.strictEqual(
+          yield* ours.putCommit({
+            ...tested,
+            links: [
+              {
+                threadId: "t1",
+                turns: ["u5"],
+                via: "asserted",
+                lines: 0,
+                role: "tested",
+                environment: "staging",
+              },
+              { threadId: "qa", turns: ["q1"], via: "asserted", lines: 0, role: "tested" },
+            ],
+          }),
+          "updated",
         );
+        assert.deepStrictEqual(yield* links("abc1234"), [
+          ["t1", "implemented"],
+          ["t1", "tested"],
+          ["qa", "tested"],
+        ]);
+        // The first machine again, as it was: nothing of the second's goes.
+        assert.strictEqual(yield* ours.putCommit(commitRecord("abc1234", ["t1"])), "same");
+        // An unlink is carried, by role or for every role of the thread.
+        assert.strictEqual(
+          yield* ours.putCommit({
+            ...commitRecord("abc1234", ["t1"]),
+            unlinked: [{ threadId: "t1", role: "tested" }, { threadId: "qa" }],
+          }),
+          "updated",
+        );
+        assert.deepStrictEqual(yield* links("abc1234"), [["t1", "implemented"]]);
+        assert.isUndefined((yield* ours.commits("acme/app", ["abc1234"]))[0]?.unlinked);
         assert.deepStrictEqual(yield* theirs.commits("acme/app", ["abc1234"]), []);
         yield* ours.putThread(threadRecord("t2", [message("u1", "x")]));
         assert.deepStrictEqual(yield* theirs.threads(["t2"]), []);
       }),
+    );
+
+    it.effect(
+      "keeps both of two first puts of one commit, and what the implementer said of it",
+      () =>
+        Effect.gen(function* () {
+          const store = yield* inWorkspace("race");
+          // A few times over: the two puts interleave differently each time.
+          for (const sha of ["feed120", "feed121", "feed122", "feed123", "feed124"]) {
+            const tested = {
+              ...commitRecord(sha, []),
+              subject: "something a tester's clone says",
+              novel: 0,
+              links: [
+                {
+                  threadId: "qa",
+                  turns: ["q1"],
+                  via: "asserted",
+                  lines: 0,
+                  role: "tested",
+                } as const,
+              ],
+            };
+            // Two machines' first syncs of the same commit, at once.
+            const results = yield* Effect.all(
+              [store.putCommit(commitRecord(sha, ["t1"])), store.putCommit(tested)],
+              { concurrency: "unbounded" },
+            );
+            assert.sameMembers([...results], ["inserted", "updated"]);
+            const [c] = yield* store.commits("acme/app", [sha]);
+            assert.sameMembers(
+              c!.links.map((l) => `${l.threadId}:${l.role ?? "implemented"}`),
+              ["t1:implemented", "qa:tested"],
+            );
+            // Whichever came first, the commit is what the record with its implementer says.
+            assert.deepStrictEqual([c!.subject, c!.novel, c!.explained], ["feat: a", 4, 3]);
+          }
+        }),
     );
 
     it.effect("lists repos and pages a repo's ledger newest first, linked commits only", () =>

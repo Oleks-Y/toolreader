@@ -57,10 +57,25 @@ toolreader history link --sha <commit> --session <id> --turns 2-6 --note "…"
 Your own splitting turns didn't write that code: link them only to commits you changed by hand.
 A rebase keeps declarations whose patch didn't change; after a squash or a split, declare again.
 
+## When you tested, reviewed or deployed a commit
+
+Link that too, with its role, from the session that did it, whenever you did it: testing can be
+attached to an older commit, already pushed, and a thread can be both the one that implemented a
+commit and the one that tested it. Name the entries that show it when the turns hold more
+(\`toolreader history turns --entries\` lists them by id):
+
+\`\`\`bash
+toolreader history link --sha <commit> --role tested --environment staging --note "<what you checked>"
+toolreader history link --sha <commit> --role tested --entry <entry id> --entry <entry id> --tested-sha <sha it ran on>
+\`\`\`
+
+A role is a claim of relevance, not of success: readers judge the linked entries, failures
+included. Roles: \`implemented\` (the default), \`tested\`, \`reviewed\`, \`deployed\`.
+
 ## When a link is wrong
 
 \`\`\`bash
-toolreader history unlink --sha <commit> [--session <id>]
+toolreader history unlink --sha <commit> [--role <role>] [--session <id>]
 \`\`\`
 
 ## Rules
