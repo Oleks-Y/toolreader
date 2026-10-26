@@ -31,6 +31,7 @@ import {
   LengthRequired,
   LIMITS,
   NotFound,
+  QueryRefused,
   Rejected,
   TooLarge,
   Unauthorized,
@@ -44,6 +45,7 @@ import {
 } from "../../core/historyRecord.ts";
 import { hunkKey } from "../../core/blame.ts";
 import { detect } from "../../core/insights.ts";
+import { AgentSql } from "./AgentSql.ts";
 import { GitHub } from "./GitHub.ts";
 import { HistoryStore, type HistoryRefused, type HistoryStoreFailed } from "./HistoryStore.ts";
 
@@ -201,6 +203,7 @@ const HistoryHandlers = HttpApiBuilder.group(
   Effect.fn(function* (handlers) {
     const pg = yield* HistoryStore;
     const github = yield* GitHub;
+    const agentSql = yield* AgentSql;
     /** The caller's workspace, written as the caller (its token or login, and client version). */
     const scoped = Effect.gen(function* () {
       const caller = yield* Caller;
@@ -381,6 +384,14 @@ const HistoryHandlers = HttpApiBuilder.group(
           ),
         ),
       )
+      .handle("sql", ({ payload }) =>
+        Effect.flatMap(Caller, (caller) => agentSql.query(caller.workspaceId, payload.query)).pipe(
+          Effect.catchTags({
+            AgentQueryFailed: (e) => Effect.fail(new QueryRefused({ message: e.message })),
+            HistoryStoreFailed: () => Effect.fail(failed()),
+          }),
+        ),
+      )
       .handle("commits", ({ params, payload }) =>
         readable(params.repo).pipe(
           Effect.andThen(Effect.flatMap(scoped, (s) => s.commits(params.repo, payload.shas))),
@@ -432,10 +443,11 @@ const BrowseHandlers = HttpApiBuilder.group(
   }),
 );
 
-/** The API's routes, needing only the store: tests serve them on a test server. */
+/** The API's routes, needing only the store and its pool: tests serve them on a test server. */
 export const BackendRoutes = HttpApiBuilder.layer(BackendApi).pipe(
   Layer.provide([SystemHandlers, HistoryHandlers, BrowseHandlers]),
   Layer.provide([AuthorizationLive, ClientVersionLive, BodyLimitLive]),
+  Layer.provide(AgentSql.layer()),
 );
 
 /**

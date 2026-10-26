@@ -180,6 +180,36 @@ describe("Backend", () => {
       }),
     );
 
+    it.effect("runs an agent's SQL over every conversation in its workspace, members' too", () =>
+      Effect.gen(function* () {
+        const machine = yield* clientWith(headers(yield* token("sql")));
+        const params = { ws: "sql" };
+        yield* machine.history.putThread({
+          params,
+          payload: threadRecord("t1", [message("u1", "Add a")]),
+        });
+        // Linked to no commit, in no repo: still readable by id.
+        const query = "SELECT thread_id, turn, text FROM agent_entries WHERE thread_id = 't1'";
+        assert.deepStrictEqual(yield* machine.history.sql({ params, payload: { query } }), {
+          rows: [{ thread_id: "t1", turn: 1, text: "Add a" }],
+          truncated: false,
+        });
+        // sam reads no repo of ours on GitHub, and still reads the workspace's conversations.
+        yield* Effect.flatMap(HistoryStore, (s) => s.addMember("sql", "sam"));
+        const sam = yield* clientWith(headers("gho_sam"));
+        assert.strictEqual((yield* sam.history.sql({ params, payload: { query } })).rows.length, 1);
+        const refused = yield* Effect.flip(
+          machine.history.sql({ params, payload: { query: "SELECT * FROM threads" } }),
+        );
+        assert.strictEqual(refused._tag, "QueryRefused");
+        assert.include(refused.message, "permission denied");
+        const other = yield* Effect.flip(
+          machine.history.sql({ params: { ws: "else" }, payload: { query } }),
+        );
+        assert.strictEqual(other._tag, "Forbidden");
+      }),
+    );
+
     it.effect("refuses a body over the limit before reading it (413)", () =>
       Effect.gen(function* () {
         const good = yield* token("big");
