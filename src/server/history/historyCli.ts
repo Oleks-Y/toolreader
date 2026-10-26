@@ -3,6 +3,7 @@
 //   toolreader history sync (--range A..B | --pr N | --sha X) [--repo PATH]
 //                           [--source auto|t3|codex-app-server|codex-rollouts|claude-transcripts]
 //                           [--dry-run] [--hook]
+//   toolreader history push SESSION… [--repo PATH] [--source …]
 //   toolreader history site (--range A..B | --pr N) [--repo PATH] [--out DIR]
 //   toolreader history audit [--repo PATH] [--source …]           (core/audit.ts)
 //   toolreader history login                                     (githubLogin.ts)
@@ -255,6 +256,41 @@ const sync = Command.make(
 ).pipe(
   Command.withDescription(
     "Sync a range's explicit agent declarations and session trailers to the backend",
+  ),
+);
+
+const push = Command.make(
+  "push",
+  {
+    sessions: Argument.string("session").pipe(
+      Argument.withDescription(
+        "A thread id, codex:<id> or claude:<id>; its subagents go with it (repeatable)",
+      ),
+      Argument.atLeast(1),
+    ),
+    repo: Flag.string("repo").pipe(
+      Flag.withDescription("Repository (any path inside it) the sessions worked in"),
+      Flag.withDefault("."),
+    ),
+    source: Flag.choice("source", SESSION_SOURCES).pipe(
+      Flag.withDescription("Where sessions come from, as for sync"),
+      Flag.withDefault("auto"),
+    ),
+  },
+  Effect.fn("toolreader history push")(function* (flags) {
+    const repo = (yield* Path.Path).resolve(flags.repo);
+    const report = yield* Effect.flatMap(HistorySync, (h) =>
+      h.push(repo, flags.sessions, flags.source),
+    ).pipe(Effect.provide(CliApp({ appServer: false, codexHome: null })));
+    for (const t of report.threads)
+      yield* Console.log(
+        `${t.id}${t.parent ? ` (subagent of ${t.parent})` : ""} · ${short(title(t.title))}`,
+      );
+    yield* Console.log(`${report.sent} sent, ${report.unchanged} unchanged`);
+  }),
+).pipe(
+  Command.withDescription(
+    "Send sessions whole, with their subagents, so agents elsewhere can read them by id (redacted, as sync sends them)",
   ),
 );
 
@@ -928,6 +964,7 @@ export const historyCommand = Command.make("history").pipe(
   Command.withDescription("Agent history per commit, kept on the history backend"),
   Command.withSubcommands([
     sync,
+    push,
     site,
     login,
     search,

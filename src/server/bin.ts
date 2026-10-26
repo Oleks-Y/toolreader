@@ -1,5 +1,5 @@
 // The `toolreader` CLI: `serve` (the viewer), `export`, `history sync|site|hook`,
-// `backend serve|token`.
+// `backend serve|token`, `mcp`.
 // Published bundled (`vp pack` → dist/bin.mjs); in this repo, `node src/server/bin.ts <command>`.
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -12,6 +12,7 @@ import { AppLive } from "./app.ts";
 import { backendCommand } from "./backend/backendCli.ts";
 import { exportCommand } from "./export.ts";
 import { historyCommand } from "./history/historyCli.ts";
+import { mcpCommand } from "./history/mcp.ts";
 import { HttpServerLive } from "./http.ts";
 import { ServerConfig } from "./ServerConfig.ts";
 
@@ -32,7 +33,7 @@ const serve = Command.make("serve", {}, () =>
 
 Command.make("toolreader").pipe(
   Command.withDescription("What coding agents did: sessions, and agent history per commit"),
-  Command.withSubcommands([serve, exportCommand, historyCommand, backendCommand]),
+  Command.withSubcommands([serve, exportCommand, historyCommand, backendCommand, mcpCommand]),
   Command.run({ version: packageJson.version }),
   Effect.provide(NodeServices.layer),
   NodeRuntime.runMain,
