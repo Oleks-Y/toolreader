@@ -10,13 +10,27 @@ set -eu
 # A backend set in your shell would take the test's records: never yours.
 unset TOOLREADER_BACKEND_URL TOOLREADER_BACKEND_TOKEN TOOLREADER_BACKEND_WORKSPACE
 unset TOOLREADER_DATABASE_URL
+# Nor may your git or XDG config: no hooks path, signing, aliases or credential helpers of yours.
+export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+unset XDG_CONFIG_HOME
 
 image=$(sed -n 's/^const IMAGE = "\(.*\)";$/\1/p' src/server/backend/testPostgres.ts)
 version=$(node -p 'require("./package.json").version')
 tmp=$(cd "$(mktemp -d)" && pwd -P)
 cid=""
 backend=""
+# A capture job still running (its pid is in its lock file, which it writes itself): stopped by that
+# pid alone. The pre-push job leaves no pid; the script waits for its log line before going on.
+stop_captures() {
+  for lock in "$tmp"/home/.toolreader/capture-*.lock; do
+    [ -f "$lock" ] || continue
+    pid=$(cat "$lock" 2> /dev/null || true)
+    case "$pid" in '' | *[!0-9]*) continue ;; esac
+    kill "$pid" 2> /dev/null || true
+  done
+}
 cleanup() {
+  stop_captures
   if [ -n "$backend" ]; then kill "$backend" 2>/dev/null || true; fi
   if [ -n "$cid" ]; then docker rm -f "$cid" > /dev/null; fi
   rm -rf "$tmp"
@@ -103,13 +117,14 @@ done
 log=$(cat "$HOME/.toolreader/history.log")
 expect "acme/smoke: 1 thread sent" "$log"
 
-# A QA subagent it delegated afterwards: it ran outside the repo, changed nothing and made no
-# commit. The parent's Stop hook sends it, with no git push involved.
+# A QA subagent it delegated afterwards: it changed nothing and made no commit, and declared it
+# tested the pushed one on staging. The parent's Stop hook sends both, with no git push involved.
 cat > "$rollouts/rollout-2026-01-01T10-30-00-smoke-qa.jsonl" << EOF
-{"timestamp":"$at","type":"session_meta","payload":{"id":"smoke-qa","timestamp":"$at","cwd":"$tmp","originator":"codex_exec","source":{"subagent":{"other":"qa"}},"parent_thread_id":"smoke-1"}}
+{"timestamp":"$at","type":"session_meta","payload":{"id":"smoke-qa","timestamp":"$at","cwd":"$repo","originator":"codex_exec","source":{"subagent":{"other":"qa"}},"parent_thread_id":"smoke-1"}}
 {"timestamp":"$at","type":"event_msg","payload":{"type":"task_started","turn_id":"q1"}}
 {"timestamp":"$at","type":"event_msg","payload":{"type":"item_completed","turn_id":"q1","item":{"type":"UserMessage","id":"q1","content":[{"type":"text","text":"check staging"}]}}}
-{"timestamp":"$at","type":"event_msg","payload":{"type":"item_completed","turn_id":"q1","item":{"type":"CommandExecution","id":"q2","command":["/bin/sh","-lc","curl -sf https://staging.example.test/health"],"cwd":"$tmp","status":"completed","aggregated_output":"ok","exit_code":0}}}
+{"timestamp":"$at","type":"event_msg","payload":{"type":"item_completed","turn_id":"q1","item":{"type":"CommandExecution","id":"q2","command":["/bin/sh","-lc","curl -sf https://staging.example.test/health"],"cwd":"$repo","status":"completed","aggregated_output":"ok","exit_code":0}}}
+{"timestamp":"$at","type":"event_msg","payload":{"type":"item_completed","turn_id":"q1","item":{"type":"CommandExecution","id":"q3","command":["/bin/sh","-lc","toolreader history link --sha $sha --role tested --environment staging"],"cwd":"$repo","status":"completed","aggregated_output":"history link: $sha for $sha","exit_code":0}}}
 {"timestamp":"$at","type":"event_msg","payload":{"type":"task_complete","turn_id":"q1"}}
 EOF
 printf '{"session_id":"smoke-1","cwd":"%s","hook_event_name":"Stop"}' "$repo" |
@@ -118,11 +133,20 @@ for _ in $(seq 60); do
   grep -q "capture smoke-1" "$HOME/.toolreader/history.log" 2> /dev/null && break
   sleep 0.5
 done
+# Its log written, the job releases its lock as it exits.
+for _ in $(seq 20); do
+  ls "$HOME"/.toolreader/capture-*.lock > /dev/null 2>&1 || break
+  sleep 0.5
+done
 log=$(cat "$HOME/.toolreader/history.log")
 expect "codex:smoke-qa (subagent of codex:smoke-1)" "$log"
 expect "1 sent, 1 unchanged" "$log"
 expect '"parent":"codex:smoke-1"' \
   "$("$tr" --log-level error history sql "SELECT parent FROM agent_threads WHERE id = 'codex:smoke-qa'" 2> /dev/null)"
+# The commit, pushed before, now holds the testing beside the work.
+links=$("$tr" --log-level error history sql "SELECT thread_id, role, environment FROM agent_commit_links WHERE sha = '$sha' ORDER BY role" 2> /dev/null)
+expect '"thread_id":"codex:smoke-1","role":"implemented"' "$links"
+expect '"thread_id":"codex:smoke-qa","role":"tested","environment":"staging"' "$links"
 expect "Delivery: nothing pending" "$("$tr" --log-level error history status --repo "$repo" --check)"
 if printf '%s\n' "$log" | grep -q "✗"; then
   printf 'smoke: a hook failed:\n%s\n' "$log" >&2
