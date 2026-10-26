@@ -18,7 +18,9 @@ import { PgClient } from "@effect/sql-pg/PgClient";
 
 import {
   CommitRecordV1,
+  lastAt,
   readCommit,
+  staleCopy,
   type SOURCE_STATES,
   readThread,
   ThreadRecordV1,
@@ -81,6 +83,17 @@ export class FindingConflict extends Schema.TaggedErrorClass<FindingConflict>()(
 
 /** `same`: it was there with this content already. */
 export type PutResult = "inserted" | "updated" | "same";
+/** A thread's put: also refused because it was removed (deleted on request, or this version expired). */
+export type ThreadPutResult = PutResult | "deleted" | "expired";
+
+/**
+ * The stored copy of a thread is newer than the one sent (its entries extend the sent ones, with
+ * a later last entry or as late): a client that read the session earlier, or on another machine,
+ * must not replace it.
+ */
+export class StaleThread extends Schema.TaggedErrorClass<StaleThread>()("StaleThread", {
+  reason: Schema.Literals(["older-last-entry", "fewer-entries"]),
+}) {}
 
 /** Who writes: the workspace, the token (null: tests, tools, GitHub sign-ins) and the client's version. */
 export type Writer = {
@@ -153,6 +166,15 @@ const decodeEvidenceRows = Schema.decodeUnknownEffect(Schema.Array(EvidenceRow))
 const decodeEntry = Schema.decodeUnknownOption(Entry);
 const CountRow = Schema.Struct({ n: Schema.Number });
 const decodeCountRows = Schema.decodeUnknownEffect(Schema.Array(CountRow));
+const decodeStoredRows = Schema.decodeUnknownEffect(
+  Schema.Array(
+    Schema.Struct({
+      entries: Schema.Array(
+        Schema.Struct({ id: Schema.NullOr(Schema.String), at: Schema.NullOr(Schema.String) }),
+      ),
+    }),
+  ),
+);
 const decodeCoverageCounts = Schema.decodeUnknownEffect(
   Schema.Array(
     Schema.Struct({ threads: Schema.Number, behind: Schema.Number, asOf: Schema.String }),
@@ -309,7 +331,7 @@ export type WorkspaceStore = {
   ) => Effect.Effect<ReadonlyMap<string, string>, HistoryStoreFailed>;
   readonly putThread: (
     record: ThreadRecord,
-  ) => Effect.Effect<PutResult, HistoryStoreFailed | HistoryRefused>;
+  ) => Effect.Effect<ThreadPutResult, HistoryStoreFailed | HistoryRefused | StaleThread>;
   /**
    * Marks the threads whose stored content hash is `version` checked now, with what their
    * source says; how many matched.
@@ -534,19 +556,37 @@ export class HistoryStore extends Context.Service<
       };
 
       const putThread = Effect.fn("HistoryStore.putThread")(
-        function* (writer: Writer, record: ThreadRecord) {
+        function* (writer: Writer, sent: ThreadRecord) {
+          // Its last entry as its entries say, not as the client did.
+          const { lastEntryAt: _, ...rest } = sent;
+          const last = lastAt(sent.entries);
+          const record: ThreadRecord = last ? { ...rest, lastEntryAt: last } : rest;
           // Deleted on request: never stored again. Expired: not this version again.
           const [gone] = yield* sql`
             SELECT version, reason FROM removed
             WHERE workspace_id = ${writer.workspaceId} AND thread_id = ${record.thread.id}`.pipe(
             Effect.flatMap(decodeRemovedRows),
           );
-          if (gone && (gone.reason === "deleted" || gone.version === threadSha(record)))
-            return "same" as const;
+          if (gone?.reason === "deleted") return "deleted" as const;
+          if (gone && gone.version === threadSha(record)) return "expired" as const;
           if (gone)
             yield* sql`
               DELETE FROM removed
               WHERE workspace_id = ${writer.workspaceId} AND thread_id = ${record.thread.id}`;
+          // An older read of the same history never replaces a newer one, whatever client sent
+          // it: judged on the entries (`staleCopy`), never on the `lastEntryAt` a client claims.
+          yield* sql`
+            SELECT 1 FROM threads
+            WHERE workspace_id = ${writer.workspaceId} AND id = ${record.thread.id} FOR UPDATE`;
+          const [stored] = yield* sql`
+            SELECT coalesce(jsonb_agg(jsonb_build_object('id', e->>'id', 'at', e->>'at')
+                                      ORDER BY n), '[]'::jsonb) AS entries
+            FROM threads t, jsonb_array_elements(t.payload->'entries') WITH ORDINALITY x(e, n)
+            WHERE t.workspace_id = ${writer.workspaceId} AND t.id = ${record.thread.id}`.pipe(
+            Effect.flatMap(decodeStoredRows),
+          );
+          const stale = staleCopy(sent.entries, stored?.entries ?? []);
+          if (stale) return yield* new StaleThread({ reason: stale });
           const payload = forJsonb(encodeThreadJson(record));
           const result = yield* upsert(
             "threads",
@@ -575,7 +615,7 @@ export class HistoryStore extends Context.Service<
           return result;
         },
         (self) => sql.withTransaction(self),
-        Effect.mapError(putFailed),
+        Effect.mapError((e) => (e._tag === "StaleThread" ? e : putFailed(e))),
         bounded,
       );
 

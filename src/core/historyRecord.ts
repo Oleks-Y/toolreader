@@ -260,8 +260,25 @@ export function buildThreadRecord(input: {
   };
 }
 
+/**
+ * Why `incoming` is a stale read of the `stored` copy of a thread, or null when it may replace
+ * it: only when its entries are a strict prefix of the stored ones (the same history, read
+ * earlier). A shorter history that diverges (a rollback, a reader that merges differently) may.
+ * Judged on entries alone, never on what a client says its last entry was. Pure.
+ */
+export function staleCopy(
+  incoming: ReadonlyArray<{ readonly id: string | null; readonly at: string | null }>,
+  stored: ReadonlyArray<{ readonly id: string | null; readonly at: string | null }>,
+): "older-last-entry" | "fewer-entries" | null {
+  if (incoming.length >= stored.length) return null;
+  if (!incoming.every((e, i) => e.id === stored[i]!.id)) return null;
+  const newest = (es: typeof incoming) =>
+    es.reduce((m, e) => Math.max(m, Date.parse(e.at ?? "") || -Infinity), -Infinity);
+  return newest(incoming) < newest(stored) ? "older-last-entry" : "fewer-entries";
+}
+
 /** The newest entry's time, as the entry has it. */
-const lastAt = (entries: ReadonlyArray<Entry>) => {
+export const lastAt = (entries: ReadonlyArray<Entry>) => {
   let best: string | undefined;
   for (const e of entries)
     if (Number.isFinite(Date.parse(e.at)) && (!best || Date.parse(e.at) > Date.parse(best)))
