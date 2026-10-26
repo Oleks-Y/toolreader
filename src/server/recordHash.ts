@@ -19,6 +19,9 @@ export const sha256 = (s: string) => NodeCrypto.createHash("sha256").update(s).d
 export const forJsonb = (json: string) =>
   json.replace(/(?<!\\)((?:\\\\)*)\\u(?:0000|d[89a-f][0-9a-f]{2})/g, "$1\\ufffd");
 
-/** The thread's content: not when or by which version it was read. */
-export const threadSha = (record: ThreadRecord) =>
+/**
+ * The thread's content: not when or by which version it was read, nor how current that read was
+ * (`lastEntryAt`, `sourceState`), so a thread is resent only when its history changed.
+ */
+export const threadSha = ({ lastEntryAt: _, sourceState: __, ...record }: ThreadRecord) =>
   sha256(forJsonb(encodeThreadJson({ ...record, takenAt: "", toolreaderVersion: "" })));

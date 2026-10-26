@@ -64,7 +64,7 @@ import {
   minute,
   pending,
 } from "./historyHooks.ts";
-import type { Evidence, SearchHit } from "../../core/historyApi.ts";
+import type { Coverage, Evidence, SearchHit } from "../../core/historyApi.ts";
 import {
   FINDING_STATUSES,
   type Finding,
@@ -525,6 +525,16 @@ const search = Command.make(
   ),
 );
 
+/** A SQL result's coverage, as `history sql` prints it to stderr. */
+export const coverageLines = (c: Coverage): string[] => [
+  `as of ${c.asOf}: ${c.threads} conversation${c.threads === 1 ? "" : "s"} in the workspace, ${c.behind} may be behind their live session`,
+  ...c.mayBeBehind.map(
+    (t) =>
+      `  ${t.id} · ${t.state} · last entry ${t.lastEntryAt ?? "unknown"} · checked ${t.checkedAt ?? "never"} · ${short(title(t.title))}`,
+  ),
+  ...(c.behind > c.mayBeBehind.length ? [`  … and ${c.behind - c.mayBeBehind.length} more`] : []),
+];
+
 const encodeSqlRow = Schema.encodeSync(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
 );
@@ -536,7 +546,7 @@ const sql = Command.make(
   {
     query: Argument.string("query").pipe(
       Argument.withDescription(
-        "Read-only SQL over agent_threads (id, title, source, provider, parent, taken_at, version, entry_count) and agent_entries (thread_id, seq, turn, entry_id, at, type, kind, status, title, hint, command, exit_code, output, text, files)",
+        "Read-only SQL over agent_threads (id, title, source, provider, parent, taken_at, version, entry_count, last_entry_at, source_state, checked_at) and agent_entries (thread_id, seq, turn, entry_id, at, type, kind, status, title, hint, command, exit_code, output, text, files)",
       ),
     ),
   },
@@ -544,13 +554,14 @@ const sql = Command.make(
     function* ({ query }) {
       const settings = yield* backendSettings("reader");
       const api = yield* connect(settings);
-      const { rows, truncated } = yield* call(
+      const { rows, truncated, coverage } = yield* call(
         api.history.sql({ params: { ws: settings.workspace }, payload: { query } }),
       );
       for (const row of rows) yield* Console.log(encodeSqlRow(row));
       yield* Console.error(
         `${rows.length} row${rows.length === 1 ? "" : "s"}${truncated ? ", more not shown: add a LIMIT or select fewer columns" : ""}`,
       );
+      if (coverage) for (const line of coverageLines(coverage)) yield* Console.error(line);
     },
     Effect.provide([FetchHttpClient.layer, ServerConfig.layer]),
   ),

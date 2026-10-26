@@ -251,6 +251,13 @@ const HistoryHandlers = HttpApiBuilder.group(
           Effect.catchTag("HistoryStoreFailed", () => Effect.fail(failed())),
         ),
       )
+      .handle("checked", ({ payload }) =>
+        writer.pipe(
+          Effect.andThen(Effect.flatMap(scoped, (s) => s.checked(payload.threads))),
+          Effect.map((checked) => ({ checked })),
+          Effect.catchTag("HistoryStoreFailed", () => Effect.fail(failed())),
+        ),
+      )
       .handle("putThread", ({ payload }) =>
         Effect.gen(function* () {
           yield* writer;
@@ -440,7 +447,13 @@ const HistoryHandlers = HttpApiBuilder.group(
         }).pipe(Effect.catchTag("HistoryStoreFailed", () => Effect.fail(failed()))),
       )
       .handle("sql", ({ payload }) =>
-        Effect.flatMap(Caller, (caller) => agentSql.query(caller.workspaceId, payload.query)).pipe(
+        Effect.gen(function* () {
+          const caller = yield* Caller;
+          const result = yield* agentSql.query(caller.workspaceId, payload.query);
+          // Beside every result: what the answer can't see. Without it, still the rows.
+          const coverage = yield* Effect.flatMap(scoped, (s) => s.coverage).pipe(Effect.option);
+          return coverage._tag === "Some" ? { ...result, coverage: coverage.value } : result;
+        }).pipe(
           Effect.catchTags({
             AgentQueryFailed: (e) => Effect.fail(new QueryRefused({ message: e.message })),
             HistoryStoreFailed: () => Effect.fail(failed()),
