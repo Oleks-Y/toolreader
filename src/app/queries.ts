@@ -10,6 +10,8 @@ import {
   getMe,
   getPullHistory,
   listPulls,
+  getSessionTitles,
+  listFindings,
   listRepos,
   readCitation,
   searchSessions,
@@ -88,5 +90,19 @@ export const citationOptions = (repo: string, cite: Cite) =>
   queryOptions({
     queryKey: ["citation", repo, cite.threadId, cite.entryId, cite.version],
     queryFn: () => readCitation({ data: { repo, ...cite } }),
+    staleTime: 5 * 60_000,
+  });
+
+export const findingsOptions = (repo: string) =>
+  queryOptions({
+    queryKey: ["findings", repo],
+    queryFn: () => listFindings({ data: { repo } }),
+    staleTime: 60_000,
+  });
+
+export const titlesOptions = (repo: string, ids: ReadonlyArray<string>) =>
+  queryOptions({
+    queryKey: ["titles", repo, ...ids],
+    queryFn: () => getSessionTitles({ data: { repo, ids: [...ids] } }),
     staleTime: 5 * 60_000,
   });
