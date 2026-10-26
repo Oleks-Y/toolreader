@@ -12,12 +12,14 @@ import { HistoryStoreFailed } from "./HistoryStore.ts";
 import Migration0001 from "./Migrations/001_History.ts";
 import Migration0002 from "./Migrations/002_Members.ts";
 import Migration0003 from "./Migrations/003_Removed.ts";
+import Migration0004 from "./Migrations/004_Blames.ts";
 
 /** Every migration, in order. Append a new one here and add its case to the upgrade tests. */
 export const migrationEntries = [
   [1, "History", Migration0001],
   [2, "Members", Migration0002],
   [3, "Removed", Migration0003],
+  [4, "Blames", Migration0004],
 ] as const;
 
 const TABLE = "toolreader_migrations";

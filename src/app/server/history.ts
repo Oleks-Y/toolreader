@@ -1,0 +1,149 @@
+// The repo pages' data: the ledger (the backend's linked commits, newest first), the PRs whose
+// commits have links (GitHub's PRs, the backend's links), and a PR's or a commit's agent history
+// as the ledger page shows it (core/historyPage.ts `historyRange`, as `history site` builds it).
+import { historyRange } from "../../core/historyPage.ts";
+import type { CommitRecord, ThreadRecord } from "../../core/historyRecord.ts";
+import type { LedgerCommit, LedgerRange } from "../../core/ledger.ts";
+import * as backend from "./backend.ts";
+import * as github from "./github.ts";
+import type { User } from "./session.ts";
+
+export class NotAllowed extends Error {}
+
+/** Every repo function starts here: GitHub must let this user read the repo. */
+export async function mustRead(user: User, repo: string) {
+  if (!(await github.canRead(user.token, user.login, repo)))
+    throw new NotAllowed(`You can't read ${repo} on GitHub`);
+}
+
+/** The backend's repos this user can read on GitHub. */
+export async function repos(user: User) {
+  const all = await backend.repos();
+  const ok = await Promise.all(all.map((r) => github.canRead(user.token, user.login, r.repo)));
+  return all.filter((_, i) => ok[i]);
+}
+
+export type LedgerRow = {
+  readonly sha: string;
+  readonly subject: string;
+  readonly committedAt: string;
+  readonly threads: number;
+  readonly via: ReadonlyArray<string>;
+  readonly explained: number;
+  readonly novel: number;
+};
+
+export async function ledger(user: User, repo: string, before: string | null) {
+  await mustRead(user, repo);
+  return (await backend.ledger(repo, before)).map(
+    (c): LedgerRow => ({
+      sha: c.sha,
+      subject: c.subject,
+      committedAt: c.committedAt,
+      threads: new Set(c.links.map((l) => l.threadId)).size,
+      via: [...new Set(c.links.map((l) => l.via))],
+      explained: c.explained,
+      novel: c.novel,
+    }),
+  );
+}
+
+export type PullRow = {
+  readonly number: number;
+  readonly title: string;
+  readonly state: "open" | "closed" | "merged";
+  readonly author: string | null;
+  readonly updatedAt: string;
+  readonly url: string;
+  readonly commits: number;
+  readonly linked: number;
+};
+
+/** The 30 most recently updated PRs, those with at least one linked commit. */
+export async function pulls(user: User, repo: string): Promise<PullRow[]> {
+  await mustRead(user, repo);
+  const prs = await github.pulls(user.token, repo);
+  const shas = await Promise.all(
+    prs.map((p) =>
+      github.pullCommits(user.token, repo, p.number).then((cs) => cs.map((c) => c.sha)),
+    ),
+  );
+  const linked = new Set(
+    (await backend.commits(repo, shas.flat())).filter((c) => c.links.length > 0).map((c) => c.sha),
+  );
+  return prs.flatMap((p, i) => {
+    const n = shas[i]!.filter((s) => linked.has(s)).length;
+    if (n === 0) return [];
+    return [
+      {
+        number: p.number,
+        title: p.title,
+        state: p.merged_at ? "merged" : p.state === "open" ? "open" : "closed",
+        author: p.user?.login ?? null,
+        updatedAt: p.updated_at,
+        url: p.html_url,
+        commits: shas[i]!.length,
+        linked: n,
+      },
+    ];
+  });
+}
+
+const rangeOf = async (
+  repo: string,
+  range: string,
+  commits: ReadonlyArray<LedgerCommit>,
+): Promise<LedgerRange> => {
+  const records = new Map<string, CommitRecord>(
+    (
+      await backend.commits(
+        repo,
+        commits.map((c) => c.sha),
+      )
+    ).map((r) => [r.sha, r]),
+  );
+  const threads = new Map<string, ThreadRecord>(
+    (
+      await backend.threads([...records.values()].flatMap((r) => r.links.map((l) => l.threadId)))
+    ).map((t) => [t.thread.id, t]),
+  );
+  return historyRange({
+    repo,
+    range,
+    remoteUrl: `https://github.com/${repo}`,
+    commits: commits.map((commit) => ({
+      commit,
+      paths: [],
+      record: records.get(commit.sha) ?? null,
+    })),
+    threads,
+  });
+};
+
+export async function pullHistory(user: User, repo: string, n: number) {
+  await mustRead(user, repo);
+  const [pr, commits] = await Promise.all([
+    github.pull(user.token, repo, n),
+    github.pullCommits(user.token, repo, n),
+  ]);
+  const range = await rangeOf(
+    repo,
+    `#${n}`,
+    commits.map((c) => ({
+      sha: c.sha,
+      subject: c.commit.message.split("\n")[0] ?? "",
+      committedAt: c.commit.committer?.date ?? "",
+      patchId: null,
+    })),
+  );
+  return { title: pr.title, url: pr.html_url, range };
+}
+
+export async function commitHistory(user: User, repo: string, sha: string) {
+  await mustRead(user, repo);
+  const [record] = await backend.commits(repo, [sha]);
+  if (!record) return null;
+  return rangeOf(repo, sha.slice(0, 8), [
+    { sha: record.sha, subject: record.subject, committedAt: record.committedAt, patchId: null },
+  ]);
+}

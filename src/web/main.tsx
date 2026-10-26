@@ -1,6 +1,7 @@
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ActionView } from "./ActionView.tsx";
+import { BlamePage } from "./BlamePage.tsx";
 import { ProofFile } from "./ProofFile.tsx";
 import { Sessions } from "./Sessions.tsx";
 import { applySavedTheme } from "./theme.tsx";
@@ -17,6 +18,8 @@ function App() {
     return () => removeEventListener("hashchange", onHash);
   }, []);
   if (hash === "#/file") return <ProofFile />;
+  const blame = /^#\/blame(?:\?(.*))?$/.exec(hash);
+  if (blame) return <BlamePage url={new URLSearchParams(blame[1] ?? "").get("url")} />;
   const thread = /^#\/t\/(.+)$/.exec(hash)?.[1];
   return thread ? <ActionView key={thread} threadId={decodeURIComponent(thread)} /> : <Sessions />;
 }

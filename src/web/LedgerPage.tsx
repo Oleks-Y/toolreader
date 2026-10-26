@@ -12,6 +12,9 @@ import {
 import { ActionView } from "./ActionView.tsx";
 import { ThemePicker } from "./theme.tsx";
 import { fmtDay, fmtTime } from "./util.ts";
+import { When } from "./When.tsx";
+
+const dayTime = (iso: string) => `${fmtDay(iso)} ${fmtTime(iso)}`;
 
 /** A linked thread's history as a read-only thread, so the regular viewer can render it. */
 function asView(link: LedgerLink, committedAt: string): ThreadView {
@@ -61,12 +64,19 @@ export function LedgerPage({ data }: { data: LedgerRange }) {
       <p className="dim">
         {data.range} · {data.commits.length} commits · {withHistory} with agent history
       </p>
-      <div className="ledger">
-        {data.commits.map((c) => (
-          <CommitCard key={c.commit.sha} item={c} remoteUrl={data.remoteUrl} />
-        ))}
-      </div>
+      <LedgerCommits data={data} />
     </main>
+  );
+}
+
+/** A range's commit cards, each with its linked threads' history: for pages that frame it. */
+export function LedgerCommits({ data }: { data: LedgerRange }) {
+  return (
+    <div className="ledger">
+      {data.commits.map((c) => (
+        <CommitCard key={c.commit.sha} item={c} remoteUrl={data.remoteUrl} />
+      ))}
+    </div>
   );
 }
 
@@ -99,7 +109,7 @@ function CommitCard({ item, remoteUrl }: { item: LedgerCommitView; remoteUrl: st
         )}
         <span className="prompt">{commit.subject}</span>
         <span className="turn-stats">
-          {fmtDay(commit.committedAt)} {fmtTime(commit.committedAt)}
+          <When at={commit.committedAt} as={dayTime} />
           {hasHistory
             ? ` · ${links.length === 1 ? links[0]!.thread.title : `${links.length} threads`} · ${actions} actions`
             : " · no agent history"}

@@ -18,6 +18,7 @@ import {
   type Message,
   type ThreadView,
 } from "../core/domain.ts";
+import type { Mark } from "../core/blame.ts";
 import { proofFileName, type ProofArtifact, type ProofScope } from "../core/proof.ts";
 import { call, errorMessage } from "./client.ts";
 import { Swimlane, type Range } from "./Swimlane.tsx";
@@ -127,7 +128,14 @@ type Ctx = {
   showLabels: boolean;
   open: ReturnType<typeof useOpenState>;
   highlight: string | null;
+  /** Focus: the rows that matter and why; the rest fold into hidden runs (the blame page). */
+  marks: ReadonlyMap<string, Mark> | undefined;
 };
+
+const isMarked = (item: Item, marks: ReadonlyMap<string, Mark>) =>
+  item.type === "action"
+    ? marks.has(item.id)
+    : item.type === "fold" && item.actions.some((a) => marks.has(a.id));
 
 /** Download link for a proof-of-work artifact of the whole thread, some turns, or a time range. */
 function proofLink(view: ThreadView, scope: ProofScope) {
@@ -147,18 +155,21 @@ function proofLink(view: ThreadView, scope: ProofScope) {
 /**
  * A live thread (`threadId`, fetched and polled), a proof-of-work file (`artifact`), or a given
  * `view` (ledger entries). Without `threadId` it is read-only: no polling, labeling or export.
- * `embedded` renders only the turn tree, for pages that show several histories.
+ * `embedded` renders only the turn tree, for pages that show several histories. With `marks`, only
+ * marked rows show: turns and phases without one start closed, and runs between them fold.
  */
 export function ActionView({
   threadId,
   artifact,
   view: givenView,
   embedded = false,
+  marks,
 }: {
   threadId?: string;
   artifact?: ProofArtifact;
   view?: ThreadView;
   embedded?: boolean;
+  marks?: ReadonlyMap<string, Mark>;
 }) {
   const readOnly = threadId === undefined;
   const [view, setView] = useState<ThreadView | null>(artifact?.view ?? givenView ?? null);
@@ -203,8 +214,9 @@ export function ActionView({
     [view],
   );
   const turns = useMemo(
-    () => (view ? buildTree(view.entries, prefs, range) : []),
-    [view, prefs, range],
+    () =>
+      view ? buildTree(view.entries, marks ? { ...prefs, foldReads: false } : prefs, range) : [],
+    [view, prefs, range, marks],
   );
   const turnStarts = useMemo(
     () => turns.map((t) => t.prompt?.at ?? t.stats.start).filter(Boolean),
@@ -287,9 +299,9 @@ export function ActionView({
     { files: 0, added: 0, removed: 0, failed: 0 },
   );
   const set = (patch: Partial<Prefs>) => setPrefs((p) => ({ ...p, ...patch }));
-  const ctx: Ctx = { labels: view.labels, showLabels: prefs.labels, open, highlight };
+  const ctx: Ctx = { labels: view.labels, showLabels: prefs.labels, open, highlight, marks };
   const tree = (
-    <div className="tree">
+    <div className={`tree${marks ? " focus" : ""}`}>
       {turns.map((turn, i) => (
         <TurnBlock
           key={turn.id}
@@ -453,7 +465,8 @@ function TurnBlock({
   onLabel: (() => void) | undefined;
   exportLink: { href: string; download: string } | undefined;
 }) {
-  const isOpen = ctx.open.isOpen(turn.id, true);
+  const { marks } = ctx;
+  const isOpen = ctx.open.isOpen(turn.id, !marks || turn.actions.some((a) => marks.has(a.id)));
   const promptId = `${turn.id}:prompt`;
   const promptOpen = ctx.open.isOpen(promptId, false);
   const s = turn.stats;
@@ -510,8 +523,17 @@ function TurnBlock({
 }
 
 function PhaseBlock({ phase, ctx }: { phase: Phase; ctx: Ctx }) {
-  const isOpen = ctx.open.isOpen(phase.id, true);
-  const items = phase.items.map((item) => <ItemRow key={item.id} item={item} ctx={ctx} />);
+  const { marks } = ctx;
+  const isOpen = ctx.open.isOpen(phase.id, !marks || phase.items.some((i) => isMarked(i, marks)));
+  const items = marks
+    ? runsOf(phase.items, (i) => isMarked(i, marks)).map((run) =>
+        run.marked ? (
+          run.items.map((item) => <ItemRow key={item.id} item={item} ctx={ctx} />)
+        ) : (
+          <HiddenRow key={run.items[0]!.id} items={run.items} ctx={ctx} />
+        ),
+      )
+    : phase.items.map((item) => <ItemRow key={item.id} item={item} ctx={ctx} />);
   if (phase.name === "all") return <div className="phase-body">{items}</div>;
   const count = phase.items.reduce(
     (n, i) => n + (i.type === "fold" ? i.actions.length : i.type === "action" ? 1 : 0),
@@ -531,6 +553,46 @@ function PhaseBlock({ phase, ctx }: { phase: Phase; ctx: Ctx }) {
         <span className="bar" />
       </div>
       {isOpen && <div className="phase-body">{items}</div>}
+    </div>
+  );
+}
+
+/** Items split into runs that are marked and runs that aren't. */
+function runsOf(items: Item[], marked: (item: Item) => boolean) {
+  const runs: Array<{ marked: boolean; items: Item[] }> = [];
+  for (const item of items) {
+    const m = marked(item);
+    const last = runs.at(-1);
+    if (last?.marked === m) last.items.push(item);
+    else runs.push({ marked: m, items: [item] });
+  }
+  return runs;
+}
+
+/** Steps outside the focus, folded into one row until clicked. */
+function HiddenRow({ items, ctx }: { items: Item[]; ctx: Ctx }) {
+  const id = `hidden:${items[0]!.id}`;
+  const isOpen = ctx.open.isOpen(id, false);
+  const steps = items.reduce((n, i) => n + (i.type === "fold" ? i.actions.length : 1), 0);
+  return (
+    <div className="row-wrap">
+      <div className="row hidden-run" onClick={() => ctx.open.toggle(id)}>
+        <span className="t">{fmtTime(items[0]!.at)}</span>
+        <span className="icon">{isOpen ? "▾" : "⋯"}</span>
+        <span className="main dim">
+          {steps} step{steps === 1 ? "" : "s"} unrelated to the blame
+        </span>
+        <span className="r dim">
+          {fmtDuration(Date.parse(items.at(-1)!.at) - Date.parse(items[0]!.at))}
+        </span>
+      </div>
+      {isOpen && (
+        <div className="fold-body">
+          {items.map((item) => (
+            <ItemRow key={item.id} item={item} ctx={{ ...ctx, marks: undefined }} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -607,8 +669,13 @@ function ActionRow({ action: a, ctx, compact }: { action: Action; ctx: Ctx; comp
     ) : a.noMatch ? (
       <span className="dim">no match</span>
     ) : null;
+  const mark = ctx.marks?.get(a.id);
   return (
-    <div id={`row-${a.id}`} className={`row-wrap${ctx.highlight === a.id ? " highlight" : ""}`}>
+    <div
+      id={`row-${a.id}`}
+      className={`row-wrap${ctx.highlight === a.id ? " highlight" : ""}${mark ? ` mark-${mark.tone}` : ""}`}
+    >
+      {mark && <span className="why">{mark.why}</span>}
       <div
         className={`row action k-${a.kind} ${a.status}${compact ? " compact" : ""}`}
         onClick={() => ctx.open.toggle(a.id)}

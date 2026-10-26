@@ -126,11 +126,7 @@ export const reportLines = (report: SyncReport, dryRun: boolean): string[] => {
           `    read ${l.reads.paths.length + l.reads.more} files for it (as its read actions show)`,
         );
     }
-    lines.push(
-      c.links.length === 0
-        ? `  · no agent turn wrote its ${c.novel} new lines`
-        : `  ${c.explained} of its ${c.novel} new lines match these agents' edits`,
-    );
+    if (c.links.length === 0) lines.push("  · no explicit agent history link");
   }
   for (const why of report.ignored) lines.push(`! ignored ${title(why)}`);
   for (const u of report.unread) lines.push(`! couldn't read ${u.id} (${title(u.title)})`);
@@ -240,7 +236,7 @@ const sync = Command.make(
   }),
 ).pipe(
   Command.withDescription(
-    "Link a range's commits to the agent turns that wrote them, and send the threads and links to the backend",
+    "Sync a range's explicit agent declarations and session trailers to the backend",
   ),
 );
 
