@@ -182,7 +182,7 @@ const ws = { ws: Text };
 const Sha = Schema.String.check(Schema.isPattern(/^[0-9a-f]{4,64}$/));
 const Ids = Schema.Array(Text).check(Schema.isMaxLength(LIMITS.ids));
 /** An image's SHA-256, hex. */
-const Sha256 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
+export const Sha256 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
 
 /**
  * One entry a search found, cited by thread, entry and the thread's content hash (the version it
