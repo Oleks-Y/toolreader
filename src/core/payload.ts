@@ -12,6 +12,16 @@ export const ClaudeResult = Schema.Struct({
 });
 export type ClaudeResult = typeof ClaudeResult.Type;
 
+/** An image block of Claude tool_result content (T3 V2 keeps Claude's blocks as they are). */
+export const ClaudeImage = Schema.Struct({
+  type: Schema.Literal("image"),
+  source: Schema.Struct({
+    type: Schema.Literal("base64"),
+    media_type: Schema.String,
+    data: Schema.String,
+  }),
+});
+
 /** Claude tool_result content: a string or `[{ type: "text", text }]`. */
 export const ClaudeContent = Schema.Union([
   Schema.String,

@@ -45,7 +45,10 @@ import {
 } from "../../core/historyRecord.ts";
 import { hunkKey } from "../../core/blame.ts";
 import { detect } from "../../core/insights.ts";
+import * as NodeCrypto from "node:crypto";
+
 import { AgentSql } from "./AgentSql.ts";
+import { MediaBucket, mediaKey } from "./MediaBucket.ts";
 import { GitHub } from "./GitHub.ts";
 import { HistoryStore, type HistoryRefused, type HistoryStoreFailed } from "./HistoryStore.ts";
 
@@ -204,6 +207,7 @@ const HistoryHandlers = HttpApiBuilder.group(
     const pg = yield* HistoryStore;
     const github = yield* GitHub;
     const agentSql = yield* AgentSql;
+    const bucket = yield* MediaBucket;
     /** The caller's workspace, written as the caller (its token or login, and client version). */
     const scoped = Effect.gen(function* () {
       const caller = yield* Caller;
@@ -215,6 +219,10 @@ const HistoryHandlers = HttpApiBuilder.group(
         actor: caller.github ? `github:${caller.github.login}` : undefined,
       });
     });
+    /** Whether the caller's workspace keeps images: a bucket, and its opt-in. */
+    const keepsMedia = Effect.flatMap(scoped, (s) =>
+      bucket.config ? s.mediaEnabled : Effect.succeed(false),
+    );
     /** Writing history is for machines with a workspace token, not a person's sign-in. */
     const writer = Effect.gen(function* () {
       if ((yield* Caller).github)
@@ -383,6 +391,53 @@ const HistoryHandlers = HttpApiBuilder.group(
             }),
           ),
         ),
+      )
+      .handle("mediaMissing", ({ payload }) =>
+        Effect.gen(function* () {
+          yield* writer;
+          if (!(yield* keepsMedia)) return { enabled: false, missing: [] };
+          const store = yield* scoped;
+          return { enabled: true, missing: yield* store.missingMedia(payload.shas) };
+        }).pipe(Effect.catchTag("HistoryStoreFailed", () => Effect.fail(failed()))),
+      )
+      .handle("putMedia", ({ payload }) =>
+        Effect.gen(function* () {
+          yield* writer;
+          if (!(yield* keepsMedia))
+            return yield* new Forbidden({ message: "This workspace doesn't keep images" });
+          const bytes = Buffer.from(payload.data, "base64");
+          if (bytes.length === 0 || bytes.length > LIMITS.mediaBytes)
+            return yield* new Rejected({
+              reason: "invalid",
+              detail: `an image is 1 to ${LIMITS.mediaBytes} bytes`,
+            });
+          if (NodeCrypto.createHash("sha256").update(bytes).digest("hex") !== payload.sha256)
+            return yield* new Rejected({ reason: "invalid", detail: "sha256 isn't the image's" });
+          const caller = yield* Caller;
+          const store = yield* scoped;
+          if ((yield* store.missingMedia([payload.sha256])).length === 0)
+            return { result: "same" as const };
+          yield* bucket
+            .put(mediaKey(caller.workspaceId, payload.sha256), bytes, payload.mime)
+            .pipe(Effect.mapError(failed));
+          yield* store.putMedia(payload.sha256, payload.mime, bytes.length);
+          return { result: "inserted" as const };
+        }).pipe(Effect.catchTag("HistoryStoreFailed", () => Effect.fail(failed()))),
+      )
+      .handle("media", ({ payload }) =>
+        Effect.gen(function* () {
+          const caller = yield* Caller;
+          const store = yield* scoped;
+          const held = yield* store.media(payload.sha256);
+          const bytes = Option.isSome(held)
+            ? yield* bucket
+                .get(mediaKey(caller.workspaceId, payload.sha256))
+                .pipe(Effect.mapError(failed))
+            : Option.none();
+          if (Option.isNone(held) || Option.isNone(bytes))
+            return yield* new NotFound({ message: `No image ${payload.sha256} in this workspace` });
+          return { mime: held.value.mime, data: Buffer.from(bytes.value).toString("base64") };
+        }).pipe(Effect.catchTag("HistoryStoreFailed", () => Effect.fail(failed()))),
       )
       .handle("sql", ({ payload }) =>
         Effect.flatMap(Caller, (caller) => agentSql.query(caller.workspaceId, payload.query)).pipe(

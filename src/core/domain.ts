@@ -38,6 +38,19 @@ export const FileChange = Schema.Struct({
 });
 export type FileChange = typeof FileChange.Type;
 
+/**
+ * An image a tool returned (a screenshot the agent looked at). On this machine it carries `data`
+ * (base64); what leaves it carries only `sha256` and `bytes`, the bytes going to the backend's
+ * media bucket when the workspace keeps media (server/backend/MediaBucket.ts).
+ */
+export const Media = Schema.Struct({
+  mime: Schema.String,
+  data: Schema.optional(Schema.String),
+  sha256: Schema.optional(Schema.String),
+  bytes: Schema.optional(Schema.Number),
+});
+export type Media = typeof Media.Type;
+
 export const Action = Schema.Struct({
   type: Schema.Literal("action"),
   id: Schema.String,
@@ -61,6 +74,8 @@ export const Action = Schema.Struct({
   targets: Schema.optional(Schema.Array(Schema.String)),
   /** Search with no matches: not a failure. */
   noMatch: Schema.optional(Schema.Boolean),
+  /** Images the tool returned. */
+  media: Schema.optional(Schema.Array(Media)),
 });
 export type Action = typeof Action.Type;
 

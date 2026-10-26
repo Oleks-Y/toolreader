@@ -2,9 +2,10 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
-import type { Action, ActionKind, Entry, FileChange, Message } from "./domain.ts";
+import type { Action, ActionKind, Entry, FileChange, Media, Message } from "./domain.ts";
 import {
   ClaudeContent,
+  ClaudeImage,
   ClaudeResult,
   CursorRawOutput,
   type CodexItem,
@@ -43,6 +44,7 @@ const FILE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 
 const decodeClaudeResult = Schema.decodeUnknownOption(ClaudeResult);
 const decodeClaudeContent = Schema.decodeUnknownOption(ClaudeContent);
+const decodeClaudeImage = Schema.decodeUnknownOption(ClaudeImage);
 const decodeCursorRawOutput = Schema.decodeUnknownOption(CursorRawOutput);
 
 const str = (v: unknown): string | undefined => (Predicate.isString(v) && v.trim() ? v : undefined);
@@ -64,6 +66,18 @@ function resultText(result: unknown): string | undefined {
   if (Option.isNone(content)) return undefined;
   const c = content.value;
   return Predicate.isString(c) ? c : c.map((x) => x.text ?? "").join("\n") || undefined;
+}
+
+/** The images in Claude tool_result content (a screenshot `Read` returns), as base64. */
+function resultImages(result: unknown): Media[] {
+  const content = Option.getOrUndefined(decodeClaudeResult(result))?.content;
+  if (!Array.isArray(content)) return [];
+  return content.flatMap((block) =>
+    Option.match(decodeClaudeImage(block), {
+      onNone: () => [],
+      onSome: (i) => [{ mime: i.source.media_type, data: i.source.data }],
+    }),
+  );
 }
 
 const isClaudeError = (result: unknown) =>
@@ -512,7 +526,8 @@ function toAction(id: string, at: string, p: ToolPayload, summary: string): Acti
         : p.status === "unknown"
           ? "unknown"
           : "ok";
-  return { type: "action", id, at, status, ...rest, title };
+  const media = resultImages(p.data?.result);
+  return { type: "action", id, at, status, ...rest, title, ...(media.length ? { media } : {}) };
 }
 
 /** Turns T3 activity + message rows into a time-ordered entry list. Rows must be in insertion order. */

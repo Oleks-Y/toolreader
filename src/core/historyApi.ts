@@ -37,7 +37,13 @@ export const LIMITS = {
   query: 200,
   /** Characters of an agent's SQL. */
   sql: 20_000,
+  /** Bytes of one image. */
+  mediaBytes: 5 * 1024 * 1024,
 } as const;
+
+/** Images the media bucket keeps: raster only (an SVG can carry script). */
+export const MEDIA_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
+export type MediaType = (typeof MEDIA_TYPES)[number];
 
 export class Unauthorized extends Schema.TaggedErrorClass<Unauthorized>()(
   "Unauthorized",
@@ -175,6 +181,8 @@ const ws = { ws: Text };
 /** A commit id: hex, at most SHA-256 long. */
 const Sha = Schema.String.check(Schema.isPattern(/^[0-9a-f]{4,64}$/));
 const Ids = Schema.Array(Text).check(Schema.isMaxLength(LIMITS.ids));
+/** An image's SHA-256, hex. */
+const Sha256 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
 
 /**
  * One entry a search found, cited by thread, entry and the thread's content hash (the version it
@@ -224,7 +232,7 @@ agent_threads: one row per conversation.
   id (T3 thread ids are bare; codex:<id>, claude:<id>), title (its first prompt), source (t3|codex|claude), provider, origin (the client that ran it), parent (the conversation that delegated this one, for a subagent; null otherwise), snapshot (jsonb: how it started, e.g. startCommit, branch), taken_at, uploaded_at, version, entry_count.
 
 agent_entries: one row per step, in order.
-  thread_id, seq (order in the conversation), turn (user messages so far: a turn's steps share it), entry_id, at (ISO time, text), type (action|message|event), kind (an action's kind: read|search|edit|git|docker|setup|build|run|test|web|tool|agent; a message's role: user|assistant|reasoning; an event's tone: error|info), status (ok|failed|running|unknown), title (one-line summary), hint (the agent's stated intent), command, exit_code, output (clipped to 8 KB), text (a message's or event's text), files (jsonb: [{path, added, removed, isNew, isDeleted, diff}]).
+  thread_id, seq (order in the conversation), turn (user messages so far: a turn's steps share it), entry_id, at (ISO time, text), type (action|message|event), kind (an action's kind: read|search|edit|git|docker|setup|build|run|test|web|tool|agent; a message's role: user|assistant|reasoning; an event's tone: error|info), status (ok|failed|running|unknown), title (one-line summary), hint (the agent's stated intent), command, exit_code, output (clipped to 8 KB), text (a message's or event's text), files (jsonb: [{path, added, removed, isNew, isDeleted, diff}]), media (jsonb: [{mime, sha256, bytes}], images the tool returned, such as a screenshot the agent read; view one with the media tool).
 
 Examples:
   SELECT id, title FROM agent_threads WHERE parent = '<id>'                      -- what a conversation delegated
@@ -408,6 +416,32 @@ export class HistoryApi extends HttpApiGroup.make("history")
       }),
       success: SqlResult,
       error: [QueryRefused, Forbidden, BackendFailed],
+    }),
+    // Which of these images the workspace lacks, and whether it keeps images at all (`enabled`:
+    // the backend has a bucket and the workspace opted in). Writers only.
+    HttpApiEndpoint.post("mediaMissing", "/workspaces/:ws/media/missing", {
+      params: ws,
+      payload: Schema.Struct({ shas: Schema.Array(Sha256).check(Schema.isMaxLength(LIMITS.ids)) }),
+      success: Schema.Struct({ enabled: Schema.Boolean, missing: Schema.Array(Schema.String) }),
+      error: [Forbidden, BackendFailed],
+    }),
+    // One image, base64. Its SHA-256 is checked against its bytes, so a hash names what it says.
+    HttpApiEndpoint.put("putMedia", "/workspaces/:ws/media", {
+      params: ws,
+      payload: Schema.Struct({
+        sha256: Sha256,
+        mime: Schema.Literals(MEDIA_TYPES),
+        data: Schema.String.check(Schema.isMaxLength(Math.ceil(LIMITS.mediaBytes / 3) * 4 + 4)),
+      }),
+      success: PutResult,
+      error: [Rejected, Forbidden, BackendFailed],
+    }),
+    // An image an entry cites (`agent_entries.media`), for any reader of the workspace.
+    HttpApiEndpoint.post("media", "/workspaces/:ws/media/query", {
+      params: ws,
+      payload: Schema.Struct({ sha256: Sha256 }),
+      success: Schema.Struct({ mime: Schema.String, data: Schema.String }),
+      error: [NotFound, Forbidden, BackendFailed],
     }),
     HttpApiEndpoint.post("commits", "/workspaces/:ws/repos/:repo/commits/query", {
       params: { ...ws, repo: Repo },

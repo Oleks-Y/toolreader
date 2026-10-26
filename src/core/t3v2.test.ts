@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 
 import type { Action, Entry } from "./domain.ts";
 import { normalize } from "./normalize.ts";
+import { redactEntries } from "./proof.ts";
 import { turnItemsToRows, type TurnItemRow } from "./t3v2.ts";
 
 let ordinal = 0;
@@ -120,6 +121,30 @@ describe("turnItemsToRows", () => {
       "error",
       "Runtime error: overloaded",
     ]);
+  });
+});
+
+describe("screenshots a tool returned", () => {
+  // As T3 keeps a Claude `Read` of a PNG: Claude's own content blocks.
+  const png = btoa("not really a png");
+  const shot = item("img1", "dynamic_tool", {
+    toolName: "Read",
+    input: { file_path: "/tmp/shot.png" },
+    viewedImagePath: "/tmp/shot.png",
+    output: [{ type: "image", source: { type: "base64", data: png, media_type: "image/png" } }],
+  });
+  const [read] = (() => {
+    const { activities, messages } = turnItemsToRows([shot]);
+    return normalize(activities, messages, { root: "/repo" });
+  })() as Action[];
+
+  it("keeps each image, base64, on the action", () => {
+    assert.deepStrictEqual(read?.media, [{ mime: "image/png", data: png }]);
+  });
+
+  it("never exports or publishes the bytes", () => {
+    const { entries } = redactEntries([read!], { outputs: true });
+    assert.deepStrictEqual((entries[0] as Action).media, [{ mime: "image/png" }]);
   });
 });
 

@@ -198,6 +198,8 @@ export function redactEntries(
         path: clean(f.path),
         diff: maybe(f.diff),
       })),
+      // Image bytes never leave in a record or an export; their hash may (HistorySync uploads them).
+      media: e.media?.map(({ data: _, ...m }) => m),
     };
   });
   return { entries: result, redactions: count() };
