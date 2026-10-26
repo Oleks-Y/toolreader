@@ -4,6 +4,7 @@ import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as HttpClient from "effect/unstable/http/HttpClient";
@@ -16,6 +17,11 @@ import { ServerConfig } from "../ServerConfig.ts";
 
 export class HistoryFailed extends Schema.TaggedErrorClass<HistoryFailed>()("HistoryFailed", {
   message: Schema.String,
+  /**
+   * What failed, as a code safe to keep where messages aren't (`CONNECTION_REFUSED`,
+   * `UNAUTHORIZED`, `NOT_CONFIGURED`): set for the backend's failures.
+   */
+  code: Schema.optional(Schema.String),
 }) {}
 
 const FileSettings = Schema.Struct({
@@ -77,6 +83,14 @@ const configured = Effect.fn("HistoryClient.configured")(function* () {
   };
 });
 
+/** Where history goes, as far as it's configured: what `history status` shows. */
+export const backendTarget = Effect.map(configured(), ({ file, url, workspace, token }) => ({
+  file,
+  url: url ?? null,
+  workspace: workspace ?? null,
+  hasToken: !!token,
+}));
+
 /** The backend's URL alone: what `history login` needs before there is any token. */
 export const backendUrl = Effect.fn("HistoryClient.url")(function* () {
   const { url, file } = yield* configured();
@@ -99,6 +113,7 @@ export const backendSettings = Effect.fn("HistoryClient.settings")(function* (
   if (!url || !bearer || !workspace)
     return yield* new HistoryFailed({
       message: `No history backend: set backend.url, backend.workspace and backend.token (or sign in: history login) in ${file}`,
+      code: "NOT_CONFIGURED",
     });
   return { url, token: Redacted.make(bearer), workspace } satisfies BackendSettings;
 });
@@ -124,6 +139,7 @@ export const connect = Effect.fn("HistoryClient.connect")(function* (settings: B
   if ((compareVersions(packageJson.version, meta.minClient) ?? -1) < 0)
     return yield* new HistoryFailed({
       message: `The backend serves toolreader ${meta.minClient} or newer: upgrade toolreader`,
+      code: "UPGRADE_REQUIRED",
     });
   return api;
 });
@@ -133,11 +149,43 @@ export const call = <A, E extends { readonly _tag: string; readonly message?: st
   request: Effect.Effect<A, E, R>,
 ) => request.pipe(Effect.timeout("120 seconds"), Effect.mapError(asFailed));
 
-/** A request's failure, as the CLI reports it. */
-export const asFailed = (e: { readonly _tag: string; readonly message?: string }) =>
-  new HistoryFailed({
+/** The OS's reason a request never reached the backend (`ECONNREFUSED`), when it gave one. */
+const errnoOf = (e: unknown): string | undefined => {
+  for (let cause = e, depth = 0; cause && depth < 5; depth++) {
+    if (
+      Predicate.hasProperty(cause, "code") &&
+      Predicate.isString(cause.code) &&
+      /^E[A-Z]+$/.test(cause.code)
+    )
+      return cause.code;
+    cause = Predicate.hasProperty(cause, "reason")
+      ? cause.reason
+      : Predicate.hasProperty(cause, "cause")
+        ? cause.cause
+        : undefined;
+  }
+  return undefined;
+};
+const ERRNO_CODES: Record<string, string> = {
+  ECONNREFUSED: "CONNECTION_REFUSED",
+  ECONNRESET: "CONNECTION_RESET",
+  ENOTFOUND: "HOST_NOT_FOUND",
+  EAI_AGAIN: "HOST_NOT_FOUND",
+  ETIMEDOUT: "TIMEOUT",
+};
+
+/** A request's failure, as the CLI reports it, with a code from its tag (or the OS's reason). */
+export const asFailed = (e: { readonly _tag: string; readonly message?: string }) => {
+  const errno = errnoOf(e);
+  return new HistoryFailed({
     message:
       e._tag === "Rejected"
         ? `rejected (${(e as { reason?: string }).reason}): ${(e as { detail?: string }).detail}`
-        : `${e._tag}${e.message ? `: ${e.message}` : ""}`,
+        : `${e._tag}${e.message ? `: ${e.message}` : ""}${errno ? ` (${errno})` : ""}`,
+    code: errno
+      ? (ERRNO_CODES[errno] ?? errno)
+      : e._tag === "HistoryFailed" && (e as { code?: string }).code
+        ? (e as { code?: string }).code
+        : e._tag.replace(/(?<=[a-z])(?=[A-Z])/g, "_").toUpperCase(),
   });
+};

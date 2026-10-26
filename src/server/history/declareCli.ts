@@ -23,7 +23,9 @@ import { redactText } from "../../core/proof.ts";
 import { splitTurns } from "../../core/tree.ts";
 import { CliApp } from "../app.ts";
 import { RepoSessions, type RepoSession } from "../RepoSessions.ts";
+import { ServerConfig } from "../ServerConfig.ts";
 import { HistoryFailed } from "./HistoryClient.ts";
+import { commonGitDir, deliveryOf, deliveryWarning, pending } from "./historyHooks.ts";
 
 const repoFlag = Flag.string("repo").pipe(
   Flag.withDescription("Repository (any path inside it)"),
@@ -204,6 +206,8 @@ const unlink = Command.make(
 
 const ToolUse = Schema.Struct({
   tool_name: Schema.optional(Schema.String),
+  /** Where the agent ran it: the repo whose pending deliveries the reminder mentions. */
+  cwd: Schema.optional(Schema.String),
   // Claude Code sends the command as a string; Codex may send its argv.
   tool_input: Schema.optional(
     Schema.Struct({
@@ -244,12 +248,21 @@ const remind = Command.make(
           ? given.slice(2).join(" ")
           : given.join(" ");
     if (use?.tool_name !== "Bash" || !command || !isGitCommit(command)) return;
+    // Delivery failing silently is what makes history stale: say so where the agent reads.
+    const warning = yield* Effect.flatMap(commonGitDir(use.cwd ?? "."), pending).pipe(
+      Effect.flatMap((store) => store.list),
+      Effect.map((ranges) => deliveryWarning(deliveryOf(ranges))),
+      Effect.provide(ServerConfig.layer),
+      Effect.orElseSucceed(() => null),
+    );
     yield* Console.log(
       encodeReminder({
         hookSpecificOutput: {
           hookEventName: "PostToolUse",
-          additionalContext:
+          additionalContext: [
             'You just made a git commit. Declare which of your turns produced it: `toolreader history link --sha HEAD --note "<what these turns did>"` (add `--turns 3-5` when only some did; `toolreader history turns` lists them). The toolreader-history skill has the details.',
+            ...(warning ? [warning] : []),
+          ].join("\n"),
         },
       }),
     );
