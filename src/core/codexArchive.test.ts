@@ -1,9 +1,25 @@
+import * as Schema from "effect/Schema";
 import { describe, it, expect } from "vite-plus/test";
-import { archiveEvent, archiveSession, archivePeers, archiveReminder } from "./codexArchive.ts";
+import {
+  archiveEvent,
+  archiveSession,
+  archivePeers,
+  archiveReminder,
+  ArchiveStart,
+} from "./codexArchive.ts";
+
+const decodeStart = Schema.decodeUnknownSync(ArchiveStart);
 
 const own = "11111111-1111-4111-8111-111111111111";
 const peer = "22222222-2222-4222-8222-222222222222";
 describe("private Codex archive", () => {
+  it("accepts rollout and hook uploads and rejects the removed stream source", () => {
+    const start = { sessionId: own, rootId: own, sha256: "a".repeat(64), bytes: 10, parts: 1 };
+    for (const source of ["rollout", "hook"])
+      expect(decodeStart({ ...start, source }).source).toBe(source);
+    expect(decodeStart(start).source).toBeUndefined();
+    expect(() => decodeStart({ ...start, source: "app-server" })).toThrow();
+  });
   it("keeps unknown event fields and full tool inputs and output", () => {
     const raw = {
       type: "response_item",

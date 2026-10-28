@@ -29,4 +29,4 @@ A missing peer artifact, partial JSON record, size limit, transport error, or ba
 
 Cloud sessions are outside this pilot. This plugin does not replace the team's review process.
 
-The helper also sends local hook and app-server capture artifacts for the selected session IDs. These files retain their source (`rollout`, `hook`, `app-server`) in the backend. Query complete recorded data through `agent_history_events`; `agent_entries` remains a compatibility view and can shorten outputs. Do not claim an approval decision from a PermissionRequest hook alone. The exact client answer is available only when the owning client's app-server traffic recorder captured it.
+The helper also sends local hook capture artifacts for the selected session IDs. These files retain their source (`rollout`, `hook`) in the backend. Query complete recorded data through `agent_history_events`; `agent_entries` remains a compatibility view and can shorten outputs. Do not claim an approval decision from a PermissionRequest hook alone. Live app-server traffic capture is not supported.

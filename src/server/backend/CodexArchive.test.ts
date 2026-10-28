@@ -88,7 +88,7 @@ describe("Codex private pilot", () => {
         const api = yield* client(token);
         const params = { ws: "complete-events" };
         const sessionId = NodeCrypto.randomUUID();
-        for (const source of ["rollout", "hook", "app-server"] as const) {
+        for (const source of ["rollout", "hook"] as const) {
           const data = Buffer.from(
             [
               { type: "session_meta", payload: { id: sessionId } },
@@ -122,7 +122,6 @@ describe("Codex private pilot", () => {
           },
         });
         assert.deepStrictEqual(rows.rows, [
-          { source: "app-server", chars: 12000 },
           { source: "hook", chars: 12000 },
           { source: "rollout", chars: 12000 },
         ]);
@@ -130,7 +129,7 @@ describe("Codex private pilot", () => {
           params,
           payload: { query: "SELECT source,file_path FROM agent_codex_artifacts ORDER BY source" },
         });
-        assert.strictEqual(rawFiles.rows.length, 3);
+        assert.strictEqual(rawFiles.rows.length, 2);
         const outsider = yield* store.workspace("complete-outsider");
         const hidden = yield* Effect.flatMap(AgentSql, (s) =>
           s.query(outsider, "SELECT * FROM agent_history_events"),

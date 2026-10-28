@@ -9,31 +9,12 @@ import * as Option from "effect/Option";
 import { Command, Flag } from "effect/unstable/cli";
 import { ServerConfig } from "../ServerConfig.ts";
 import { recordHook } from "./capture.ts";
-import { recordAppServer } from "./appServerRecorder.ts";
 import { syncPilot } from "./Pilot.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 export const pilotCommand = Command.make("pilot").pipe(
   Command.withSubcommands([
-    Command.make(
-      "app-server",
-      { codex: Flag.string("codex").pipe(Flag.withDefault("codex")) },
-      Effect.fn("pilot app-server")(function* ({ codex }) {
-        const config = yield* ServerConfig;
-        yield* Effect.tryPromise({
-          try: () => recordAppServer(codex, config.codexHome),
-          catch: () =>
-            new HistoryFailed({
-              message: "App-server history recorder failed; capture is incomplete",
-            }),
-        });
-      }, Effect.provide(ServerConfig.layer)),
-    ).pipe(
-      Command.withDescription(
-        "Run a stdio Codex app-server and capture thread-scoped requests, notifications and replies locally",
-      ),
-    ),
     Command.make(
       "remind",
       {},

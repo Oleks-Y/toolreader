@@ -182,7 +182,7 @@ Initial pilot validation, before the recorder extension: Codex CLI `0.164.0` ins
 
 ## Complete event recording, plugin 0.2.0
 
-Migration 14 adds `agent_history_events`, one workspace-scoped read-only view over the private events already stored by the archive. Its columns are `session_id`, `version`, `source`, `seq`, `timestamp`, `event_type`, and `data`. `data` is the complete recorded event JSON. Sources are `rollout`, `hook`, and `app-server`. Existing `agent_entries` and `agent_codex_events` remain compatible. The event view includes metadata, instructions, turn settings, tool definitions, usage, lifecycle records, and unknown event types without requiring a new decoder for each kind. Readable provider reasoning summaries need no new decoder; encrypted reasoning remains opaque.
+Migration 14 adds `agent_history_events`, one workspace-scoped read-only view over the private events already stored by the archive. Its columns are `session_id`, `version`, `source`, `seq`, `timestamp`, `event_type`, and `data`. `data` is the complete recorded event JSON. New imports use sources `rollout` and `hook`. Historical eval records with source `app-server` can remain queryable. Existing `agent_entries` and `agent_codex_events` remain compatible. The event view includes metadata, instructions, turn settings, tool definitions, usage, lifecycle records, and unknown event types without requiring a new decoder for each kind. Readable provider reasoning summaries need no new decoder; encrypted reasoning remains opaque.
 
 ```sql
 SELECT source, version, seq, timestamp, event_type, data
@@ -192,7 +192,7 @@ ORDER BY timestamp, source, version, seq
 LIMIT 100;
 ```
 
-Sequence numbers are local to each artifact, not a global causal order. Choose the rollout version you need; each hook invocation is its own immutable artifact, and each app-server recorder process writes a separate artifact per thread. Captured artifacts have an explicit `session_meta` header identifying the session and recorder source. They are generated recorder files, not native Codex rollout files. They retain the complete protocol objects or hook inputs. Every artifact remains linked to its original file and SHA-256. The existing SQL response size and row limits still apply; page or select string slices rather than treating `truncated` responses as complete.
+Sequence numbers are local to each artifact, not a global causal order. Choose the rollout version you need; each hook invocation is its own immutable artifact. Captured artifacts have an explicit `session_meta` header identifying the session and recorder source. They are generated recorder files, not native Codex rollout files. They retain the complete hook inputs. Every artifact remains linked to its original file and SHA-256. The existing SQL response size and row limits still apply; page or select string slices rather than treating `truncated` responses as complete.
 
 The normalizer now accepts standard MCP image blocks from Codex results and labels snake-case web `open_page`/`find_in_page` actions as fetches. Image storage still requires the existing workspace/bucket opt-in. Fixing image discovery does not silently enable that storage or change its policy.
 
@@ -202,28 +202,10 @@ After reviewing and trusting the new hook definitions, `SessionStart`, `PostTool
 
 `PermissionRequest` runs before the normal approval flow. It records the question and any supplied turn/tool information. It does **not** receive the user's later answer, and its payload may not include a tool-call ID. Do not infer an exact command/decision link from that hook alone. Hook capture requires a valid `session_id`; missing or invalid input fails visibly.
 
-### Exact approval capture for owning clients
+### Approval capture limit
 
-A client that starts its own Codex app-server over stdio can replace the server command with:
+The pilot does not proxy or record the live app-server connection. The former `pilot app-server` command and its stream recorder have been removed. New syncs read native rollout files and supported hook captures only; old local app-server capture files are ignored. `PermissionRequest` provides the question, not the later answer. Exact approval decisions and other stream-only events are unavailable through this collection path.
 
-```sh
-toolreader pilot app-server --codex /absolute/path/to/codex
-```
+The prior synthetic eval retained 70 native rollout events and 289 proxy-captured events. Its stored rows and original files remain historical evidence; the proxy events do not represent current collection support. The 20 compatibility entries, MCP image metadata, readable provider reasoning summaries, and web-action labels came from the rollout reader and remain supported. No new model run is required for the removal.
 
-Configure Codex through that process's normal `$CODEX_HOME/config.toml` and environment. The helper forwards stdio, routes thread-scoped JSON-RPC messages into local files, and records an approval request and the client's answer under the same protocol request ID. The request carries the command's `itemId`. The recorder never answers requests itself. Account/auth messages without a thread are not captured. Each recorder owns its stream files; writes are serialized, and capture failure terminates the child with a reported error. Records larger than 32 MiB fail explicitly. A sync during an unfinished write can fail validation; it never silently discards a partial record.
-
-```sql
-SELECT source, seq, data->'payload'->>'direction' AS direction,
-       data->'payload'->'message' AS message
-FROM agent_history_events
-WHERE session_id = 'SESSION_UUID' AND source = 'app-server'
-  AND (event_type = 'item/commandExecution/requestApproval'
-       OR event_type = 'response')
-ORDER BY timestamp, seq;
-```
-
-An approval response is a client-direction `response` whose message `id` matches the request's message `id`; do not confuse unrelated server responses with that answer. The request's `params.itemId` links it to the command's recorded item.
-
-This wrapper does not intercept a running Codex desktop app or CLI process. Ordinary desktop plugin users get hook capture, including the approval question, but exact decision capture requires an owning-client integration. The wrapper and hook helpers are tested without a real model in the automated suite. Manual real-agent evals are separate, explicitly authorized runs. No public deployment, host trust-store edit, or permission-policy change is required by this integration.
-
-Recorder extension validation: 15 focused parsing/file tests, 18 shared normalization compatibility tests, and 27 real HTTP/Postgres tests passed, including an existing-login migration and workspace isolation. Format/lint, all three TypeScript projects, viewer/site/CLI builds, npm packaging, and a temporary tarball install passed. A manual synthetic Codex 0.165.0 / gpt-6.1-sol run through the recorder produced thread `01a18241-6a05-7ee1-a5a2-0c3de3ee6637`: 20 compatibility entries, 70 rollout events, and 289 app-server events. Both original files passed byte-count and SHA-256 verification. The same thread was imported with the old and extended readers; entry IDs matched. The MCP image now retains MIME, byte count and SHA-256. Three readable reasoning summaries were recorded. A real approval request and the client's decline share their request ID; the denied command did not run. This version emitted the page open as `action.type=other`, so it is labeled `web action (operation not recorded)` rather than an empty search. Explicit snake-case opens are covered separately. Native plugin hook dispatch/trust, subagents, compaction, and object-storage downloads were not exercised in this run. The plan tool was unavailable. No personal sessions were imported.
+Proxy removal validation: 31 focused parsing, hook, and normalization tests plus 27 real HTTP/Postgres tests passed. Checks cover rejecting stream-source uploads and ignoring old local stream files. Format/lint, all TypeScript projects, viewer/site/CLI builds, packaging, and a temporary install passed. Both built and installed CLIs reject the removed command. The existing DataGrip eval database remains available with its historical records.
