@@ -127,9 +127,11 @@ export const finishArchive = Effect.fn("CodexArchive.finish")(
                 Effect.gen(function* () {
                   yield* sql`SELECT pg_advisory_xact_lock(hashtextextended(${`${workspace}:${m.sessionId}:${m.sha256}`},0))`;
                   const existing =
-                    yield* sql`SELECT event_count FROM codex_artifacts WHERE workspace_id=${workspace} AND session_id=${m.sessionId} AND sha256=${m.sha256}`;
+                    yield* sql`SELECT event_count,source FROM codex_artifacts WHERE workspace_id=${workspace} AND session_id=${m.sessionId} AND sha256=${m.sha256}`;
+                  if (existing.length && existing[0]?.source !== (m.source ?? "rollout"))
+                    return yield* invalidData();
                   if (existing.length === 0) {
-                    yield* sql`INSERT INTO codex_artifacts ${sql.insert({ workspace_id: workspace, session_id: m.sessionId, sha256: m.sha256, bytes: m.bytes, event_count: 0, file_path: file })}`;
+                    yield* sql`INSERT INTO codex_artifacts ${sql.insert({ workspace_id: workspace, session_id: m.sessionId, sha256: m.sha256, bytes: m.bytes, event_count: 0, file_path: file, source: m.source ?? "rollout" })}`;
                     let seq = 0;
                     for (;;) {
                       const next = yield* Effect.tryPromise({

@@ -81,6 +81,67 @@ const artifact = (sessionId: string, output: string) =>
 
 describe("Codex private pilot", () => {
   it.layer(TestLive, { timeout: 120_000 })((it) => {
+    it.effect("exposes complete events from multiple sources with workspace isolation", () =>
+      Effect.gen(function* () {
+        const store = yield* HistoryStore;
+        const token = yield* store.createToken("complete-events", "machine");
+        const api = yield* client(token);
+        const params = { ws: "complete-events" };
+        const sessionId = NodeCrypto.randomUUID();
+        for (const source of ["rollout", "hook", "app-server"] as const) {
+          const data = Buffer.from(
+            [
+              { type: "session_meta", payload: { id: sessionId } },
+              {
+                type: source === "hook" ? "hook.PermissionRequest" : "future_event",
+                payload: { complete: "x".repeat(12000), commandId: "command-a", source },
+              },
+            ]
+              .map((r) => encodeJson(r))
+              .join("\n") + "\n",
+          );
+          const sha256 = NodeCrypto.createHash("sha256").update(data).digest("hex");
+          const { uploadId } = yield* api.history.codexStart({
+            params,
+            payload: { source, sessionId, rootId: sessionId, sha256, bytes: data.length, parts: 1 },
+          });
+          yield* api.history.codexPart({
+            params,
+            payload: { uploadId, part: 0, data: data.toString("base64") },
+          });
+          assert.strictEqual(
+            (yield* api.history.codexFinish({ params, payload: { uploadId } })).events,
+            2,
+          );
+        }
+        const rows = yield* api.history.sql({
+          params,
+          payload: {
+            query:
+              "SELECT source,length(data->'payload'->>'complete') AS chars FROM agent_history_events WHERE event_type <> 'session_meta' ORDER BY source",
+          },
+        });
+        assert.deepStrictEqual(rows.rows, [
+          { source: "app-server", chars: 12000 },
+          { source: "hook", chars: 12000 },
+          { source: "rollout", chars: 12000 },
+        ]);
+        const rawFiles = yield* api.history.sql({
+          params,
+          payload: { query: "SELECT source,file_path FROM agent_codex_artifacts ORDER BY source" },
+        });
+        assert.strictEqual(rawFiles.rows.length, 3);
+        const outsider = yield* store.workspace("complete-outsider");
+        const hidden = yield* Effect.flatMap(AgentSql, (s) =>
+          s.query(outsider, "SELECT * FROM agent_history_events"),
+        );
+        assert.deepStrictEqual(hidden.rows, []);
+        const forbidden = yield* Effect.flip(
+          api.history.sql({ params, payload: { query: "SELECT * FROM codex_events" } }),
+        );
+        assert.strictEqual(forbidden._tag, "QueryRefused");
+      }),
+    );
     it.effect(
       "runs the packaged CLI over HTTP, selects direct peers only, and returns failure on upload errors",
       () =>

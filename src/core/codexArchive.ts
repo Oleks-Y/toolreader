@@ -11,7 +11,10 @@ export const SessionId = Schema.String.check(
 );
 const Hash = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
 const Count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+export const ArtifactSource = Schema.Literals(["rollout", "hook", "app-server"]);
+export type ArtifactSource = typeof ArtifactSource.Type;
 export const ArchiveStart = Schema.Struct({
+  source: Schema.optional(ArtifactSource),
   sessionId: SessionId,
   rootId: SessionId,
   sha256: Hash,

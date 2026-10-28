@@ -6,6 +6,7 @@ import type { Action, ActionKind, Entry, FileChange, Media, Message } from "./do
 import {
   ClaudeContent,
   ClaudeImage,
+  McpImage,
   ClaudeResult,
   CursorRawOutput,
   type CodexItem,
@@ -44,6 +45,7 @@ const FILE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 
 const decodeClaudeResult = Schema.decodeUnknownOption(ClaudeResult);
 const decodeClaudeContent = Schema.decodeUnknownOption(ClaudeContent);
+const decodeMcpImage = Schema.decodeUnknownOption(McpImage);
 const decodeClaudeImage = Schema.decodeUnknownOption(ClaudeImage);
 const decodeCursorRawOutput = Schema.decodeUnknownOption(CursorRawOutput);
 
@@ -74,7 +76,11 @@ function resultImages(result: unknown): Media[] {
   if (!Array.isArray(content)) return [];
   return content.flatMap((block) =>
     Option.match(decodeClaudeImage(block), {
-      onNone: () => [],
+      onNone: () =>
+        Option.match(decodeMcpImage(block), {
+          onNone: () => [],
+          onSome: (i) => [{ mime: i.mimeType, data: i.data }],
+        }),
       onSome: (i) => [{ mime: i.source.media_type, data: i.source.data }],
     }),
   );
@@ -454,9 +460,14 @@ function otherToolAction(p: ToolPayload): Draft {
     return {
       kind: "web",
       title:
-        a?.type === "openPage" || a?.type === "findInPage"
+        a?.type === "openPage" ||
+        a?.type === "findInPage" ||
+        a?.type === "open_page" ||
+        a?.type === "find_in_page"
           ? `fetch ${s(a.url) || "(URL not recorded)"}`
-          : `web search "${short(s(item.query ?? a?.query), 80)}"`,
+          : a?.type === "other"
+            ? "web action (operation not recorded)"
+            : `web search "${short(s(item.query ?? a?.query), 80)}"`,
       failed,
     };
   }
@@ -526,7 +537,7 @@ function toAction(id: string, at: string, p: ToolPayload, summary: string): Acti
         : p.status === "unknown"
           ? "unknown"
           : "ok";
-  const media = resultImages(p.data?.result);
+  const media = resultImages(p.data?.result ?? p.data?.item?.result);
   return { type: "action", id, at, status, ...rest, title, ...(media.length ? { media } : {}) };
 }
 

@@ -106,17 +106,18 @@ Run the plugin's setup skill. Merge the backend URL, workspace and per-machine t
 
 Restrict the file to the user, for example `chmod 600 ~/.toolreader/config.json`. `TOOLREADER_CONFIG` selects another file. `TOOLREADER_BACKEND_URL`, `TOOLREADER_BACKEND_WORKSPACE`, and `TOOLREADER_BACKEND_TOKEN` override it. Hooks often lack shell environment settings, so prefer the private file.
 
-Review and trust the current `SessionStart` and `PostToolUse` hooks in Codex's hook controls. Use `/hooks` in the CLI. Installing or enabling the plugin does not trust it. Do not edit the trust store. Resume or start a chat after installation. The hooks add developer context; they do not upload history or prove that the agent followed the instruction. No model run is part of automated tests. Users can explicitly invoke the history skill if a client does not deliver a reminder.
+Review and trust the current `SessionStart`, `PostToolUse`, and `PermissionRequest` hooks in Codex's hook controls. Use `/hooks` in the CLI. Installing or enabling the plugin does not trust it. Do not edit the trust store. Resume or start a chat after installation. The hooks record their input locally. Session and tool hooks also add developer context. They do not upload history or prove that the agent followed the instruction. No model run is part of automated tests. Users can explicitly invoke the history skill if a client does not deliver a reminder.
 
 Do not install the legacy repo-wide git push or Stop capture hooks for this pilot. If a repo already has them, review and disable their toolreader capture configuration before the pilot, preserving other hooks. They can select more history than this pilot permits.
 
 ## Read the complete available context
 
-The existing authenticated `toolreader history sql` command and MCP SQL tool can read three new workspace-scoped views. They have the same read-only login isolation as the existing views. Direct SQL connections can use that workspace's agent login if an operator provides its credentials privately. No new public SQL port is required.
+The existing authenticated `toolreader history sql` command and MCP SQL tool can read the workspace-scoped archive views. They have the same read-only login isolation as the existing views. Direct SQL connections can use that workspace's agent login if an operator provides its credentials privately. No new public SQL port is required.
 
 | View                       | Main fields                                                                                                                           |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `agent_codex_artifacts`    | `session_id`, `version`, `bytes`, `event_count`, `file_path`, `uploaded_at`, `root_id`                                                |
+| `agent_history_events`     | `session_id`, `version`, `source`, `seq`, `timestamp`, `event_type`, `data`                                                           |
+| `agent_codex_artifacts`    | `session_id`, `version`, `bytes`, `event_count`, `file_path`, `uploaded_at`, `root_id`, `source`                                      |
 | `agent_codex_events`       | `session_id`, `version`, `seq`, `type`, `at`, `raw`, `payload`, `call_id`, `tool_name`, `tool_arguments`, `tool_input`, `tool_output` |
 | `agent_codex_commit_links` | `repo`, `sha`, `session_id`, `role`, `linked_at`                                                                                      |
 
@@ -154,7 +155,7 @@ Use subsequent character offsets until the complete string is read. The standard
 - The backend verifies the byte count, parts, SHA-256 and metadata session id before publishing events. Each artifact's database write is transactional. The full selection is not a distributed transaction: a later session or commit-link failure can leave earlier successful uploads. The CLI exits with failure and does not print its final success message.
 - Available data means what Codex actually recorded. Upstream clipping, omitted tool results, encrypted reasoning, external media referenced only by path, and unavailable peer rollouts cannot be recovered here. Transcript formats are not a stable hook API. Unrecognized events remain intact, while malformed envelopes fail. Postgres JSONB rejects unsupported values such as NUL characters in strings; that upload fails rather than replacing them.
 - The private archive performs no publication redaction. Treat context, original files, temporary upload rows, backups and SQL credentials as team-private data. All holders of a workspace credential can read that workspace's archive through its SQL route. Use separate workspaces for separate access groups.
-- There are no automatic retries, recovery jobs, PR links, Cloud imports, or repo-wide scans. A failed command reports failure. Hooks only remind; deliberate agent selection remains required.
+- There are no automatic retries, recovery jobs, PR links, Cloud imports, or repo-wide scans. A failed command reports failure. Hooks capture input locally and add reminders; deliberate agent selection remains required for uploads.
 
 ## Verification
 
@@ -177,4 +178,52 @@ Official support references, checked for this implementation:
 - [Hook input and transcript stability](https://learn.chatgpt.com/docs/hooks#common-input-fields)
 - [CLI plugin installation and hook controls](https://learn.chatgpt.com/docs/developer-commands)
 
-Validated for this change: Codex CLI `0.164.0` installed and enabled both the source plugin and the plugin from the installed npm tarball, each under a temporary `CODEX_HOME`. The installed hook shim emitted the expected `PostToolUse.additionalContext` on Node `24.19.0`. Five pure/file tests and 25 real HTTP/Postgres tests passed. The latter ran on Node `24.19.0` with Postgres `17.5` in Compose, including the bundled CLI subprocess. Format/lint, all three TypeScript projects, viewer/site/CLI builds, `npm pack`, and a tarball install passed. Desktop support is based on the official plugin and hook contracts; live desktop trust UI and a model following the skill were not exercised. No real history was sent.
+Initial pilot validation, before the recorder extension: Codex CLI `0.164.0` installed and enabled both the source plugin and the plugin from the installed npm tarball, each under a temporary `CODEX_HOME`. The installed hook shim emitted the expected `PostToolUse.additionalContext` on Node `24.19.0`. Five pure/file tests and 25 real HTTP/Postgres tests passed. The latter ran on Node `24.19.0` with Postgres `17.5` in Compose, including the bundled CLI subprocess. Format/lint, all three TypeScript projects, viewer/site/CLI builds, `npm pack`, and a tarball install passed. Desktop support is based on the official plugin and hook contracts; live desktop trust UI and a model following the skill were not exercised. No real history was sent.
+
+## Complete event recording, plugin 0.2.0
+
+Migration 14 adds `agent_history_events`, one workspace-scoped read-only view over the private events already stored by the archive. Its columns are `session_id`, `version`, `source`, `seq`, `timestamp`, `event_type`, and `data`. `data` is the complete recorded event JSON. Sources are `rollout`, `hook`, and `app-server`. Existing `agent_entries` and `agent_codex_events` remain compatible. The event view includes metadata, instructions, turn settings, tool definitions, usage, lifecycle records, and unknown event types without requiring a new decoder for each kind. Readable provider reasoning summaries need no new decoder; encrypted reasoning remains opaque.
+
+```sql
+SELECT source, version, seq, timestamp, event_type, data
+FROM agent_history_events
+WHERE session_id = 'SESSION_UUID'
+ORDER BY timestamp, source, version, seq
+LIMIT 100;
+```
+
+Sequence numbers are local to each artifact, not a global causal order. Choose the rollout version you need; each hook invocation is its own immutable artifact, and each app-server recorder process writes a separate artifact per thread. Captured artifacts have an explicit `session_meta` header identifying the session and recorder source. They are generated recorder files, not native Codex rollout files. They retain the complete protocol objects or hook inputs. Every artifact remains linked to its original file and SHA-256. The existing SQL response size and row limits still apply; page or select string slices rather than treating `truncated` responses as complete.
+
+The normalizer now accepts standard MCP image blocks from Codex results and labels snake-case web `open_page`/`find_in_page` actions as fetches. Image storage still requires the existing workspace/bucket opt-in. Fixing image discovery does not silently enable that storage or change its policy.
+
+### Plugin hook capture
+
+After reviewing and trusting the new hook definitions, `SessionStart`, `PostToolUse`, and `PermissionRequest` record their input locally under `$CODEX_HOME/toolreader-events/SESSION/hook/`. Each invocation writes its own file, so concurrent hooks do not share an append cursor. The hooks perform no uploads. `pilot sync` discovers capture files only under selected session IDs, validates them and uploads them with their source. Hook input is bounded at 8 MiB; an exceeded bound fails explicitly. The capture helper writes no permission decision and does not grant or deny a request.
+
+`PermissionRequest` runs before the normal approval flow. It records the question and any supplied turn/tool information. It does **not** receive the user's later answer, and its payload may not include a tool-call ID. Do not infer an exact command/decision link from that hook alone. Hook capture requires a valid `session_id`; missing or invalid input fails visibly.
+
+### Exact approval capture for owning clients
+
+A client that starts its own Codex app-server over stdio can replace the server command with:
+
+```sh
+toolreader pilot app-server --codex /absolute/path/to/codex
+```
+
+Configure Codex through that process's normal `$CODEX_HOME/config.toml` and environment. The helper forwards stdio, routes thread-scoped JSON-RPC messages into local files, and records an approval request and the client's answer under the same protocol request ID. The request carries the command's `itemId`. The recorder never answers requests itself. Account/auth messages without a thread are not captured. Each recorder owns its stream files; writes are serialized, and capture failure terminates the child with a reported error. Records larger than 32 MiB fail explicitly. A sync during an unfinished write can fail validation; it never silently discards a partial record.
+
+```sql
+SELECT source, seq, data->'payload'->>'direction' AS direction,
+       data->'payload'->'message' AS message
+FROM agent_history_events
+WHERE session_id = 'SESSION_UUID' AND source = 'app-server'
+  AND (event_type = 'item/commandExecution/requestApproval'
+       OR event_type = 'response')
+ORDER BY timestamp, seq;
+```
+
+An approval response is a client-direction `response` whose message `id` matches the request's message `id`; do not confuse unrelated server responses with that answer. The request's `params.itemId` links it to the command's recorded item.
+
+This wrapper does not intercept a running Codex desktop app or CLI process. Ordinary desktop plugin users get hook capture, including the approval question, but exact decision capture requires an owning-client integration. The wrapper and hook helpers are tested without a real model in the automated suite. Manual real-agent evals are separate, explicitly authorized runs. No public deployment, host trust-store edit, or permission-policy change is required by this integration.
+
+Recorder extension validation: 15 focused parsing/file tests, 18 shared normalization compatibility tests, and 27 real HTTP/Postgres tests passed, including an existing-login migration and workspace isolation. Format/lint, all three TypeScript projects, viewer/site/CLI builds, npm packaging, and a temporary tarball install passed. A manual synthetic Codex 0.165.0 / gpt-6.1-sol run through the recorder produced thread `01a18241-6a05-7ee1-a5a2-0c3de3ee6637`: 20 compatibility entries, 70 rollout events, and 289 app-server events. Both original files passed byte-count and SHA-256 verification. The same thread was imported with the old and extended readers; entry IDs matched. The MCP image now retains MIME, byte count and SHA-256. Three readable reasoning summaries were recorded. A real approval request and the client's decline share their request ID; the denied command did not run. This version emitted the page open as `action.type=other`, so it is labeled `web action (operation not recorded)` rather than an empty search. Explicit snake-case opens are covered separately. Native plugin hook dispatch/trust, subagents, compaction, and object-storage downloads were not exercised in this run. The plan tool was unavailable. No personal sessions were imported.

@@ -20,6 +20,7 @@ import Migration0008 from "./Migrations/008_Reviews.ts";
 import Migration0009 from "./Migrations/009_AgentSchema.ts";
 import Migration0010 from "./Migrations/010_Media.ts";
 import Migration0011 from "./Migrations/011_Coverage.ts";
+import Migration0014 from "./Migrations/014_HistoryEvents.ts";
 import Migration0013 from "./Migrations/013_CodexArchive.ts";
 import Migration0012 from "./Migrations/012_CommitLinks.ts";
 
@@ -38,6 +39,7 @@ export const migrationEntries = [
   [11, "Coverage", Migration0011],
   [12, "CommitLinks", Migration0012],
   [13, "CodexArchive", Migration0013],
+  [14, "HistoryEvents", Migration0014],
 ] as const;
 
 const TABLE = "toolreader_migrations";

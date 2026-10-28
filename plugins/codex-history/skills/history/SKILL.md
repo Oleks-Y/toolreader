@@ -28,3 +28,5 @@ The helper adds direct message peers whose UUIDs appear in supported message eve
 A missing peer artifact, partial JSON record, size limit, transport error, or bad upload receipt fails the command. Report that failure. Earlier session uploads can exist after a later failure. Do not report success, schedule retries, or start a recovery queue. Keep working on independent work.
 
 Cloud sessions are outside this pilot. This plugin does not replace the team's review process.
+
+The helper also sends local hook and app-server capture artifacts for the selected session IDs. These files retain their source (`rollout`, `hook`, `app-server`) in the backend. Query complete recorded data through `agent_history_events`; `agent_entries` remains a compatibility view and can shorten outputs. Do not claim an approval decision from a PermissionRequest hook alone. The exact client answer is available only when the owning client's app-server traffic recorder captured it.

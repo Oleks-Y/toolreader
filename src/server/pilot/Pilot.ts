@@ -16,6 +16,7 @@ import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import {
   ARCHIVE,
+  type ArtifactSource,
   SessionId,
   archiveEvent,
   archivePeers,
@@ -23,6 +24,7 @@ import {
 } from "../../core/codexArchive.ts";
 import { backendSettings, call, connect, HistoryFailed } from "../history/HistoryClient.ts";
 import { ServerConfig } from "../ServerConfig.ts";
+import { capturedArtifacts } from "./capture.ts";
 import { archiveLines } from "./io.ts";
 
 const io = <A>(f: () => Promise<A>) =>
@@ -153,6 +155,7 @@ export const syncPilot = Effect.fn("Pilot.sync")(function* (options: PilotOption
       const temporary = yield* fs.makeTempDirectoryScoped({ prefix: "toolreader-codex-" });
       const selected: Array<{
         id: string;
+        source: ArtifactSource;
         file: string;
         bytes: number;
         sha256: string;
@@ -175,12 +178,26 @@ export const syncPilot = Effect.fn("Pilot.sync")(function* (options: PilotOption
               message: `Selected artifact ${id} is invalid, incomplete or exceeds the 32 MiB record limit; nothing truncated`,
             }),
         });
-        selected.push({ id, file, ...snapshot, events: inspected.events });
+        selected.push({ id, source: "rollout", file, ...snapshot, events: inspected.events });
         return inspected.peers;
       });
       const peers = yield* select(rootId);
       // Direct root peers only. Never walk their relations, parent trees or unrelated repo sessions.
       for (const id of new Set([...peers, ...explicit])) if (id !== rootId) yield* select(id);
+      for (const id of new Set(selected.map((s) => s.id))) {
+        for (const capture of yield* io(() => capturedArtifacts(config.codexHome, id))) {
+          const file = path.join(temporary, `${id}-${selected.length}.jsonl`);
+          const snapshot = yield* io(() => snapshotArtifact(capture.file, file));
+          const inspected = yield* io(() => inspectArtifact(file, id));
+          selected.push({
+            id,
+            source: capture.source,
+            file,
+            ...snapshot,
+            events: inspected.events,
+          });
+        }
+      }
       // Validate every selected snapshot before the first upload. There is no automatic retry.
       for (const item of selected) {
         const { uploadId } = yield* call(
@@ -188,6 +205,7 @@ export const syncPilot = Effect.fn("Pilot.sync")(function* (options: PilotOption
             params,
             payload: {
               sessionId: item.id,
+              source: item.source,
               rootId,
               sha256: item.sha256,
               bytes: item.bytes,
@@ -250,7 +268,7 @@ export const syncPilot = Effect.fn("Pilot.sync")(function* (options: PilotOption
         yield* Console.log(`Linked ${rootId} to ${sha} as ${options.role}`);
       }
       yield* Console.log(
-        `Synced ${selected.length} selected Codex sessions. No PR relation stored.`,
+        `Synced ${new Set(selected.map((s) => s.id)).size} selected Codex sessions (${selected.length} artifacts). No PR relation stored.`,
       );
     }),
   );

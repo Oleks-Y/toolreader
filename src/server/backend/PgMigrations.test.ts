@@ -40,6 +40,26 @@ const inFreshSchema = <A, E, R>(self: Effect.Effect<A, E, R>) =>
 
 describe("PgMigrations", () => {
   it.layer(TestLive, { timeout: 120_000 })((it) => {
+    it.effect("grants the complete event view to a login created before migration 14", () =>
+      inFreshSchema(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* migrate({ through: 13 });
+          const workspace = NodeCrypto.randomUUID();
+          const role = `tr_upgrade_${NodeCrypto.randomBytes(8).toString("hex")}`;
+          yield* sql`INSERT INTO workspaces(id,slug) VALUES (${workspace},${role})`;
+          yield* sql.unsafe(`CREATE ROLE ${role} NOLOGIN`);
+          yield* sql`INSERT INTO agent_logins(workspace_id,role_name,password) VALUES (${workspace},${role},'test-only')`;
+          yield* migrate();
+          const [privilege] = yield* sql<{
+            granted: boolean;
+          }>`SELECT has_table_privilege(${role},current_schema()||'.agent_history_events','SELECT') AS granted`;
+          assert.isTrue(privilege?.granted);
+          yield* sql`REVOKE SELECT ON agent_history_events FROM ${sql(role)}`;
+          yield* sql`DROP ROLE ${sql(role)}`;
+        }),
+      ),
+    );
     it.effect("migrates an empty database, once", () =>
       inFreshSchema(
         Effect.gen(function* () {
