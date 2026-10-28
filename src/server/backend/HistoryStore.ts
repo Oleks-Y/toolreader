@@ -50,6 +50,7 @@ import { ReviewManifest, type EvidenceNow } from "../../core/review.ts";
 import { hunkKey, StoredBlame } from "../../core/blame.ts";
 import { forJsonb, sha256, threadSha } from "../recordHash.ts";
 import { ENTRY_ROWS } from "./Migrations/005_Entries.ts";
+import { CODEX_VIEWS } from "./Migrations/013_CodexArchive.ts";
 import { AGENT_VIEWS } from "./Migrations/009_AgentSchema.ts";
 
 type SourceState = (typeof SOURCE_STATES)[number];
@@ -1488,7 +1489,9 @@ export class HistoryStore extends Context.Service<
               yield* sql.unsafe(
                 `DO $$ BEGIN EXECUTE format('GRANT USAGE ON SCHEMA %I TO ${role}', current_schema()); END $$`,
               );
-              yield* sql.unsafe(`GRANT SELECT ON ${AGENT_VIEWS.join(", ")} TO ${role}`);
+              yield* sql.unsafe(
+                `GRANT SELECT ON ${[...AGENT_VIEWS, ...CODEX_VIEWS].join(", ")} TO ${role}`,
+              );
               yield* sql`
                 INSERT INTO agent_logins (workspace_id, role_name, password)
                 VALUES (${workspaceId}, ${role}, ${password})`;

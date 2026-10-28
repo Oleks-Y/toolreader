@@ -1,0 +1,7 @@
+{
+  "name": "toolreader-team",
+  "interface": { "displayName": "Toolreader team pilot" },
+  "plugins": [
+    { "name": "codex-history", "source": { "source": "local", "path": "./plugins/codex-history" } }
+  ]
+}

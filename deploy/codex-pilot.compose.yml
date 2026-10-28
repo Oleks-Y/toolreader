@@ -1,0 +1,52 @@
+# Start only after the team approves this private deployment. No public port is opened.
+name: toolreader-codex-pilot
+services:
+  postgres:
+    image: postgres:17.5
+    network_mode: bridge
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a private database password}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${TOOLREADER_PORT:-4780}:4781"
+    healthcheck:
+      test: [CMD, pg_isready, -U, postgres]
+      interval: 2s
+      retries: 30
+    restart: unless-stopped
+  backend:
+    image: node:24.19.0-slim
+    network_mode: service:postgres
+    command: [node, /opt/toolreader/dist/bin.mjs, backend, serve, --port, "4780"]
+    environment:
+      TOOLREADER_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@127.0.0.1:5432/postgres
+      TOOLREADER_CODEX_ARCHIVE_DIR: /var/lib/toolreader/codex
+    volumes:
+      - ${TOOLREADER_PACKAGE_DIR:?absolute path of installed reviewed tarball}:/opt/toolreader:ro
+      - artifacts:/var/lib/toolreader/codex
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "fetch('http://127.0.0.1:4780/v1/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))",
+        ]
+      interval: 2s
+      retries: 30
+    restart: unless-stopped
+  loopback-port:
+    image: alpine/socat:1.8.0.3
+    network_mode: service:postgres
+    command: ["TCP-LISTEN:4781,fork,reuseaddr", "TCP:127.0.0.1:4780"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  postgres:
+  artifacts:

@@ -31,7 +31,7 @@ const inFreshSchema = <A, E, R>(self: Effect.Effect<A, E, R>) =>
       .withTransaction(
         Effect.gen(function* () {
           yield* sql`CREATE SCHEMA ${sql(schema)}`;
-          yield* sql`SET LOCAL search_path TO ${sql(schema)}`;
+          yield* sql`SET LOCAL search_path TO ${sql(schema)}, public`;
           return yield* self;
         }),
       )

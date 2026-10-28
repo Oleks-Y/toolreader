@@ -9,6 +9,7 @@ import * as HttpApiGroup from "effect/unstable/httpapi/HttpApiGroup";
 import * as HttpApiMiddleware from "effect/unstable/httpapi/HttpApiMiddleware";
 import * as HttpApiSecurity from "effect/unstable/httpapi/HttpApiSecurity";
 
+import { ArchiveStart, ArchivePart, ArchiveFinish, ArchiveLink } from "./codexArchive.ts";
 import { StoredBlame } from "./blame.ts";
 import {
   CommitRecordV1,
@@ -246,7 +247,7 @@ export const Evidence = Schema.Struct({
 export type Evidence = typeof Evidence.Type;
 
 /** What an agent's SQL can read: the `sql` endpoint's views, as agents are told about them. */
-export const AGENT_SCHEMA = `Read-only Postgres SQL over the latest imported copy of every agent conversation in the workspace, whoever's machine it ran on. A copy can be behind its live session (taken_at says when it was read), so a row you don't find means "not found in the imported history as of taken_at", never "it never happened". One statement; at most 1000 rows, 1 MB and 10 s. Three views:
+export const AGENT_SCHEMA = `Read-only Postgres SQL over the latest imported copy of every agent conversation in the workspace, whoever's machine it ran on. A copy can be behind its live session (taken_at says when it was read), so a row you don't find means "not found in the imported history as of taken_at", never "it never happened". One statement; at most 1000 rows, 1 MB and 10 s. The standard history views follow. The private Codex pilot also has agent_codex_artifacts (session_id, version, bytes, event_count, file_path, uploaded_at, root_id), agent_codex_events (session_id, version, seq, type, at, raw, payload, call_id, tool_name, tool_arguments, tool_input, tool_output), and agent_codex_commit_links (repo, sha, session_id, role, linked_at). Pilot events retain full available inputs and outputs; query raw for unknown event fields. Multiple versions are retained: choose a version explicitly. Query large strings in substrings to stay under the SQL response limit; truncated=true means read more. Pilot imports are selected sessions only. They are not included in standard coverage counts. Standard views:
 
 agent_threads: one row per conversation.
   id (T3 thread ids are bare; codex:<id>, claude:<id>), title (its first prompt), source (t3|codex|claude), provider, origin (the client that ran it), parent (the conversation that delegated this one, for a subagent; null otherwise), snapshot (jsonb: how it started, e.g. startCommit, branch), taken_at, uploaded_at, version, entry_count, last_entry_at (its newest step when read), source_state (running|idle|error|unknown: what its source said when last checked; nothing says a conversation ended), checked_at (when a client last confirmed this copy matched its source).
@@ -301,6 +302,34 @@ export type SqlResult = typeof SqlResult.Type;
 
 export class HistoryApi extends HttpApiGroup.make("history")
   .add(
+    HttpApiEndpoint.post("codexStart", "/workspaces/:ws/codex/start", {
+      params: ws,
+      payload: ArchiveStart,
+      success: Schema.Struct({ uploadId: Schema.String }),
+      error: [Forbidden, BackendFailed, Rejected],
+    }),
+    HttpApiEndpoint.post("codexPart", "/workspaces/:ws/codex/part", {
+      params: ws,
+      payload: ArchivePart,
+      success: Schema.Struct({ ok: Schema.Boolean }),
+      error: [Forbidden, BackendFailed, Rejected],
+    }),
+    HttpApiEndpoint.post("codexFinish", "/workspaces/:ws/codex/finish", {
+      params: ws,
+      payload: ArchiveFinish,
+      success: Schema.Struct({
+        sessionId: Schema.String,
+        sha256: Schema.String,
+        events: Schema.Number,
+      }),
+      error: [Forbidden, BackendFailed, Rejected],
+    }),
+    HttpApiEndpoint.post("codexLink", "/workspaces/:ws/codex/link", {
+      params: ws,
+      payload: ArchiveLink,
+      success: Schema.Struct({ ok: Schema.Boolean }),
+      error: [Forbidden, BackendFailed, Rejected],
+    }),
     // Which of these threads the workspace holds, by content hash: the client sends only the ones
     // missing or changed.
     HttpApiEndpoint.post("hashes", "/workspaces/:ws/threads/hashes", {
