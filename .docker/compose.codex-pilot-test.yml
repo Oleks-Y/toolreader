@@ -24,6 +24,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    command: [sh, -c, "corepack enable && corepack prepare pnpm@11.10.0 --activate && pnpm install --frozen-lockfile && pnpm exec vp pack && pnpm exec vp test run src/server/backend/CodexArchive.test.ts src/server/backend/PgMigrations.test.ts src/server/backend/Backend.test.ts src/server/backend/AgentSql.test.ts --no-file-parallelism"]
+    command:
+      [
+        sh,
+        -c,
+        "corepack enable && corepack prepare pnpm@11.10.0 --activate && pnpm install --frozen-lockfile && pnpm exec vp pack && pnpm exec vp test run src/server/backend/CodexArchive.test.ts src/server/backend/PgMigrations.test.ts src/server/backend/Backend.test.ts src/server/backend/AgentSql.test.ts --no-file-parallelism",
+      ]
 volumes:
   pilot-test-modules:

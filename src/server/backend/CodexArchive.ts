@@ -37,6 +37,10 @@ const enabled = Effect.gen(function* () {
     );
   return dir;
 });
+const keepExact = Config.boolean("TOOLREADER_CODEX_RETAIN_EXACT").pipe(
+  Config.withDefault(false),
+  Effect.mapError(() => invalid("Invalid exact Codex retention setting")),
+);
 const Uploads = Schema.Array(Schema.Struct({ manifest: ArchiveStart }));
 const decodeUploads = Schema.decodeUnknownSync(Uploads);
 const Parts = Schema.Array(Schema.Struct({ data: Schema.Uint8Array }));
@@ -51,6 +55,15 @@ const databaseFailed = () =>
 export const startArchive = Effect.fn("CodexArchive.start")(
   function* (workspace: string, manifest: ArchiveStart) {
     yield* enabled;
+    if ((manifest.copyKind ?? "exact") === "exact" && !(yield* keepExact))
+      return yield* invalid("Exact Codex rollout retention is disabled");
+    if (
+      manifest.copyKind === "filtered" &&
+      (!manifest.sourceSha256 ||
+        !manifest.includedDirectories ||
+        manifest.includedDirectories.some((dir) => !NodePath.isAbsolute(dir)))
+    )
+      return yield* invalid("Filtered copy needs source hash and absolute included directories");
     if (manifest.parts !== Math.ceil(manifest.bytes / ARCHIVE.chunkBytes))
       return yield* invalidData();
     const sql = yield* SqlClient.SqlClient;
@@ -95,12 +108,16 @@ export const finishArchive = Effect.fn("CodexArchive.finish")(
     )[0];
     if (!held) return yield* invalidData();
     const m = held.manifest;
+    if ((m.copyKind ?? "exact") === "exact" && !(yield* keepExact))
+      return yield* invalid("Exact Codex rollout retention is disabled");
+    if (m.copyKind === "filtered" && (!m.sourceSha256 || !m.includedDirectories))
+      return yield* invalidData();
     // Random staging file; content-addressed final files never change once visible to readers.
     const folder = NodePath.join(dir, workspace, m.sessionId);
     yield* io(() => NodeFSP.mkdir(folder, { recursive: true, mode: 0o700 }));
     const temp = NodePath.join(folder, `.${NodeCrypto.randomUUID()}.tmp`);
     const file = NodePath.join(folder, `${m.sha256}.jsonl`);
-    return yield* Effect.acquireUseRelease(
+    const completed = yield* Effect.acquireUseRelease(
       io(() => NodeFSP.open(temp, "wx", 0o600)),
       (handle) =>
         Effect.gen(function* () {
@@ -126,12 +143,39 @@ export const finishArchive = Effect.fn("CodexArchive.finish")(
               sql.withTransaction(
                 Effect.gen(function* () {
                   yield* sql`SELECT pg_advisory_xact_lock(hashtextextended(${`${workspace}:${m.sessionId}:${m.sha256}`},0))`;
-                  const existing =
-                    yield* sql`SELECT event_count,source FROM codex_artifacts WHERE workspace_id=${workspace} AND session_id=${m.sessionId} AND sha256=${m.sha256}`;
+                  const existing = yield* sql<{
+                    source: string;
+                    copy_kind: string;
+                    source_sha256: string | null;
+                    included_directories: unknown;
+                  }>`SELECT event_count,source,copy_kind,source_sha256,included_directories FROM codex_artifacts WHERE workspace_id=${workspace} AND session_id=${m.sessionId} AND sha256=${m.sha256}`;
                   if (existing.length && existing[0]?.source !== (m.source ?? "rollout"))
                     return yield* invalidData();
+                  if (
+                    existing[0]?.copy_kind === "filtered" &&
+                    existing[0].source_sha256 !== m.sourceSha256
+                  )
+                    return yield* invalid("This filtered version already names another source");
+                  if (
+                    existing[0]?.copy_kind === "filtered" &&
+                    encodeJson(existing[0].included_directories) !==
+                      encodeJson(m.includedDirectories ?? [])
+                  )
+                    yield* sql`UPDATE codex_artifacts SET included_directories=${encodeJson(m.includedDirectories ?? [])}
+                      WHERE workspace_id=${workspace} AND session_id=${m.sessionId} AND sha256=${m.sha256}`;
+                  if (existing.length && existing[0]?.copy_kind !== (m.copyKind ?? "exact")) {
+                    if (
+                      m.copyKind !== "filtered" ||
+                      existing[0]?.copy_kind !== "exact" ||
+                      m.sha256 !== m.sourceSha256
+                    )
+                      return yield* invalidData();
+                    yield* sql`UPDATE codex_artifacts SET copy_kind='filtered',source_sha256=${m.sourceSha256},
+                      included_directories=${encodeJson(m.includedDirectories ?? [])}
+                      WHERE workspace_id=${workspace} AND session_id=${m.sessionId} AND sha256=${m.sha256}`;
+                  }
                   if (existing.length === 0) {
-                    yield* sql`INSERT INTO codex_artifacts ${sql.insert({ workspace_id: workspace, session_id: m.sessionId, sha256: m.sha256, bytes: m.bytes, event_count: 0, file_path: file, source: m.source ?? "rollout" })}`;
+                    yield* sql`INSERT INTO codex_artifacts ${sql.insert({ workspace_id: workspace, session_id: m.sessionId, sha256: m.sha256, bytes: m.bytes, event_count: 0, file_path: file, source: m.source ?? "rollout", copy_kind: m.copyKind ?? "exact", source_sha256: m.sourceSha256 ?? null, included_directories: encodeJson(m.includedDirectories ?? []) })}`;
                     let seq = 0;
                     for (;;) {
                       const next = yield* Effect.tryPromise({
@@ -167,6 +211,28 @@ export const finishArchive = Effect.fn("CodexArchive.finish")(
                     }
                   });
                   yield* sql`INSERT INTO codex_selections ${sql.insert({ workspace_id: workspace, root_id: m.rootId, session_id: m.sessionId, sha256: m.sha256 })} ON CONFLICT DO NOTHING`;
+                  const obsolete: string[] = [];
+                  if (
+                    m.copyKind === "filtered" &&
+                    m.sha256 !== m.sourceSha256 &&
+                    !(yield* keepExact)
+                  ) {
+                    const legacy = yield* sql<{
+                      file_path: string;
+                    }>`SELECT file_path FROM codex_artifacts
+                      WHERE workspace_id=${workspace} AND session_id=${m.sessionId}
+                        AND sha256=${m.sourceSha256!} AND source=${m.source ?? "rollout"}
+                        AND copy_kind='exact' FOR UPDATE`;
+                    if (legacy.length) {
+                      yield* sql`INSERT INTO codex_selections(workspace_id,root_id,session_id,sha256)
+                        SELECT workspace_id,root_id,session_id,${m.sha256} FROM codex_selections
+                        WHERE workspace_id=${workspace} AND session_id=${m.sessionId} AND sha256=${m.sourceSha256!}
+                        ON CONFLICT DO NOTHING`;
+                      yield* sql`DELETE FROM codex_artifacts WHERE workspace_id=${workspace}
+                        AND session_id=${m.sessionId} AND sha256=${m.sourceSha256!} AND copy_kind='exact'`;
+                      obsolete.push(...legacy.map((row) => row.file_path));
+                    }
+                  }
                   yield* sql`DELETE FROM codex_uploads WHERE workspace_id=${workspace} AND id=${uploadId}`;
                   const count = yield* sql<{
                     event_count: number;
@@ -175,6 +241,7 @@ export const finishArchive = Effect.fn("CodexArchive.finish")(
                     sessionId: m.sessionId,
                     sha256: m.sha256,
                     events: count[0]!.event_count,
+                    obsolete,
                   };
                 }),
               ),
@@ -187,6 +254,24 @@ export const finishArchive = Effect.fn("CodexArchive.finish")(
           await NodeFSP.rm(temp, { force: true });
         }).pipe(Effect.ignore),
     );
+    for (const oldFile of completed.obsolete) {
+      if (
+        NodePath.dirname(oldFile) !== folder ||
+        !/^[0-9a-f]{64}\.jsonl$/.test(NodePath.basename(oldFile))
+      )
+        return yield* new BackendFailed({
+          message: "Legacy artifact path is not in its session directory",
+        });
+      yield* Effect.tryPromise({
+        try: () => NodeFSP.rm(oldFile, { force: true }),
+        catch: () =>
+          new BackendFailed({
+            message:
+              "Filtered copy stored, but legacy exact file cleanup failed; operator cleanup is required",
+          }),
+      });
+    }
+    return { sessionId: completed.sessionId, sha256: completed.sha256, events: completed.events };
   },
   Effect.catchTag("SqlError", () => Effect.fail(databaseFailed())),
 );
@@ -200,6 +285,32 @@ export const linkArchive = Effect.fn("CodexArchive.link")(
     if (!held.length) return yield* invalid("Sync this Codex session before linking a commit");
     yield* sql`INSERT INTO codex_commit_links ${sql.insert({ workspace_id: workspace, repo: link.repo, sha: link.sha, session_id: link.sessionId, role: link.role })} ON CONFLICT DO NOTHING`;
     return { ok: true };
+  },
+  Effect.catchTag("SqlError", () => Effect.fail(databaseFailed())),
+);
+
+/** Metadata only: the client uses this to find legacy exact copies that need local backfill. */
+export const archiveInventory = Effect.fn("CodexArchive.inventory")(
+  function* (workspace: string) {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{
+      session_id: string;
+      source: string;
+      sha256: string;
+      copy_kind: string;
+      source_sha256: string | null;
+    }>`SELECT session_id::text,source,sha256,copy_kind,source_sha256
+       FROM codex_artifacts WHERE workspace_id=${workspace}
+       ORDER BY session_id,source,sha256`;
+    return {
+      artifacts: rows.map((row) => ({
+        sessionId: row.session_id,
+        source: row.source,
+        version: row.sha256,
+        copyKind: row.copy_kind,
+        sourceSha256: row.source_sha256,
+      })),
+    };
   },
   Effect.catchTag("SqlError", () => Effect.fail(databaseFailed())),
 );

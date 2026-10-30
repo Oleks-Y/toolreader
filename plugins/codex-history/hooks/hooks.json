@@ -17,7 +17,18 @@
           {
             "type": "command",
             "command": "node \"${PLUGIN_ROOT}/hooks/remind.mjs\"",
-            "timeout": 10
+            "timeout": 600
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/remind.mjs\"",
+            "timeout": 3
           }
         ]
       }

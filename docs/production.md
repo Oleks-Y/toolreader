@@ -5,19 +5,12 @@ workspace per team. Developers' machines send it; anyone with access builds a PR
 
 ## Who writes it
 
-| Writer                                       | Where its sessions are                                       | How it sends                                                                       |
-| -------------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
-| Developer with T3 Code, Codex or Claude Code | T3's SQLite DB, Codex rollout files, Claude Code transcripts | the `pre-push` hook (`toolreader history hook install`), or `history sync` by hand |
-
-- A commit is linked to the turns whose edits added its lines, so it doesn't matter when or where it was committed: after a rebase, a squash, a stack split from one branch.
-- `pre-push`, in the background, once origin has taken the push: it sees the pushed range, never slows the push, and sends nothing for a push origin refused.
-- Linking runs on the developer's machine, where the sessions are; only redacted threads and links leave it, over https (plain http only to the same machine), with the workspace's token.
-- CI agents (`codex exec` in a job) aren't covered yet: their sessions live in the job's `CODEX_HOME` and would need `history sync` there, with a token.
+The `codex-history` plugin selects a local Codex chat and its direct message peers. `history sync` sends its normalized thread and filtered rollout. The workspace token authorizes each writer. The `TOOLREADER_SYNC_STRATEGY` setting chooses manual sync, sync after a successful commit, sync after a successful push, or sync when the main session ends. The old repo-wide push and Stop hooks are not part of this flow. See [the pilot guide](codex-team-pilot.md).
 
 ## Storage
 
-- Each linked thread once, whole: its history redacted, each output clipped to 8 KB head and tail. Sent again only when it changed (the client compares content hashes first).
-- Each commit's links: which threads, which turns, how many of its new lines they wrote. Replaced whenever the commit is linked again.
+- Each selected Codex session has a normalized, redacted thread for the UI and a filtered rollout copy for agent SQL. The normalized view clips long outputs; the filtered event copy keeps the recorded text after the path and secret filter.
+- An explicit `--sha` links the selected root chat to that commit after sync. Direct peers do not inherit its link.
 - Workspaces and tokens (only each token's SHA-256). Retention is the database's: delete rows, or drop a workspace.
 
 ## Who reads it

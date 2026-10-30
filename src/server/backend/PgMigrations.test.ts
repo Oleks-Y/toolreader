@@ -55,7 +55,11 @@ describe("PgMigrations", () => {
             granted: boolean;
           }>`SELECT has_table_privilege(${role},current_schema()||'.agent_history_events','SELECT') AS granted`;
           assert.isTrue(privilege?.granted);
-          yield* sql`REVOKE SELECT ON agent_history_events FROM ${sql(role)}`;
+          const [filtered] = yield* sql<{
+            granted: boolean;
+          }>`SELECT has_table_privilege(${role},current_schema()||'.agent_filtered_rollouts','SELECT') AS granted`;
+          assert.isTrue(filtered?.granted);
+          yield* sql`REVOKE SELECT ON agent_history_events,agent_filtered_rollouts FROM ${sql(role)}`;
           yield* sql`DROP ROLE ${sql(role)}`;
         }),
       ),

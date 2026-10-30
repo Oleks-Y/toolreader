@@ -15,6 +15,9 @@ export const ArtifactSource = Schema.Literals(["rollout", "hook"]);
 export type ArtifactSource = typeof ArtifactSource.Type;
 export const ArchiveStart = Schema.Struct({
   source: Schema.optional(ArtifactSource),
+  copyKind: Schema.optional(Schema.Literals(["filtered", "exact"])),
+  sourceSha256: Schema.optional(Hash),
+  includedDirectories: Schema.optional(Schema.Array(Schema.String).check(Schema.isMaxLength(64))),
   sessionId: SessionId,
   rootId: SessionId,
   sha256: Hash,
@@ -125,7 +128,7 @@ export function archiveReminder(input: string) {
     hookSpecificOutput: {
       hookEventName: start ? "SessionStart" : "PostToolUse",
       additionalContext:
-        "Use the codex-history skill after each commit, when preparing or updating a PR, and when asked to sync. Link only this session's relevant commits. Sync this chat and direct message peers only. Include peers you actually messaged or received messages from, using known UUIDs with --related when automatic detection cannot identify them. Do not search unrelated session contents. Upload failures must be reported as failures. PR preparation triggers sync, never a PR link. The helper is toolreader pilot sync.",
+        "Use the codex-history skill to link your commits and when preparing a PR or asked to sync. Link only this session's relevant commits. Sync this chat and direct message peers only. Include peers you actually messaged or received messages from, using known UUIDs with --related when automatic detection cannot identify them. Do not search unrelated session contents. Upload failures must be reported as failures. PR preparation triggers sync, never a PR link. The helper is toolreader history sync.",
     },
   };
 }

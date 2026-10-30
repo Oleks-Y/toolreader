@@ -10,10 +10,26 @@ services:
       - postgres:/var/lib/postgresql/data
     ports:
       - "127.0.0.1:${TOOLREADER_PORT:-4780}:4781"
+      - "127.0.0.1:${TOOLREADER_MEDIA_PORT:-9009}:9000"
     healthcheck:
       test: [CMD, pg_isready, -U, postgres]
       interval: 2s
       retries: 30
+    restart: unless-stopped
+  rustfs:
+    image: rustfs/rustfs:latest
+    network_mode: service:postgres
+    command: [/data]
+    environment:
+      RUSTFS_ACCESS_KEY: ${TOOLREADER_MEDIA_ACCESS_KEY_ID:?set a private media access key}
+      RUSTFS_SECRET_KEY: ${TOOLREADER_MEDIA_SECRET_ACCESS_KEY:?set a private media secret}
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ENABLE: "false"
+    volumes:
+      - media:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
   backend:
     image: node:24.19.0-slim
@@ -22,12 +38,19 @@ services:
     environment:
       TOOLREADER_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@127.0.0.1:5432/postgres
       TOOLREADER_CODEX_ARCHIVE_DIR: /var/lib/toolreader/codex
+      TOOLREADER_MEDIA_ENDPOINT: http://127.0.0.1:9000
+      TOOLREADER_MEDIA_BUCKET: ${TOOLREADER_MEDIA_BUCKET:?set a private media bucket name}
+      TOOLREADER_MEDIA_ACCESS_KEY_ID: ${TOOLREADER_MEDIA_ACCESS_KEY_ID:?set a private media access key}
+      TOOLREADER_MEDIA_SECRET_ACCESS_KEY: ${TOOLREADER_MEDIA_SECRET_ACCESS_KEY:?set a private media secret}
+      TOOLREADER_MEDIA_REGION: us-east-1
     volumes:
       - ${TOOLREADER_PACKAGE_DIR:?absolute path of installed reviewed tarball}:/opt/toolreader:ro
       - artifacts:/var/lib/toolreader/codex
     depends_on:
       postgres:
         condition: service_healthy
+      rustfs:
+        condition: service_started
     healthcheck:
       test:
         [
@@ -50,3 +73,4 @@ services:
 volumes:
   postgres:
   artifacts:
+  media:

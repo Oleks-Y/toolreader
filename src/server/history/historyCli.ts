@@ -78,6 +78,12 @@ import {
 import { evaluate, LabelRow, sampleRows } from "../../core/insightsEval.ts";
 import { VERDICTS, type EvidenceNow } from "../../core/review.ts";
 import { HistorySync, type PushReport, type SyncReport } from "./HistorySync.ts";
+import {
+  selectedSyncCommand,
+  selectedBackfillCommand,
+  selectedHookCommand,
+  selectedHookSyncCommand,
+} from "../pilot/pilotCli.ts";
 
 const PullRequest = Schema.Struct({ baseRefOid: Schema.String, headRefOid: Schema.String });
 const decodePullRequest = Schema.decodeUnknownEffect(Schema.fromJsonString(PullRequest));
@@ -230,82 +236,6 @@ export const deliver = Effect.fn("history.deliver")(function* <
   }
   return lines;
 });
-
-const sync = Command.make(
-  "sync",
-  {
-    repo: Flag.string("repo").pipe(
-      Flag.withDescription("Repository (any path inside it)"),
-      Flag.withDefault("."),
-    ),
-    range: Flag.string("range").pipe(
-      Flag.withDescription("Commits, as `git log` takes them: main..HEAD"),
-      Flag.optional,
-    ),
-    pr: Flag.integer("pr").pipe(
-      Flag.withDescription("A GitHub pull request's commits (base..head, through `gh`)"),
-      Flag.optional,
-    ),
-    sha: Flag.string("sha").pipe(Flag.withDescription("One commit"), Flag.optional),
-    source: Flag.choice("source", SESSION_SOURCES).pipe(
-      Flag.withDescription(
-        "Where sessions come from. auto: T3 if its database exists, plus Codex rollout files and Claude Code transcripts",
-      ),
-      Flag.withDefault("auto"),
-    ),
-    dryRun: Flag.boolean("dry-run").pipe(
-      Flag.withDescription("Link and report, but send nothing to the backend"),
-    ),
-    hook: Flag.boolean("hook").pipe(
-      Flag.withDescription(
-        "Run as a git hook: report to ~/.toolreader/history.log, never fail, and retry what failed before",
-      ),
-    ),
-  },
-  Effect.fn("toolreader history sync")(function* (flags) {
-    const repo = (yield* Path.Path).resolve(flags.repo);
-    const given = [
-      Option.isSome(flags.range),
-      Option.isSome(flags.pr),
-      Option.isSome(flags.sha),
-    ].filter(Boolean).length;
-    if (given !== 1)
-      return yield* new HistoryFailed({
-        message: "Give exactly one of --range A..B, --pr N or --sha X",
-      });
-    const range = Option.isSome(flags.range)
-      ? flags.range.value
-      : Option.isSome(flags.pr)
-        ? yield* prRange(repo, flags.pr.value)
-        : `-1 ${Option.getOrThrow(flags.sha)}`;
-    const app = CliApp({ appServer: flags.source === "codex-app-server", codexHome: null });
-    const syncRange = (r: string) =>
-      Effect.flatMap(HistorySync, (h) =>
-        h.sync(repo, r, { source: flags.source, dryRun: flags.dryRun }),
-      ).pipe(Effect.provide(app));
-    if (!flags.hook) {
-      for (const line of reportLines(yield* syncRange(range), flags.dryRun))
-        yield* Console.log(line);
-      return;
-    }
-    // As a hook: what failed before in this repo first, then this push; whatever fails waits.
-    yield* Effect.gen(function* () {
-      const lines = yield* deliver(repo, [range], syncRange);
-      yield* appendLog(`sync ${shortShas(range)} in ${repo}`, lines);
-    }).pipe(
-      // Crashes too: a detached job has nowhere else to say it died.
-      Effect.catchCause((cause) =>
-        appendLog(`sync ${shortShas(range)} in ${repo}`, [`✗ ${causeMessage(cause)}`]),
-      ),
-      Effect.provide(ServerConfig.layer),
-      Effect.ignore,
-    );
-  }),
-).pipe(
-  Command.withDescription(
-    "Sync a range's explicit agent declarations and session trailers to the backend",
-  ),
-);
 
 const StatusJson = Schema.Struct({
   backend: Schema.Struct({
@@ -1301,13 +1231,18 @@ const installer = (action: "install" | "uninstall") =>
       ),
     },
     Effect.fn(`toolreader history hook ${action}`)(function* ({ repo }) {
+      if (action === "install")
+        return yield* new HistoryFailed({
+          message:
+            "The repo-wide git hook installer uses the retired range sync. Use the codex-history plugin and TOOLREADER_SYNC_STRATEGY instead.",
+        });
       const lines = yield* installHooks((yield* Path.Path).resolve(repo), action);
       for (const line of lines) yield* Console.log(line);
     }),
   ).pipe(
     Command.withDescription(
       action === "install"
-        ? "Opt this repo in: every push to origin sends its agent history, in the background"
+        ? "Retired installer; use the codex-history plugin and sync strategy"
         : "Opt this repo out and remove its history hooks",
     ),
   );
@@ -1327,6 +1262,11 @@ const skillCommand = (action: "install" | "uninstall") =>
       ),
     },
     Effect.fn(`toolreader history skill ${action}`)(function* ({ repo, commit }) {
+      if (action === "install")
+        return yield* new HistoryFailed({
+          message:
+            "The repo-wide skill installs the retired capture path. Use the codex-history plugin instead.",
+        });
       const top = (yield* run((yield* Path.Path).resolve(repo), "git", [
         "rev-parse",
         "--show-toplevel",
@@ -1342,14 +1282,12 @@ const skillCommand = (action: "install" | "uninstall") =>
         for (const p of dirty)
           yield* Console.log(`  ${p} had other uncommitted changes: commit it yourself`);
       } else
-        yield* Console.log(
-          `Commit ${action === "install" ? "these" : "the removal"} so every agent here gets ${action === "install" ? "them" : "it"} (or pass --commit).`,
-        );
+        yield* Console.log("Commit the removal so every agent here gets it (or pass --commit).");
     }),
   ).pipe(
     Command.withDescription(
       action === "install"
-        ? "Have agents declare which turns produced each commit: the skill, a rule in AGENTS.md and CLAUDE.md, and Claude Code's and Codex's hooks (a reminder after each commit, the session sent when it stops)"
+        ? "Retired installer; use the codex-history plugin"
         : "Remove the skill, the rule and the hooks (each left alone if edited)",
     ),
   );
@@ -1357,7 +1295,10 @@ const skillCommand = (action: "install" | "uninstall") =>
 export const historyCommand = Command.make("history").pipe(
   Command.withDescription("Agent history per commit, kept on the history backend"),
   Command.withSubcommands([
-    sync,
+    selectedSyncCommand,
+    selectedBackfillCommand,
+    selectedHookCommand,
+    selectedHookSyncCommand,
     status,
     push,
     captureCommand,

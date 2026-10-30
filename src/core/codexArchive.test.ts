@@ -77,7 +77,7 @@ describe("private Codex archive", () => {
     ])
       expect(
         archiveReminder(JSON.stringify(event))?.hookSpecificOutput.additionalContext,
-      ).toContain("toolreader pilot sync");
+      ).toContain("toolreader history sync");
     expect(
       archiveReminder('{"hook_event_name":"PostToolUse","tool_input":{"command":"git status"}}'),
     ).toBeNull();

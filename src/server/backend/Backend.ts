@@ -48,7 +48,13 @@ import { hunkKey } from "../../core/blame.ts";
 import { detect } from "../../core/insights.ts";
 import * as NodeCrypto from "node:crypto";
 
-import { startArchive, archivePart, finishArchive, linkArchive } from "./CodexArchive.ts";
+import {
+  startArchive,
+  archivePart,
+  finishArchive,
+  linkArchive,
+  archiveInventory,
+} from "./CodexArchive.ts";
 import { AgentSql } from "./AgentSql.ts";
 import { MediaBucket, mediaKey } from "./MediaBucket.ts";
 import { GitHub } from "./GitHub.ts";
@@ -268,6 +274,12 @@ const HistoryHandlers = HttpApiBuilder.group(
         Effect.gen(function* () {
           yield* writer;
           return yield* linkArchive((yield* Caller).workspaceId, payload);
+        }),
+      )
+      .handle("codexInventory", () =>
+        Effect.gen(function* () {
+          yield* writer;
+          return yield* archiveInventory((yield* Caller).workspaceId);
         }),
       )
       .handle("hashes", ({ payload }) =>
