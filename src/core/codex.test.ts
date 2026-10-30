@@ -175,3 +175,64 @@ describe("codex", () => {
     );
   });
 });
+
+describe("recorded Codex media and web actions", () => {
+  it("keeps standard MCP image blocks and labels snake-case web opens", () => {
+    const rows = codexThreadToRows({
+      ...read,
+      thread: {
+        ...read.thread,
+        turns: [
+          {
+            id: "media-turn",
+            items: [
+              {
+                type: "mcpToolCall",
+                id: "image-call",
+                server: "probe",
+                tool: "image",
+                status: "completed",
+                result: {
+                  content: [
+                    { type: "text", text: "image" },
+                    { type: "image", mimeType: "image/png", data: "aGVsbG8=" },
+                  ],
+                },
+              },
+              {
+                type: "webSearch",
+                id: "web-open",
+                action: { type: "open_page", url: "https://nodejs.org/api/assert.html" },
+              },
+              { type: "webSearch", id: "web-other", query: "", action: { type: "other" } },
+              {
+                type: "mcpToolCall",
+                id: "bad-image",
+                server: "probe",
+                tool: "image",
+                status: "completed",
+                result: { content: [{ type: "image", mimeType: null, data: null }] },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const entries = normalize(rows.activities, rows.messages);
+    const image = entries.find((e) => e.id === "image-call");
+    assert.isTrue(image?.type === "action");
+    if (image?.type === "action")
+      assert.deepStrictEqual(image.media, [{ mime: "image/png", data: "aGVsbG8=" }]);
+    const web = entries.find((e) => e.id === "web-open");
+    if (web?.type === "action")
+      assert.strictEqual(web.title, "fetch https://nodejs.org/api/assert.html");
+    else assert.fail("web action missing");
+    const other = entries.find((e) => e.id === "web-other");
+    assert.strictEqual(
+      other?.type === "action" ? other.title : undefined,
+      "web action (operation not recorded)",
+    );
+    const invalid = entries.find((e) => e.id === "bad-image");
+    if (invalid?.type === "action") assert.isUndefined(invalid.media);
+  });
+});

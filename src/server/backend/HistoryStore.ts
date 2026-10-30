@@ -50,6 +50,9 @@ import { ReviewManifest, type EvidenceNow } from "../../core/review.ts";
 import { hunkKey, StoredBlame } from "../../core/blame.ts";
 import { forJsonb, sha256, threadSha } from "../recordHash.ts";
 import { ENTRY_ROWS } from "./Migrations/005_Entries.ts";
+import { HISTORY_EVENT_VIEWS } from "./Migrations/014_HistoryEvents.ts";
+import { FILTERED_CODEX_VIEWS } from "./Migrations/015_FilteredCodex.ts";
+import { CODEX_VIEWS } from "./Migrations/013_CodexArchive.ts";
 import { AGENT_VIEWS } from "./Migrations/009_AgentSchema.ts";
 
 type SourceState = (typeof SOURCE_STATES)[number];
@@ -1488,7 +1491,9 @@ export class HistoryStore extends Context.Service<
               yield* sql.unsafe(
                 `DO $$ BEGIN EXECUTE format('GRANT USAGE ON SCHEMA %I TO ${role}', current_schema()); END $$`,
               );
-              yield* sql.unsafe(`GRANT SELECT ON ${AGENT_VIEWS.join(", ")} TO ${role}`);
+              yield* sql.unsafe(
+                `GRANT SELECT ON ${[...AGENT_VIEWS, ...CODEX_VIEWS, ...HISTORY_EVENT_VIEWS, ...FILTERED_CODEX_VIEWS].join(", ")} TO ${role}`,
+              );
               yield* sql`
                 INSERT INTO agent_logins (workspace_id, role_name, password)
                 VALUES (${workspaceId}, ${role}, ${password})`;
@@ -1547,7 +1552,12 @@ export class HistoryStore extends Context.Service<
           SELECT 1 FROM threads t,
                jsonb_array_elements(t.payload->'entries') e,
                jsonb_array_elements(coalesce(e->'media', '[]'::jsonb)) x
-          WHERE t.workspace_id = m.workspace_id AND x->>'sha256' = m.sha256))`.pipe(
+          WHERE t.workspace_id = m.workspace_id AND x->>'sha256' = m.sha256)
+          AND NOT EXISTS (
+          SELECT 1 FROM codex_events e JOIN codex_artifacts a
+            ON a.workspace_id=e.workspace_id AND a.session_id=e.session_id AND a.sha256=e.sha256
+          WHERE e.workspace_id=m.workspace_id AND a.copy_kind='filtered'
+            AND e.raw::text LIKE '%toolreader-media:' || m.sha256 || '%'))`.pipe(
         Effect.flatMap(decodeOrphanRows),
         Effect.mapError(failed),
         bounded,

@@ -66,7 +66,7 @@ for _ in $(seq 60); do
 done
 db="postgres://postgres:smoke@127.0.0.1:$pg_port/postgres"
 port=$((20000 + $$ % 20000))
-TOOLREADER_DATABASE_URL="$db" "$tr" --log-level error backend serve --port "$port" \
+TOOLREADER_DATABASE_URL="$db" TOOLREADER_CODEX_ARCHIVE_DIR="$tmp/artifacts" "$tr" --log-level error backend serve --port "$port" \
   > "$tmp/backend.log" 2>&1 &
 backend=$!
 for _ in $(seq 60); do
@@ -87,69 +87,23 @@ git -C "$repo" config remote.origin.pushurl "$tmp/origin.git"
 git -C "$repo" commit -q --allow-empty -m one
 git -C "$repo" push -q origin HEAD:main
 
-# A Codex session that wrote store.ts a minute ago, committed it, and declared the commit its own.
+# A selected synthetic local Codex session. Its commit link is written only after both copies sync.
 rollouts="$CODEX_HOME/sessions/2026/01/01"
 mkdir -p "$rollouts"
-at=$(date -u -v-1M +%Y-%m-%dT%H:%M:%SZ 2> /dev/null || date -u -d '1 minute ago' +%Y-%m-%dT%H:%M:%SZ)
-printf 'export function saveThread(record) {\n  return store.put(record.id, record);\n}\n' > "$repo/store.ts"
+repo_id="11111111-1111-4111-8111-111111111111"
+at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+printf 'export const stored = true;\n' > "$repo/store.ts"
 git -C "$repo" add store.ts
 git -C "$repo" commit -q -m "feat: store"
 sha=$(git -C "$repo" rev-parse HEAD)
-cat > "$rollouts/rollout-2026-01-01T10-00-00-smoke-1.jsonl" << EOF
-{"timestamp":"$at","type":"session_meta","payload":{"id":"smoke-1","timestamp":"$at","cwd":"$repo","originator":"codex_exec"}}
+cat > "$rollouts/rollout-2026-01-01T10-00-00-$repo_id.jsonl" << EOF
+{"timestamp":"$at","type":"session_meta","payload":{"id":"$repo_id","timestamp":"$at","cwd":"$repo","originator":"codex_exec"}}
 {"timestamp":"$at","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
 {"timestamp":"$at","type":"event_msg","payload":{"type":"item_completed","turn_id":"t1","item":{"type":"UserMessage","id":"u1","content":[{"type":"text","text":"add the store"}]}}}
-{"timestamp":"$at","type":"event_msg","payload":{"type":"item_completed","turn_id":"t1","item":{"type":"FileChange","id":"f1","status":"completed","changes":{"$repo/store.ts":{"type":"add","content":"export function saveThread(record) {\\n  return store.put(record.id, record);\\n}\\n"}}}}}
-{"timestamp":"$at","type":"event_msg","payload":{"type":"item_completed","turn_id":"t1","item":{"type":"CommandExecution","id":"d1","command":["/bin/sh","-lc","toolreader history link --sha HEAD --note 'the store'"],"cwd":"$repo","status":"completed","aggregated_output":"history link: $sha for HEAD","exit_code":0}}}
 {"timestamp":"$at","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}
 EOF
-
-expect "declared: 1 turn" \
-  "$("$tr" --log-level error history sync --repo "$repo" --range HEAD~1..HEAD --dry-run 2>&1)"
-
-# Opted in, a push sends it in the background.
-expect "Set toolreader.history=true" "$("$tr" --log-level error history hook install --repo "$repo")"
-git -C "$repo" push -q origin HEAD:main
-for _ in $(seq 60); do
-  grep -q "thread sent\|threads sent" "$HOME/.toolreader/history.log" 2> /dev/null && break
-  sleep 0.5
-done
-log=$(cat "$HOME/.toolreader/history.log")
-expect "acme/smoke: 1 thread sent" "$log"
-
-# A QA subagent it delegated afterwards: it changed nothing and made no commit, and declared it
-# tested the pushed one on staging. The parent's Stop hook sends both, with no git push involved.
-cat > "$rollouts/rollout-2026-01-01T10-30-00-smoke-qa.jsonl" << EOF
-{"timestamp":"$at","type":"session_meta","payload":{"id":"smoke-qa","timestamp":"$at","cwd":"$repo","originator":"codex_exec","source":{"subagent":{"other":"qa"}},"parent_thread_id":"smoke-1"}}
-{"timestamp":"$at","type":"event_msg","payload":{"type":"task_started","turn_id":"q1"}}
-{"timestamp":"$at","type":"event_msg","payload":{"type":"item_completed","turn_id":"q1","item":{"type":"UserMessage","id":"q1","content":[{"type":"text","text":"check staging"}]}}}
-{"timestamp":"$at","type":"event_msg","payload":{"type":"item_completed","turn_id":"q1","item":{"type":"CommandExecution","id":"q2","command":["/bin/sh","-lc","curl -sf https://staging.example.test/health"],"cwd":"$repo","status":"completed","aggregated_output":"ok","exit_code":0}}}
-{"timestamp":"$at","type":"event_msg","payload":{"type":"item_completed","turn_id":"q1","item":{"type":"CommandExecution","id":"q3","command":["/bin/sh","-lc","toolreader history link --sha $sha --role tested --environment staging"],"cwd":"$repo","status":"completed","aggregated_output":"history link: $sha for $sha","exit_code":0}}}
-{"timestamp":"$at","type":"event_msg","payload":{"type":"task_complete","turn_id":"q1"}}
-EOF
-printf '{"session_id":"smoke-1","cwd":"%s","hook_event_name":"Stop"}' "$repo" |
-  "$tr" --log-level error history capture
-for _ in $(seq 60); do
-  grep -q "capture smoke-1" "$HOME/.toolreader/history.log" 2> /dev/null && break
-  sleep 0.5
-done
-# Its log written, the job releases its lock as it exits.
-for _ in $(seq 20); do
-  ls "$HOME"/.toolreader/capture-*.lock > /dev/null 2>&1 || break
-  sleep 0.5
-done
-log=$(cat "$HOME/.toolreader/history.log")
-expect "codex:smoke-qa (subagent of codex:smoke-1)" "$log"
-expect "1 sent, 1 unchanged" "$log"
-expect '"parent":"codex:smoke-1"' \
-  "$("$tr" --log-level error history sql "SELECT parent FROM agent_threads WHERE id = 'codex:smoke-qa'" 2> /dev/null)"
-# The commit, pushed before, now holds the testing beside the work.
-links=$("$tr" --log-level error history sql "SELECT thread_id, role, environment FROM agent_commit_links WHERE sha = '$sha' ORDER BY role" 2> /dev/null)
-expect '"thread_id":"codex:smoke-1","role":"implemented"' "$links"
-expect '"thread_id":"codex:smoke-qa","role":"tested","environment":"staging"' "$links"
-expect "Delivery: nothing pending" "$("$tr" --log-level error history status --repo "$repo" --check)"
-if printf '%s\n' "$log" | grep -q "✗"; then
-  printf 'smoke: a hook failed:\n%s\n' "$log" >&2
-  exit 1
-fi
+expect "Filtered $repo_id"   "$("$tr" --log-level error history sync --session "$repo_id" --repo "$repo" --sha "$sha" 2>&1)"
+expect "codex:$repo_id"   "$("$tr" --log-level error history sql "SELECT id FROM agent_threads WHERE id = 'codex:$repo_id'" 2>&1)"
+expect '"event_type":"session_meta"'   "$("$tr" --log-level error history sql "SELECT event_type FROM agent_history_events WHERE session_id = '$repo_id' ORDER BY seq LIMIT 1" 2>&1)"
+expect "\"sha\":\"$sha\""   "$("$tr" --log-level error history sql "SELECT sha FROM agent_codex_commit_links WHERE session_id = '$repo_id'" 2>&1)"
 echo "smoke: ok (toolreader v$version)"

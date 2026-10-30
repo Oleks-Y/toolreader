@@ -7,7 +7,9 @@
     "toolreader": "./dist/bin.mjs"
   },
   "files": [
-    "dist"
+    "dist",
+    "plugins/codex-history",
+    ".agents/plugins/marketplace.json"
   ],
   "type": "module",
   "scripts": {

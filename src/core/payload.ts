@@ -22,6 +22,13 @@ export const ClaudeImage = Schema.Struct({
   }),
 });
 
+/** Standard MCP image content, used by Codex tool results. */
+export const McpImage = Schema.Struct({
+  type: Schema.Literal("image"),
+  mimeType: Schema.String,
+  data: Schema.String,
+});
+
 /** Claude tool_result content: a string or `[{ type: "text", text }]`. */
 export const ClaudeContent = Schema.Union([
   Schema.String,

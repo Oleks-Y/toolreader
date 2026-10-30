@@ -1,0 +1,13 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "codex-history",
+  "version": "0.3.0",
+  "description": "Sync selected local Codex sessions to the private Toolreader archive and query normalized and filtered history.",
+  "license": "MIT",
+  "extensions": {
+    "com.openai": {
+      "hooks": "./hooks/hooks.json",
+      "onboardingSkill": "./skills/setup/SKILL.md"
+    }
+  }
+}

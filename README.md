@@ -61,69 +61,19 @@ toolreader export <id> [--turns 3-5] [--from ISO --to ISO] [--no-outputs] [--rep
 
 Secrets are replaced with `[redacted]` before writing: API keys, tokens, `Authorization` headers, private keys, `*_PASSWORD=` / `*_TOKEN=` values and URL credentials.
 
-## Agent history per commit
+## Agent history
 
-### Set up
-
-```bash
-# Once per team: the backend, on Postgres at TOOLREADER_DATABASE_URL
-toolreader backend serve [--port 4780]
-toolreader backend token create --workspace team --name laptop   # prints a token, once
-
-# Once per repo: what makes agents declare their commits (committed, so every agent gets it)
-toolreader history skill install --commit
-
-# Once per clone: opt in; every push to origin sends its history
-toolreader history hook install
-```
-
-Point each machine at the backend in `~/.toolreader/config.json`:
-
-```json
-{ "backend": { "url": "https://…", "token": "trk_…", "workspace": "team" } }
-```
-
-Or set `TOOLREADER_BACKEND_URL`, `TOOLREADER_BACKEND_TOKEN` and `TOOLREADER_BACKEND_WORKSPACE`. Plain `http://` is allowed only to this machine, because the token goes with every request.
-
-### Use
+The `codex-history` plugin sends one selected local Codex chat and its direct message peers to a private workspace. `toolreader history sync` sends a normalized thread for the UI and a filtered rollout for agent SQL. The same command can link the current chat to a commit with `--sha`.
 
 ```bash
-toolreader history sync --range main..HEAD [--dry-run]   # by hand; or --pr N, --sha X
-toolreader history site --pr 42 [--out DIR]              # the PR's page: DIR/index.html
+toolreader history sync                         # current CODEX_THREAD_ID
+toolreader history sync --sha HEAD              # sync, then link this chat to HEAD
+toolreader history sync --session UUID --repo . # explicit local chat
 ```
 
-With the hooks installed, you rarely run `sync` yourself.
+Set `TOOLREADER_SYNC_STRATEGY` in Codex's environment to `on-demand` (default), `on-commit`, `on-push`, or `full`. At `SessionEnd`, full mode starts a detached selected-session upload and returns within the three-second hook limit. Its private status is in `$CODEX_HOME/toolreader-events/SESSION/sync-status.json`. Every mode uses the same selected-session uploader. See [the pilot setup and privacy details](docs/codex-team-pilot.md). Existing repo-wide `history hook` and `history skill` installers belong to the older range-based path; remove them before enabling the plugin. Their uninstall commands remain available.
 
-### How commits are linked
-
-Three ways, strongest first:
-
-1. **Declared.** Right after a commit, or after splitting, squashing or rebasing, the agent runs `history link --sha HEAD --turns 3-5 --note "…"` (`history turns` lists the numbers; `--session` names another session; `history unlink` takes a link back). The command stores nothing. It checks what it's told and prints the full SHA, and `sync` finds it later in the session. A declared link replaces what matching found for that thread.
-2. **Trailer.** Inside an agent session, the `commit-msg` hook adds `Agent-Session: codex:<id>` or `claude-code:<id>`, which names the session outright.
-3. **Matched by content.** Otherwise, a commit is linked to the turns whose edits added its new lines (lines its parent didn't have). That works wherever and whenever those turns ran: in another worktree, days earlier, before a rebase, squash or stack split, or under a file name that has since moved.
-
-The PR page shows each link as an episode, meaning the turns that wrote the lines plus the short runs between them, along with how many of the commit's new lines its agents wrote.
-
-### What `skill install` adds
-
-- The skill: `.claude/skills/toolreader-history/SKILL.md`, linked from `.agents/skills/` for Codex.
-- A short rule in `AGENTS.md` and `CLAUDE.md`. Every session reads these, while a skill is only read when the agent thinks of it.
-- A hook that reminds the agent right after each `git commit` (`history remind`). It goes in `.claude/settings.json` for Claude Code and `.codex/hooks.json` for Codex, which runs it only after you approve it once with `/hooks`.
-
-Existing content in those files stays. With `--commit`, a file that has other uncommitted changes is left for you to commit.
-
-### What the git hooks do
-
-- **`pre-push`** waits for git to finish, asks origin whether it took the push (`git ls-remote`), and only then sends. It never stops or slows a push. It reports to `~/.toolreader/history.log`, and a sync that failed (backend down) is retried by the next push.
-- **`commit-msg`** adds the `Agent-Session` trailer. It never stops a commit.
-
-An existing hook (Husky, Entire, …) is left alone, and `hook install` prints the snippet to run from it instead.
-
-### What leaves the machine
-
-Each linked thread is sent whole, once, and again only when it has grown. Before sending, secrets become `[redacted]` and the home directory becomes `~`. The backend checks every record again and refuses anything that fails.
-
-`history site` writes one `index.html` that loads nothing from the network. A CSP blocks it, and Markdown images in session text show as links. The page is read-only (no labeling or export) and names the repo by its remote's owner/name, never its local path. It opens from `file://` or any static host; where you put it decides who can read it.
+The backend needs a private Postgres database, artifact storage, and a media bucket for sessions with images. The local isolated Compose example is in [deploy/codex-pilot.compose.yml](deploy/codex-pilot.compose.yml). Each writer needs a workspace token in `~/.toolreader/config.json` or the `TOOLREADER_BACKEND_*` environment variables.
 
 ## Configuration
 

@@ -48,6 +48,13 @@ import { hunkKey } from "../../core/blame.ts";
 import { detect } from "../../core/insights.ts";
 import * as NodeCrypto from "node:crypto";
 
+import {
+  startArchive,
+  archivePart,
+  finishArchive,
+  linkArchive,
+  archiveInventory,
+} from "./CodexArchive.ts";
 import { AgentSql } from "./AgentSql.ts";
 import { MediaBucket, mediaKey } from "./MediaBucket.ts";
 import { GitHub } from "./GitHub.ts";
@@ -245,6 +252,36 @@ const HistoryHandlers = HttpApiBuilder.group(
           });
       });
     return handlers
+      .handle("codexStart", ({ payload }) =>
+        Effect.gen(function* () {
+          yield* writer;
+          return yield* startArchive((yield* Caller).workspaceId, payload);
+        }),
+      )
+      .handle("codexPart", ({ payload }) =>
+        Effect.gen(function* () {
+          yield* writer;
+          return yield* archivePart((yield* Caller).workspaceId, payload);
+        }),
+      )
+      .handle("codexFinish", ({ payload }) =>
+        Effect.gen(function* () {
+          yield* writer;
+          return yield* finishArchive((yield* Caller).workspaceId, payload.uploadId);
+        }),
+      )
+      .handle("codexLink", ({ payload }) =>
+        Effect.gen(function* () {
+          yield* writer;
+          return yield* linkArchive((yield* Caller).workspaceId, payload);
+        }),
+      )
+      .handle("codexInventory", () =>
+        Effect.gen(function* () {
+          yield* writer;
+          return yield* archiveInventory((yield* Caller).workspaceId);
+        }),
+      )
       .handle("hashes", ({ payload }) =>
         writer.pipe(
           Effect.andThen(Effect.flatMap(scoped, (s) => s.hashes(payload.ids))),

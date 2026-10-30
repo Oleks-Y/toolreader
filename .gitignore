@@ -5,3 +5,5 @@ dist
 .vite-hooks/_
 
 .t3
+
+.pnpm-store

@@ -1,0 +1,34 @@
+name: toolreader-codex-pilot-test
+services:
+  postgres:
+    image: postgres:17.5
+    network_mode: bridge
+    environment:
+      POSTGRES_PASSWORD: pilot-test-only
+    healthcheck:
+      test: [CMD, pg_isready, -U, postgres]
+      interval: 1s
+      retries: 30
+    # Disposable test data; no host credentials or live databases are mounted.
+    tmpfs: [/var/lib/postgresql/data]
+  test:
+    image: node:24.19.0
+    network_mode: service:postgres
+    working_dir: /work
+    volumes:
+      - ..:/work
+      - pilot-test-modules:/work/node_modules
+    environment:
+      TOOLREADER_TEST_PG_URL: postgres://postgres:pilot-test-only@127.0.0.1:5432/postgres
+      TOOLREADER_CODEX_ARCHIVE_DIR: /tmp/codex-artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      [
+        sh,
+        -c,
+        "corepack enable && corepack prepare pnpm@11.10.0 --activate && pnpm install --frozen-lockfile && pnpm exec vp pack && pnpm exec vp test run src/server/backend/CodexArchive.test.ts src/server/backend/PgMigrations.test.ts src/server/backend/Backend.test.ts src/server/backend/AgentSql.test.ts --no-file-parallelism",
+      ]
+volumes:
+  pilot-test-modules:
